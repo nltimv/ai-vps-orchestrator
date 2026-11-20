@@ -101,7 +101,9 @@ postgresql:
   size: 10Gi
   password: ""             # generated if empty
 externalDatabase:
-  url: ""                  # postgresql+asyncpg://user:pass@host:5432/aivo (or via existingSecret AIVO_DATABASE_URL)
+  # e.g. a managed database's connection string as given: postgresql://user:pass@host:25060/aivo?sslmode=require
+  # (postgresql+asyncpg://…?ssl=require also works), or via existingSecret AIVO_DATABASE_URL
+  url: ""
 
 # -- Backstop that destroys idle/expired machines if the controller is down
 janitor:

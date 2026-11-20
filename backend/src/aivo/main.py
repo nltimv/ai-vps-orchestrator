@@ -20,7 +20,7 @@ from aivo.catalog.loader import Catalog
 from aivo.config import EnvSettings, get_env
 from aivo.context import AppContext
 from aivo.db.models import User
-from aivo.db.session import asyncpg_dsn, make_engine, make_sessionmaker
+from aivo.db.session import make_engine, make_sessionmaker
 from aivo.events.bus import EventBus
 from aivo.providers.base import CloudProvider
 from aivo.providers.registry import make_provider
@@ -44,7 +44,7 @@ def build_context(env: EnvSettings, provider: CloudProvider | None = None) -> Ap
         store=FilesystemStore(env.media_dir, keyring),
         catalog=Catalog.load(env.catalog_dir),
         provider=provider or make_provider(env),
-        bus=EventBus(asyncpg_dsn(env.database_url)),
+        bus=EventBus(env.database_url),
     )
 
 

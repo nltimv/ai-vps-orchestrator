@@ -253,6 +253,7 @@ export interface Health {
   provider: string;
   controller: { holder: string; epoch: number; alive: boolean; last_tick_age_s: number } | null;
   offers_error: string | null;
+  live_updates: { connected: boolean; error: string | null };
 }
 
 export interface ServerEvent {

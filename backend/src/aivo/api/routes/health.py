@@ -29,5 +29,6 @@ async def health(app: AppContext = Depends(get_app), s: AsyncSession = Depends(g
         "provider": app.provider.name,
         "controller": controller,
         "offers_error": app.offers.error,
+        "live_updates": {"connected": app.bus.connected, "error": app.bus.last_error},
         "catalog_models": len(app.catalog.models),
     }

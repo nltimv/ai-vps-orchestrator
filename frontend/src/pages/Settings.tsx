@@ -260,6 +260,11 @@ function Status() {
       <Badge tone={c?.alive ? "good" : "bad"}>{c?.alive ? `Machine manager running (checked ${Math.round(c.last_tick_age_s)} s ago)` : "Machine manager is not running"}</Badge>
       <Badge>version {h.data.version}</Badge>
       {h.data.offers_error && <Badge tone="warn">Cloud availability check failing</Badge>}
+      {h.data.live_updates && !h.data.live_updates.connected && (
+        <Badge tone="warn" title={h.data.live_updates.error ?? undefined}>
+          Live updates unavailable — progress refreshes every few seconds
+        </Badge>
+      )}
     </div>
   );
 }

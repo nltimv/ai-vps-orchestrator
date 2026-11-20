@@ -69,6 +69,7 @@ account or team. Only use it inside a dedicated team for aivo.
 | `AIVO_PROVIDER=digitalocean` | use real GPU droplets |
 | `AIVO_DO_TOKEN` | API token |
 | `AIVO_WORKER_IMAGE` | GPU worker image (built by CI: `ghcr.io/<owner>/aivo-worker`) |
+| `AIVO_DATABASE_URL` | Postgres URL. A managed database's connection string can be pasted as given (e.g. DigitalOcean's `postgresql://…?sslmode=require`); the `postgresql+asyncpg://…?ssl=require` form works too. |
 | `AIVO_MEDIA_KEKS` | media encryption key(s): `aivo generate-key`; **back up separately** |
 | `AIVO_SPACES_*` | optional private model mirror (bucket, region, key, secret) |
 | `AIVO_HF_TOKEN` | optional: gated models (e.g. FLUX.2 [dev] full precision); used backend-side only |
