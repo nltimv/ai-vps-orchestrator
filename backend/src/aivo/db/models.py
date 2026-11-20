@@ -52,11 +52,26 @@ class User(Base):
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_uuid)
     email: Mapped[str] = mapped_column(String(320), unique=True)
     display_name: Mapped[str] = mapped_column(String(120))
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255))  # None for SSO-only accounts
     role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     last_login_at: Mapped[datetime | None]
+
+
+class UserIdentity(Base):
+    """An external (OIDC) identity linked to a user: (issuer, subject) is the stable key."""
+
+    __tablename__ = "user_identities"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    issuer: Mapped[str] = mapped_column(String(512))
+    subject: Mapped[str] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(320))
+    created_at: Mapped[datetime] = mapped_column(server_default=_now())
+    last_login_at: Mapped[datetime | None]
+
+    __table_args__ = (UniqueConstraint("issuer", "subject", name="uq_user_identities_issuer_subject"),)
 
 
 class Session(Base):

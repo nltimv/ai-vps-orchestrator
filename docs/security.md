@@ -52,6 +52,11 @@ cloud token, the KEK and the DB, so it is never exposed.
 ## Web application
 - **Sessions.** argon2id password hashes. Session cookies are opaque tokens (only their
   sha256 is stored), HttpOnly, `SameSite=Lax`, and `Secure` behind TLS.
+- **Single sign-on.**
+  - OIDC Authorization Code with PKCE, `state` and `nonce`; ID tokens are verified against the
+    provider's signing keys.
+  - Accounts are only linked by email when the provider marks it verified.
+  - Details are in [sso.md](sso.md).
 - **CSRF.** Every state-changing API call must carry `X-Requested-With: aivo`. Browsers can't
   send that header cross-site without a CORS preflight, and none is allowed.
 - **Headers.** nginx sends a Content-Security-Policy, `X-Frame-Options: DENY`, `nosniff` and

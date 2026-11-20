@@ -60,6 +60,38 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: AIVO_DATABASE_URL
   value: {{ .Values.externalDatabase.url | quote }}
 {{- end }}
+{{- $publicUrl := .Values.publicUrl | default (ternary (printf "https://%s" .Values.ingress.host) "" .Values.ingress.enabled) }}
+{{- with $publicUrl }}
+- name: AIVO_PUBLIC_URL
+  value: {{ . | quote }}
+{{- end }}
+- name: AIVO_PASSWORD_LOGIN
+  value: {{ .Values.passwordLogin | quote }}
+{{- if .Values.sso.enabled }}
+{{- if not (and .Values.sso.issuer .Values.sso.clientId) }}
+{{- fail "sso.enabled requires sso.issuer and sso.clientId" }}
+{{- end }}
+- name: AIVO_OIDC_ISSUER
+  value: {{ .Values.sso.issuer | quote }}
+- name: AIVO_OIDC_CLIENT_ID
+  value: {{ .Values.sso.clientId | quote }}
+- name: AIVO_OIDC_NAME
+  value: {{ .Values.sso.name | quote }}
+- name: AIVO_OIDC_SCOPES
+  value: {{ .Values.sso.scopes | quote }}
+- name: AIVO_OIDC_AUTO_PROVISION
+  value: {{ .Values.sso.autoProvision | quote }}
+- name: AIVO_OIDC_LINK_BY_EMAIL
+  value: {{ .Values.sso.linkByEmail | quote }}
+- name: AIVO_OIDC_ALLOWED_DOMAINS
+  value: {{ join "," .Values.sso.allowedDomains | quote }}
+- name: AIVO_OIDC_ALLOWED_GROUPS
+  value: {{ join "," .Values.sso.allowedGroups | quote }}
+- name: AIVO_OIDC_ADMIN_GROUPS
+  value: {{ join "," .Values.sso.adminGroups | quote }}
+- name: AIVO_OIDC_GROUPS_CLAIM
+  value: {{ .Values.sso.groupsClaim | quote }}
+{{- end }}
 {{- with .Values.extraEnv }}
 {{ toYaml . }}
 {{- end }}

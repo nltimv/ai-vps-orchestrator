@@ -238,7 +238,8 @@ function Users() {
       <div className="divide-y divide-[var(--border)]">
         {(users.data ?? []).map((u) => (
           <div key={u.id} className="flex items-center justify-between gap-2 py-2 text-sm">
-            <span>{u.display_name} <span className="text-muted">· {u.email}</span> {u.role === "admin" && <Badge tone="brand">admin</Badge>}
+            <span>{u.display_name} <span className="text-muted">· {u.email}</span> {u.role === "admin" && <Badge tone="brand">admin</Badge>}{" "}
+              {u.sso && <Badge tone="neutral">single sign-on</Badge>}
               {!u.is_active && <Badge tone="bad">disabled</Badge>}</span>
             <Button size="sm" variant="ghost" onClick={async () => { await patch(`/admin/users/${u.id}`, { is_active: !u.is_active }); qc.invalidateQueries({ queryKey: ["users"] }); }}>
               {u.is_active ? "Disable" : "Enable"}

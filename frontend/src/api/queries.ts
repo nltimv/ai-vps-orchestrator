@@ -2,6 +2,7 @@ import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClie
 
 import { del, get, post, put } from "./client";
 import type {
+  AuthStatus,
   CacheStatus, Catalog, Estimate, GalleryPage, Health, Instance, Job, OffersResponse, SettingsResponse,
   Spending, User,
 } from "./types";
@@ -10,7 +11,7 @@ export const useMe = () =>
   useQuery({ queryKey: ["me"], queryFn: () => get<User>("/auth/me"), retry: false, staleTime: 60_000 });
 
 export const useAuthStatus = () =>
-  useQuery({ queryKey: ["auth-status"], queryFn: () => get<{ needs_setup: boolean }>("/auth/status") });
+  useQuery({ queryKey: ["auth-status"], queryFn: () => get<AuthStatus>("/auth/status") });
 
 export const useCatalog = () =>
   useQuery({ queryKey: ["catalog"], queryFn: () => get<Catalog>("/catalog"), staleTime: 5 * 60_000 });
@@ -64,7 +65,10 @@ export const useCacheStatus = () =>
 export const useUsers = () =>
   useQuery({
     queryKey: ["users"],
-    queryFn: () => get<(User & { is_active: boolean; last_login_at: string | null })[]>("/admin/users"),
+    queryFn: () =>
+      get<(User & { is_active: boolean; last_login_at: string | null; sso: boolean; has_password: boolean })[]>(
+        "/admin/users",
+      ),
   });
 
 export const useHealth = () =>

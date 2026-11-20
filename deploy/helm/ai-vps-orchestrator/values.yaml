@@ -30,6 +30,27 @@ secrets:
   adminEmail: ""
   adminPassword: ""
 
+# -- Public URL of the dashboard (used for the SSO redirect URI).
+#    Defaults to https://<ingress.host> when the Ingress is enabled.
+publicUrl: ""
+# -- Allow email + password sign-in (set false for SSO-only)
+passwordLogin: true
+
+# -- Single sign-on (OpenID Connect). Redirect URI to register: <publicUrl>/api/v1/auth/oidc/callback
+sso:
+  enabled: false
+  issuer: ""                 # e.g. https://sso.example.com/realms/home
+  clientId: ""
+  clientSecret: ""           # stored in the chart Secret; or AIVO_OIDC_CLIENT_SECRET in secrets.existingSecret
+  name: SSO                  # button text: "Continue with <name>"
+  scopes: "openid email profile"
+  autoProvision: true        # false = only people with an invite link may join
+  linkByEmail: true          # link SSO to an existing account with the same *verified* email
+  allowedDomains: []         # e.g. [example.com]
+  allowedGroups: []          # e.g. [aivo-users]
+  adminGroups: []            # e.g. [aivo-admins]; admin role then follows group membership
+  groupsClaim: groups
+
 spaces:
   region: ""
   bucket: ""

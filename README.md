@@ -18,6 +18,9 @@ droplets are still billed, so destroying them is the only way to stop the meter.
   limits, orphan sweeps, an optional self-destruct watchdog on each machine, and a Kubernetes
   janitor.
 - **DigitalOcean GPU Droplets** today, behind a provider interface for other clouds later.
+- **Sign in with your own SSO** (OpenID Connect: Keycloak, Authentik, Entra ID, Google, …), with
+  group-based admin roles and invite-only mode, alongside or instead of passwords
+  ([docs/sso.md](docs/sso.md)).
 
 ```
 Browser ─► frontend (React) ─► backend API ──► Postgres

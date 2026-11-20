@@ -11,7 +11,7 @@ from aivo.api.deps import SESSION_COOKIE, current_user, get_app, get_session, re
 from aivo.api.schemas import AcceptInviteIn, InviteIn, InviteOut, LoginIn, SetupIn, UserOut
 from aivo.auth.passwords import hash_password, needs_rehash, verify_password
 from aivo.context import AppContext
-from aivo.db.models import AuditLog, Invite, User
+from aivo.db.models import AuditLog, Invite, User, UserIdentity
 from aivo.db.models import Session as DbSession
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -47,9 +47,19 @@ async def _start_session(app: AppContext, s: AsyncSession, user: User, request: 
 
 
 @router.get("/status")
-async def status(s: AsyncSession = Depends(get_session)) -> dict[str, bool]:
+async def status(app: AppContext = Depends(get_app), s: AsyncSession = Depends(get_session)) -> dict[str, object]:
+    """What the sign-in page should offer (no authentication required)."""
     n = (await s.execute(select(func.count()).select_from(User))).scalar_one()
-    return {"needs_setup": n == 0}
+    return {
+        "needs_setup": n == 0,
+        "password_login": app.env.password_login,
+        "sso": {"enabled": app.env.oidc_enabled, "name": app.env.oidc_name},
+    }
+
+
+def _require_password_login(app: AppContext) -> None:
+    if not app.env.password_login:
+        raise HTTPException(403, "Signing in with a password is turned off. Use single sign-on instead.")
 
 
 @router.post("/setup")
@@ -61,6 +71,7 @@ async def setup(
     s: AsyncSession = Depends(get_session),
 ) -> UserOut:
     """First-run: create the initial admin. Only works while there are no users at all."""
+    _require_password_login(app)
     await s.execute(select(func.pg_advisory_xact_lock(4242)))
     n = (await s.execute(select(func.count()).select_from(User))).scalar_one()
     if n > 0:
@@ -87,8 +98,9 @@ async def login(
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> UserOut:
+    _require_password_login(app)
     user = (await s.execute(select(User).where(User.email == body.email.lower()))).scalar_one_or_none()
-    if user is None or not user.is_active:
+    if user is None or not user.is_active or user.password_hash is None:  # SSO-only accounts have no password
         verify_password(_DUMMY_HASH, body.password)
         raise HTTPException(401, "Wrong email or password")
     if not verify_password(user.password_hash, body.password):
@@ -137,6 +149,7 @@ async def accept_invite(
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> UserOut:
+    _require_password_login(app)
     inv = (
         await s.execute(
             select(Invite)
@@ -169,8 +182,15 @@ async def accept_invite(
 @admin_router.get("")
 async def list_users(_: User = Depends(require_admin), s: AsyncSession = Depends(get_session)) -> list[dict]:  # type: ignore[type-arg]
     users = (await s.execute(select(User).order_by(User.created_at))).scalars().all()
+    sso_ids = set((await s.execute(select(UserIdentity.user_id))).scalars().all())
     return [
-        {**_user_out(u).model_dump(mode="json"), "is_active": u.is_active, "last_login_at": u.last_login_at}
+        {
+            **_user_out(u).model_dump(mode="json"),
+            "is_active": u.is_active,
+            "last_login_at": u.last_login_at,
+            "sso": u.id in sso_ids,
+            "has_password": u.password_hash is not None,
+        }
         for u in users
     ]
 

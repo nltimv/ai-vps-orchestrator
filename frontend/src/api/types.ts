@@ -5,6 +5,12 @@ export type Quality = "draft" | "standard" | "best";
 export type Aspect = "square" | "portrait" | "landscape" | "wide";
 export type Preference = "economy" | "balanced" | "fast";
 
+export interface AuthStatus {
+  needs_setup: boolean;
+  password_login: boolean;
+  sso: { enabled: boolean; name: string };
+}
+
 export interface User {
   id: string;
   email: string;

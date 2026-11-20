@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
@@ -42,6 +42,7 @@ class AppContext:
     deployment_id: uuid.UUID = field(default_factory=uuid.uuid4)
     offers: OffersCache = field(default_factory=OffersCache)
     controller: Controller | None = None
+    oidc: Any = None  # lazily created OIDCClient (caches discovery + signing keys)
     _rs_cache: tuple[float, RuntimeSettings] | None = None
 
     async def load_deployment_id(self) -> uuid.UUID:
