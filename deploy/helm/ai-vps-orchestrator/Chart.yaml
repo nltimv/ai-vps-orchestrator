@@ -2,7 +2,7 @@ apiVersion: v2
 name: ai-vps-orchestrator
 description: On-demand GPU machines for AI image/video/music generation (aivo) — dashboard, API and controller
 type: application
-version: 0.1.0
+version: 0.1.1
 appVersion: "0.1.0"
 keywords: [ai, gpu, digitalocean, comfyui]
 home: https://github.com/nltimv/ai-vps-orchestrator
