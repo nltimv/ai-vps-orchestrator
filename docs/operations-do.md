@@ -9,18 +9,58 @@
   Request an increase in the control panel if you want more than one machine at a time
   (Settings → *Machines at the same time*).
 - **Create a billing alert** in the DO control panel as an independent last line of defence.
-- **Create an API token** (`AIVO_DO_TOKEN`). Custom scopes needed:
-  - droplet: create/read/delete
-  - ssh_key: create/read
-  - firewall: create/read/update
-  - image and snapshot: read/update/delete (prepared images)
-  - volume: create/read/delete (model disks)
-  - action: read
-  - size, region: read
-  - account and billing: read (quota and the "cloud bill so far" figure)
-- **Optional: a watchdog token** (`AIVO_DO_WATCHDOG_TOKEN`) with *only* `droplet:delete`.
-  Each machine receives it and deletes itself if the backend stays silent for 20 minutes.
-  This matters for a laptop backend that might sleep. Enable it in Settings → Security.
+- **Create an API token** (`AIVO_DO_TOKEN`) with custom scopes. See
+  [API token scopes](#api-token-scopes) below.
+- **Optional: a watchdog token** (`AIVO_DO_WATCHDOG_TOKEN`). Each machine receives it and
+  deletes itself if the backend stays silent for 20 minutes. This matters for a laptop backend
+  that might sleep. Enable it in Settings → Security. Its scopes are listed
+  [below](#watchdog-token).
+
+### API token scopes
+
+Create the token under **API → Tokens → Generate New Token → Custom Scopes**. "Full Access"
+works too, but isn't recommended.
+
+**Required** (start, watch and destroy GPU machines):
+
+| Scope | Used for |
+|---|---|
+| `droplet:create` | Start GPU machines (and the short-lived bake and disk-fill machines) |
+| `droplet:read` | Poll a machine's status and IP; find machines by tag (safe retries, orphan cleanup) |
+| `droplet:delete` | Destroy idle, expired or orphaned machines |
+| `droplet:update` | Droplet actions: power-off and snapshot when preparing a machine image |
+| `tag:create` | Machines are created with aivo's tags (`aivo`, `aivo-dep-…`, `aivo-inst-…`) |
+| `sizes:read` | Live GPU sizes, prices and availability |
+| `regions:read` | Which datacenters offer which sizes |
+| `image:read` | Find the GPU-ready base image |
+| `ssh_key:read`, `ssh_key:create` | Register a throwaway "no-login" key, so DigitalOcean never emails a root password |
+| `firewall:read`, `firewall:create`, `firewall:update` | The per-deployment firewall that limits the worker port to the backend's IP |
+| `actions:read` | Wait for droplet and image actions to finish |
+
+**Optional, per feature.** Leaving these out only disables that feature; creating images,
+videos and music keeps working.
+
+| Feature | Scopes |
+|---|---|
+| Prepared machine image (Settings → Faster start-up) | `snapshot:read` (find the new snapshot), `image:update` (copy it to other regions), `image:delete` (remove old ones) |
+| Model disks (block storage) | `block_storage:create`, `block_storage:read`, `block_storage:delete` |
+| GPU quota check and the "Cloud bill so far" figure | `account:read`, `billing:read` |
+
+#### Watchdog token
+
+A separate token with only `droplet:delete`. The control panel may add `droplet:read`
+automatically. Each machine gets a copy, and the token can delete **any** droplet in the
+account or team. Only use it inside a dedicated team for aivo.
+
+#### Notes
+
+- **Companion scopes.** When you pick some scopes (e.g. `droplet:create`), the control panel
+  automatically adds the read scopes they depend on. Keep those.
+- **A missing scope** makes the API answer `403`.
+  - aivo shows "The cloud account is not set up correctly (check the API token)".
+  - The backend log contains DigitalOcean's message naming the missing scope.
+- **Check a new token for free** with `scripts/do_smoke.py --dry-run`. It uses the read
+  scopes only and costs $0.
 
 ## 2. Configure
 
