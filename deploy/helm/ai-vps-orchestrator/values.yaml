@@ -134,6 +134,8 @@ networkPolicy:
 extraEnv: []
 podSecurityContext:
   runAsNonRoot: true
+  runAsUser: 10001    # the image's `aivo` user; a numeric id is required to verify runAsNonRoot
+  runAsGroup: 10001
   fsGroup: 10001
 nodeSelector: {}
 tolerations: []
