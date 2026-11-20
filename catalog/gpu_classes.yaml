@@ -1,0 +1,37 @@
+# Relative throughput priors (RTX 4000 Ada = 1.0) for diffusion-style workloads.
+# These are only starting points: measured phase timings replace them over time.
+- id: rtx4000ada
+  label: NVIDIA RTX 4000 Ada (20 GB)
+  vendor: nvidia
+  perf: 1.0
+  aliases: ["4000ada", "rtx_4000_ada", "nvidia_rtx_4000_ada", "rtx 4000 ada"]
+- id: rtx6000ada
+  label: NVIDIA RTX 6000 Ada (48 GB)
+  vendor: nvidia
+  perf: 3.0
+  aliases: ["6000ada", "rtx_6000_ada", "nvidia_rtx_6000_ada", "rtx 6000 ada"]
+- id: l40s
+  label: NVIDIA L40S (48 GB)
+  vendor: nvidia
+  perf: 3.0
+  aliases: ["l40s", "nvidia_l40s"]
+- id: h100
+  label: NVIDIA H100 (80 GB)
+  vendor: nvidia
+  perf: 7.0
+  aliases: ["h100", "nvidia_h100"]
+- id: h200
+  label: NVIDIA H200 (141 GB)
+  vendor: nvidia
+  perf: 7.5
+  aliases: ["h200", "nvidia_h200"]
+- id: mi300x
+  label: AMD Instinct MI300X (192 GB)
+  vendor: amd
+  perf: 6.0
+  aliases: ["mi300x", "amd_mi300x"]
+- id: mi325x
+  label: AMD Instinct MI325X (256 GB)
+  vendor: amd
+  perf: 6.5
+  aliases: ["mi325x", "amd_mi325x"]

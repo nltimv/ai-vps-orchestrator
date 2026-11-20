@@ -1,0 +1,63 @@
+id: flux2-dev
+kind: image
+display_name: "Image · Best"
+tagline: "The most detailed, true-to-your-words pictures"
+description: >
+  FLUX.2 [dev] (32B) from Black Forest Labs: top open-weight quality and prompt
+  adherence. Non-commercial license: fine for personal use.
+family: generic
+license:
+  name: FLUX [dev] Non-Commercial License
+  url: https://huggingface.co/black-forest-labs/FLUX.2-dev/blob/main/LICENSE.md
+  commercial: false
+  summary: Personal and research use only.
+supports: {avoid: false, seed: true}
+modes:
+  - {mode: t2i, workflow: workflows/t2i.json}
+variants:
+  - id: fp8
+    precision: fp8
+    min_vram_gb: 40
+    recommended_vram_gb: 48
+    min_ram_gb: 64
+    quality_rank: 2
+    files: [unet_fp8, te_fp8, vae]
+    params: {unet: flux2_dev_fp8mixed.safetensors, te: mistral_3_small_flux2_fp8.safetensors}
+  - id: bf16
+    precision: bf16
+    min_vram_gb: 72
+    recommended_vram_gb: 80
+    min_ram_gb: 128
+    quality_rank: 3
+    files: [unet_bf16, te_bf16, vae]
+    params: {unet: flux2-dev.safetensors, te: mistral_3_small_flux2_bf16.safetensors}
+files:
+  - {id: unet_fp8, repo: Comfy-Org/flux2-dev, path: split_files/diffusion_models/flux2_dev_fp8mixed.safetensors,
+     dest: diffusion_models/flux2_dev_fp8mixed.safetensors, bytes: 35500000000}
+  - {id: unet_bf16, repo: black-forest-labs/FLUX.2-dev, path: flux2-dev.safetensors, gated: true,
+     dest: diffusion_models/flux2-dev.safetensors, bytes: 64400000000}
+  - {id: te_fp8, repo: Comfy-Org/flux2-dev, path: split_files/text_encoders/mistral_3_small_flux2_fp8.safetensors,
+     dest: text_encoders/mistral_3_small_flux2_fp8.safetensors, bytes: 18000000000}
+  - {id: te_bf16, repo: Comfy-Org/flux2-dev, path: split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors,
+     dest: text_encoders/mistral_3_small_flux2_bf16.safetensors, bytes: 36000000000}
+  - {id: vae, repo: Comfy-Org/flux2-dev, path: split_files/vae/flux2-vae.safetensors,
+     dest: vae/flux2-vae.safetensors, bytes: 336000000}
+quality:
+  draft:
+    label: Draft
+    params: {steps: 16, guidance: 4.0}
+    sizes: {square: [1024, 1024], portrait: [832, 1216], landscape: [1216, 832], wide: [1344, 768]}
+  standard:
+    label: Standard
+    params: {steps: 28, guidance: 4.0}
+    sizes: {square: [1024, 1024], portrait: [832, 1216], landscape: [1216, 832], wide: [1344, 768]}
+  best:
+    label: Best
+    params: {steps: 40, guidance: 4.0}
+    sizes: {square: [1536, 1536], portrait: [1216, 1792], landscape: [1792, 1216], wide: [1920, 1088]}
+bench:
+  unit: image
+  seconds: {l40s: 55, rtx6000ada: 55, h100: 20, h200: 18}
+  model_init_s: 60
+output_mb: 2.0
+tags: [quality]

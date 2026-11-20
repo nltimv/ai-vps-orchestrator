@@ -1,0 +1,62 @@
+[project]
+name = "ai-vps-orchestrator"
+version = "0.1.0"
+description = "On-demand GPU droplet orchestrator for AI image/video/music generation"
+requires-python = ">=3.12"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = []
+
+[tool.uv.workspace]
+members = ["packages/protocol", "backend", "worker"]
+
+[tool.uv.sources]
+aivo-protocol = { workspace = true }
+aivo-backend = { workspace = true }
+aivo-worker = { workspace = true }
+
+[dependency-groups]
+dev = [
+  "aivo-protocol",
+  "aivo-backend",
+  "aivo-worker",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.24",
+  "respx>=0.21",
+  "hypothesis>=6.112",
+  "ruff>=0.7",
+  "mypy>=1.13",
+  "types-PyYAML",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+extend-exclude = ["frontend", "deploy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "RUF"]
+ignore = [
+  "S101",   # assert in tests
+  "S311",   # random for non-crypto (seeds)
+  "S603", "S607",  # subprocess with trusted args
+  "B008",   # FastAPI Depends in defaults
+  "RUF012",
+  "S104",   # binding 0.0.0.0 is intentional for servers
+]
+
+[tool.ruff.lint.per-file-ignores]
+"**/tests/**" = ["S", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["backend/tests", "worker/tests", "packages/protocol/tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+warn_unused_ignores = false
+check_untyped_defs = true

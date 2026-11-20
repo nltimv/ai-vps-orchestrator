@@ -1,0 +1,50 @@
+id: z-image-turbo
+kind: image
+display_name: "Image · Fast"
+tagline: "Photo-quality pictures in seconds, on the cheapest machine"
+description: >
+  Tongyi Z-Image-Turbo (6B, distilled to ~8 steps). Excellent photorealism and
+  bilingual text, small enough for a 20 GB GPU.
+family: photoreal
+license:
+  name: Apache-2.0
+  url: https://huggingface.co/Tongyi-MAI/Z-Image-Turbo
+  commercial: true
+supports: {avoid: false, seed: true}
+modes:
+  - {mode: t2i, workflow: workflows/t2i.json}
+variants:
+  - id: bf16
+    precision: bf16
+    min_vram_gb: 16
+    recommended_vram_gb: 20
+    min_ram_gb: 24
+    quality_rank: 2
+    files: [unet, te, vae]
+files:
+  - {id: unet, repo: Comfy-Org/z_image_turbo, path: split_files/diffusion_models/z_image_turbo_bf16.safetensors,
+     dest: diffusion_models/z_image_turbo_bf16.safetensors, bytes: 12310000000}
+  - {id: te, repo: Comfy-Org/z_image_turbo, path: split_files/text_encoders/qwen_3_4b.safetensors,
+     dest: text_encoders/qwen_3_4b.safetensors, bytes: 8040000000}
+  - {id: vae, repo: Comfy-Org/z_image_turbo, path: split_files/vae/ae.safetensors,
+     dest: vae/ae.safetensors, bytes: 335000000}
+quality:
+  draft:
+    label: Draft
+    params: {steps: 6}
+    sizes: {square: [768, 768], portrait: [640, 960], landscape: [960, 640], wide: [1024, 576]}
+  standard:
+    label: Standard
+    params: {steps: 9}
+    sizes: {square: [1024, 1024], portrait: [832, 1216], landscape: [1216, 832], wide: [1344, 768]}
+  best:
+    label: Best
+    params: {steps: 12}
+    sizes: {square: [1536, 1536], portrait: [1216, 1792], landscape: [1792, 1216], wide: [1920, 1088]}
+bench:
+  unit: image
+  seconds: {rtx4000ada: 14, l40s: 5, rtx6000ada: 5, h100: 2.2, h200: 2.0}
+  model_init_s: 25
+defaults: {shift: 3.0}
+output_mb: 1.6
+tags: [photo, fast]

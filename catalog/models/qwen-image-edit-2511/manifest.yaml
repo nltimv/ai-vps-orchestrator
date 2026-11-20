@@ -1,0 +1,54 @@
+id: qwen-image-edit-2511
+kind: image
+display_name: "Edit an image"
+tagline: "Change an existing picture by describing what should be different"
+description: >
+  Qwen-Image-Edit-2511: instruction-based editing (add/remove objects, restyle,
+  change text) that keeps the rest of the picture consistent.
+family: generic
+license:
+  name: Apache-2.0
+  url: https://huggingface.co/Qwen/Qwen-Image-Edit-2511
+  commercial: true
+supports: {avoid: true, seed: true}
+modes:
+  - {mode: edit, workflow: workflows/edit.json}
+variants:
+  - id: fp8
+    precision: fp8
+    min_vram_gb: 24
+    recommended_vram_gb: 40
+    min_ram_gb: 48
+    quality_rank: 2
+    files: [unet_fp8, te, vae]
+    params: {unet: qwen_image_edit_2511_fp8mixed.safetensors}
+  - id: bf16
+    precision: bf16
+    min_vram_gb: 64
+    recommended_vram_gb: 80
+    min_ram_gb: 96
+    quality_rank: 3
+    files: [unet_bf16, te, vae]
+    params: {unet: qwen_image_edit_2511_bf16.safetensors}
+files:
+  - {id: unet_fp8, repo: Comfy-Org/Qwen-Image-Edit_ComfyUI, path: split_files/diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors,
+     dest: diffusion_models/qwen_image_edit_2511_fp8mixed.safetensors, bytes: 20430000000}
+  - {id: unet_bf16, repo: Comfy-Org/Qwen-Image-Edit_ComfyUI, path: split_files/diffusion_models/qwen_image_edit_2511_bf16.safetensors,
+     dest: diffusion_models/qwen_image_edit_2511_bf16.safetensors, bytes: 40860000000}
+  - {id: te, repo: Comfy-Org/Qwen-Image_ComfyUI, path: split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors,
+     dest: text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors, bytes: 9380000000}
+  - {id: vae, repo: Comfy-Org/Qwen-Image_ComfyUI, path: split_files/vae/qwen_image_vae.safetensors,
+     dest: vae/qwen_image_vae.safetensors, bytes: 254000000}
+quality:
+  draft: {label: Draft, params: {steps: 12, cfg: 2.5, megapixels: 0.6}}
+  standard: {label: Standard, params: {steps: 25, cfg: 4.0, megapixels: 1.0}}
+  best: {label: Best, params: {steps: 40, cfg: 4.0, megapixels: 1.5}}
+bench:
+  unit: image
+  seconds: {l40s: 45, rtx6000ada: 45, h100: 18, h200: 16}
+  quality_factor: {draft: 0.5, standard: 1.0, best: 1.8}
+  model_init_s: 40
+defaults: {shift: 3.1, negative: "blurry, low quality, distorted"}
+output_mb: 2.5
+max_count: 2
+tags: [edit]

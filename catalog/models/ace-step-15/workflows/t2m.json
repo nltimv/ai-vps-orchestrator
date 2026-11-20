@@ -1,0 +1,13 @@
+{
+  "_comment": "ACE-Step 1.5 text-to-music. $tags = style description, $lyrics = lyrics or [instrumental].",
+  "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "ace_step_1.5_turbo_aio.safetensors"}},
+  "2": {"class_type": "TextEncodeAceStepAudio1.5", "inputs": {"clip": ["1", 1], "tags": "$tags", "lyrics": "$lyrics",
+        "seed": "$seed", "duration": "$duration", "lyrics_strength": "$lyrics_strength"}},
+  "3": {"class_type": "ConditioningZeroOut", "inputs": {"conditioning": ["2", 0]}},
+  "4": {"class_type": "EmptyAceStep1.5LatentAudio", "inputs": {"seconds": "$duration", "batch_size": "$batch"}},
+  "5": {"class_type": "ModelSamplingSD3", "inputs": {"model": ["1", 0], "shift": 3.0}},
+  "6": {"class_type": "KSampler", "inputs": {"model": ["5", 0], "positive": ["2", 0], "negative": ["3", 0], "latent_image": ["4", 0],
+        "seed": "$seed", "steps": "$steps", "cfg": 1.0, "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+  "7": {"class_type": "VAEDecodeAudio", "inputs": {"samples": ["6", 0], "vae": ["1", 2]}},
+  "8": {"class_type": "SaveAudio", "inputs": {"audio": ["7", 0], "filename_prefix": "$prefix"}}
+}
