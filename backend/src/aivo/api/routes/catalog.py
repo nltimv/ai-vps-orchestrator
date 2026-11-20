@@ -22,8 +22,13 @@ ASPECTS = [
     {"id": "landscape", "label": "Landscape", "ratio": "3:2"},
     {"id": "wide", "label": "Wide", "ratio": "16:9"},
 ]
-DURATION_LABELS = {"short": "Short (~5 s)", "medium": "Longer (~10 s)", "30s": "30 seconds", "1min": "1 minute",
-                   "3min": "3 minutes"}
+DURATION_LABELS = {
+    "short": "Short (~5 s)",
+    "medium": "Longer (~10 s)",
+    "30s": "30 seconds",
+    "1min": "1 minute",
+    "3min": "3 minutes",
+}
 
 
 @router.get("/catalog")
@@ -38,15 +43,25 @@ async def catalog(_: User = Depends(current_user), app: AppContext = Depends(get
             durations = mf.video.durations
         elif mf.music:
             durations = mf.music.durations
-        models.append({
-            "id": mf.id, "kind": mf.kind, "name": mf.display_name, "tagline": mf.tagline,
-            "description": mf.description, "modes": [x.mode for x in mf.modes], "enabled": mf.id in enabled,
-            "license": mf.license.model_dump(), "supports": mf.supports.model_dump(),
-            "durations": [{"id": k, "label": DURATION_LABELS.get(k, f"{v:.0f} s"), "seconds": v}
-                          for k, v in durations.items()],
-            "max_count": mf.max_count, "min_vram_gb": min(v.min_vram_gb for v in mf.variants),
-            "tags": mf.tags,
-        })
+        models.append(
+            {
+                "id": mf.id,
+                "kind": mf.kind,
+                "name": mf.display_name,
+                "tagline": mf.tagline,
+                "description": mf.description,
+                "modes": [x.mode for x in mf.modes],
+                "enabled": mf.id in enabled,
+                "license": mf.license.model_dump(),
+                "supports": mf.supports.model_dump(),
+                "durations": [
+                    {"id": k, "label": DURATION_LABELS.get(k, f"{v:.0f} s"), "seconds": v} for k, v in durations.items()
+                ],
+                "max_count": mf.max_count,
+                "min_vram_gb": min(v.min_vram_gb for v in mf.variants),
+                "tags": mf.tags,
+            }
+        )
     return {
         "kinds": [{"id": k, "label": v, "modes": app.catalog.modes_for_kind(k)} for k, v in KIND_LABELS.items()],
         "models": models,

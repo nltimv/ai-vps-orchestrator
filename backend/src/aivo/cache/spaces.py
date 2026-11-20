@@ -14,7 +14,9 @@ from aivo_protocol.catalog_types import FileSpec
 
 class SpacesMirror:
     def __init__(self, env: EnvSettings):
-        if not (env.spaces_bucket and env.spaces_key and env.spaces_secret and (env.spaces_region or env.spaces_endpoint)):
+        if not (
+            env.spaces_bucket and env.spaces_key and env.spaces_secret and (env.spaces_region or env.spaces_endpoint)
+        ):
             raise ValueError("Spaces mirror is not configured")
         self.env = env
         self.bucket = env.spaces_bucket

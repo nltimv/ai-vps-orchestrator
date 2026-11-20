@@ -88,9 +88,7 @@ class Reconciler:
         now = utcnow()
         by_pid = {r.provider_id: r for r in remote}
         async with app.sessionmaker() as s, s.begin():
-            rows = (
-                await s.execute(select(Instance).where(Instance.state != "destroyed"))
-            ).scalars().all()
+            rows = (await s.execute(select(Instance).where(Instance.state != "destroyed"))).scalars().all()
             known_pids = {r.provider_instance_id for r in rows if r.provider_instance_id}
             known_ids = {str(r.id) for r in rows}
             for inst in rows:
@@ -110,7 +108,7 @@ class Reconciler:
             for r in remote:
                 if r.provider_id in known_pids:
                     continue
-                inst_uuid = next((t[len("aivo-inst-"):] for t in r.tags if t.startswith("aivo-inst-")), None)
+                inst_uuid = next((t[len("aivo-inst-") :] for t in r.tags if t.startswith("aivo-inst-")), None)
                 if inst_uuid and inst_uuid in known_ids:
                     continue  # create in flight; the provisioner will adopt it
                 age = (now - r.created_at).total_seconds() if r.created_at else 1e9
@@ -121,41 +119,74 @@ class Reconciler:
                 log.warning("destroying orphan machine %s (%s)", r.provider_id, r.name)
                 try:
                     await app.provider.destroy_instance(r.provider_id)
-                    await emit(s, scope="system", type="orphan.destroyed",
-                               payload={"provider_id": r.provider_id, "name": r.name})
+                    await emit(
+                        s,
+                        scope="system",
+                        type="orphan.destroyed",
+                        payload={"provider_id": r.provider_id, "name": r.name},
+                    )
                 except Exception as e:
                     log.warning("orphan destroy failed: %s", e)
 
     async def _mark_gone(self, s: AsyncSession, inst: Instance, *, external: bool) -> None:
         await s.execute(
-            update(Instance).where(Instance.id == inst.id).values(
-                state="destroyed", destroy_confirmed_at=func.now(), state_changed_at=func.now(),
+            update(Instance)
+            .where(Instance.id == inst.id)
+            .values(
+                state="destroyed",
+                destroy_confirmed_at=func.now(),
+                state_changed_at=func.now(),
                 outcome="external" if external else inst.outcome or "ok",
                 failure_reason="machine disappeared" if external else inst.failure_reason,
             )
         )
-        await emit(s, scope="instance", type="instance.state", ref_id=inst.id,
-                   payload={"state": "destroyed", "external": external})
+        await emit(
+            s,
+            scope="instance",
+            type="instance.state",
+            ref_id=inst.id,
+            payload={"state": "destroyed", "external": external},
+        )
         await self._release_resources(s, inst.id)
         await self._requeue_jobs(s, inst.id)
 
     async def _requeue_jobs(self, s: AsyncSession, inst_id: uuid.UUID) -> None:
         jobs = (
-            await s.execute(
-                select(Job).where(
-                    Job.instance_id == inst_id,
-                    Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running", "fetching")),
+            (
+                await s.execute(
+                    select(Job).where(
+                        Job.instance_id == inst_id,
+                        Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running", "fetching")),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for j in jobs:
             started = j.state in ("preparing", "running", "fetching")
             if started and j.attempt + 1 >= j.max_attempts:
-                await transition_job(s, j.id, j.state, "failed", error_code="lost", stage="failed",
-                                     error_message="The machine stopped responding.", instance_id=None)
+                await transition_job(
+                    s,
+                    j.id,
+                    j.state,
+                    "failed",
+                    error_code="lost",
+                    stage="failed",
+                    error_message="The machine stopped responding.",
+                    instance_id=None,
+                )
             else:
-                await transition_job(s, j.id, j.state, "queued", instance_id=None, stage="queued",
-                                     attempt=j.attempt + (1 if started else 0), progress=0.0)
+                await transition_job(
+                    s,
+                    j.id,
+                    j.state,
+                    "queued",
+                    instance_id=None,
+                    stage="queued",
+                    attempt=j.attempt + (1 if started else 0),
+                    progress=0.0,
+                )
 
     async def _release_resources(self, s: AsyncSession, inst_id: uuid.UUID) -> None:
         await s.execute(
@@ -167,14 +198,15 @@ class Reconciler:
     async def _idle_and_lifetime(self, rs) -> None:  # type: ignore[no-untyped-def]
         now = utcnow()
         async with self.app.sessionmaker() as s, s.begin():
-            insts = (
-                await s.execute(select(Instance).where(Instance.state.in_(("ready", "busy"))))
-            ).scalars().all()
+            insts = (await s.execute(select(Instance).where(Instance.state.in_(("ready", "busy"))))).scalars().all()
             for inst in insts:
                 reserved = (
                     await s.execute(
-                        select(func.count()).select_from(Job).where(
-                            Job.instance_id == inst.id, Job.state.in_(("provisioning", "queued", "assigned")),
+                        select(func.count())
+                        .select_from(Job)
+                        .where(
+                            Job.instance_id == inst.id,
+                            Job.state.in_(("provisioning", "queued", "assigned")),
                         )
                     )
                 ).scalar_one()
@@ -182,8 +214,14 @@ class Reconciler:
                     inst.max_lifetime_at + timedelta(seconds=rs.lifetime_grace_s) if inst.max_lifetime_at else None
                 )
                 if hard_deadline and now > hard_deadline:
-                    await transition_instance(s, inst.id, ("ready", "busy"), "destroying",
-                                              drain_reason="max_lifetime", destroy_requested_at=now)
+                    await transition_instance(
+                        s,
+                        inst.id,
+                        ("ready", "busy"),
+                        "destroying",
+                        drain_reason="max_lifetime",
+                        destroy_requested_at=now,
+                    )
                     await self._requeue_jobs(s, inst.id)
                     continue
                 if inst.state != "ready" or reserved:
@@ -201,30 +239,50 @@ class Reconciler:
                 elif not keep_warm and idle_for >= timeout and billed_for >= rs.min_billing_s:
                     reason = "idle"
                 if reason:
-                    await transition_instance(s, inst.id, "ready", "draining", draining_at=now, drain_reason=reason,
-                                              event_payload={"reason": reason})
+                    await transition_instance(
+                        s,
+                        inst.id,
+                        "ready",
+                        "draining",
+                        draining_at=now,
+                        drain_reason=reason,
+                        event_payload={"reason": reason},
+                    )
 
     async def _stuck(self, rs) -> None:  # type: ignore[no-untyped-def]
         now = utcnow()
         controller = self.app.controller
         async with self.app.sessionmaker() as s, s.begin():
-            rows = (
-                await s.execute(select(Instance).where(Instance.state.in_(STARTING_STATES)))
-            ).scalars().all()
+            rows = (await s.execute(select(Instance).where(Instance.state.in_(STARTING_STATES)))).scalars().all()
             for inst in rows:
                 age = (now - inst.state_changed_at).total_seconds()
                 limit = {
-                    "pending": rs.provision_deadline_s, "creating": rs.provision_deadline_s,
-                    "provisioning": rs.boot_ip_timeout_s, "booting": rs.boot_health_timeout_s,
+                    "pending": rs.provision_deadline_s,
+                    "creating": rs.provision_deadline_s,
+                    "provisioning": rs.boot_ip_timeout_s,
+                    "booting": rs.boot_health_timeout_s,
                 }[inst.state] + 60
                 running = controller is not None and controller.has_provisioner(inst.id)
                 if age > limit and not running:
                     if inst.provider_instance_id:
-                        await transition_instance(s, inst.id, inst.state, "destroying", outcome="failed",
-                                                  failure_reason=f"stuck in {inst.state}", destroy_requested_at=now)
+                        await transition_instance(
+                            s,
+                            inst.id,
+                            inst.state,
+                            "destroying",
+                            outcome="failed",
+                            failure_reason=f"stuck in {inst.state}",
+                            destroy_requested_at=now,
+                        )
                     else:
-                        await transition_instance(s, inst.id, inst.state, "destroyed", outcome="failed",
-                                                  failure_reason=f"stuck in {inst.state}")
+                        await transition_instance(
+                            s,
+                            inst.id,
+                            inst.state,
+                            "destroyed",
+                            outcome="failed",
+                            failure_reason=f"stuck in {inst.state}",
+                        )
                     await self._requeue_jobs(s, inst.id)
 
     async def _drain(self) -> None:
@@ -241,15 +299,18 @@ class Reconciler:
             async with self.app.sessionmaker() as s, s.begin():
                 active = (
                     await s.execute(
-                        select(func.count()).select_from(Job).where(
+                        select(func.count())
+                        .select_from(Job)
+                        .where(
                             Job.instance_id == inst.id, Job.state.in_(("assigned", "preparing", "running", "fetching"))
                         )
                     )
                 ).scalar_one()
                 if busy and active:
                     continue
-                await transition_instance(s, inst.id, "draining", "destroying", destroy_requested_at=utcnow(),
-                                          outcome=inst.outcome or "ok")
+                await transition_instance(
+                    s, inst.id, "draining", "destroying", destroy_requested_at=utcnow(), outcome=inst.outcome or "ok"
+                )
                 await self._requeue_jobs(s, inst.id)
 
     async def _destroy(self) -> None:
@@ -283,15 +344,25 @@ class Reconciler:
                     h = await c.health()
                 self._health_fail.pop(inst.id, None)
                 async with self.app.sessionmaker() as s, s.begin():
-                    await s.execute(update(Instance).where(Instance.id == inst.id).values(
-                        last_contact_at=utcnow(), files_present=h.files_present, models_loaded=h.models_loaded))
+                    await s.execute(
+                        update(Instance)
+                        .where(Instance.id == inst.id)
+                        .values(last_contact_at=utcnow(), files_present=h.files_present, models_loaded=h.models_loaded)
+                    )
             except (WorkerUnreachable, Exception):
                 n = self._health_fail.get(inst.id, 0) + 1
                 self._health_fail[inst.id] = n
                 if n >= 3:
                     async with self.app.sessionmaker() as s, s.begin():
-                        await transition_instance(s, inst.id, "ready", "destroying", outcome="failed",
-                                                  failure_reason="stopped responding", destroy_requested_at=utcnow())
+                        await transition_instance(
+                            s,
+                            inst.id,
+                            "ready",
+                            "destroying",
+                            outcome="failed",
+                            failure_reason="stopped responding",
+                            destroy_requested_at=utcnow(),
+                        )
                         await self._requeue_jobs(s, inst.id)
 
     # ------------------------------------------------------------------ budget
@@ -312,12 +383,14 @@ class Reconciler:
                 insts = (await s.execute(select(Instance).where(Instance.state.in_(("ready", "busy"))))).scalars().all()
                 for inst in insts:
                     if spent >= hard + Decimal(str(rs.overrun_margin_usd)):
-                        await transition_instance(s, inst.id, ("ready", "busy"), "destroying",
-                                                  drain_reason="budget", destroy_requested_at=now)
+                        await transition_instance(
+                            s, inst.id, ("ready", "busy"), "destroying", drain_reason="budget", destroy_requested_at=now
+                        )
                         await self._requeue_jobs(s, inst.id)
                     elif inst.state == "ready":
-                        await transition_instance(s, inst.id, "ready", "draining", drain_reason="budget",
-                                                  draining_at=now)
+                        await transition_instance(
+                            s, inst.id, "ready", "draining", drain_reason="budget", draining_at=now
+                        )
                     else:
                         inst.drain_reason = "budget"
                 return
@@ -326,7 +399,9 @@ class Reconciler:
             for inst in busy:
                 if inst.create_accepted_at is None:
                     continue
-                running_usd = Decimal(str(float(inst.price_hourly) * (now - inst.create_accepted_at).total_seconds() / 3600))
+                running_usd = Decimal(
+                    str(float(inst.price_hourly) * (now - inst.create_accepted_at).total_seconds() / 3600)
+                )
                 if running_usd >= inst.reserved_usd * Decimal("0.9"):
                     extra = Decimal(str(round(float(inst.price_hourly) * 0.5, 4)))
                     adm = await admit(s, rs, now, extra)

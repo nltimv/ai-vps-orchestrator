@@ -84,9 +84,12 @@ class Controller:
                     log.info("controller lease acquired (epoch %s)", self.lease.epoch)
                     self.is_leader.set()
                     self._loops = [
-                        asyncio.create_task(self._loop("scheduler", self._schedule_once, self.scheduler_interval_s, wake=True)),
+                        asyncio.create_task(
+                            self._loop("scheduler", self._schedule_once, self.scheduler_interval_s, wake=True)
+                        ),
                         asyncio.create_task(self._loop("reconciler", self._reconcile_once, self.reconcile_interval_s)),
                         asyncio.create_task(self._loop("offers", self._refresh_offers, 60)),
+                        asyncio.create_task(self._loop("latency", self._probe_latency, 6 * 3600)),
                     ]
                     await self._resume()
                     while not self._stopping:
@@ -143,6 +146,14 @@ class Controller:
 
     async def _refresh_offers(self) -> None:
         await get_offers(self.app, force=True)
+
+    async def _probe_latency(self) -> None:
+        from aivo.placement.latency import probe_regions
+
+        if self.app.provider.name == "fake":
+            return
+        offers = await get_offers(self.app)
+        await probe_regions(self.app, {o.region for o in offers})
 
     async def _resume(self) -> None:
         """(Re)start tasks for work that is in flight according to the database."""

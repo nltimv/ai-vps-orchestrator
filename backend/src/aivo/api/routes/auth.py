@@ -26,15 +26,23 @@ def _user_out(u: User) -> UserOut:
 
 async def _start_session(app: AppContext, s: AsyncSession, user: User, request: Request, response: Response) -> None:
     token = secrets.token_urlsafe(32)
-    s.add(DbSession(
-        token_sha256=token_hash(token), user_id=user.id,
-        expires_at=datetime.now(UTC) + timedelta(hours=app.env.session_ttl_hours),
-        user_agent=(request.headers.get("user-agent") or "")[:300],
-    ))
+    s.add(
+        DbSession(
+            token_sha256=token_hash(token),
+            user_id=user.id,
+            expires_at=datetime.now(UTC) + timedelta(hours=app.env.session_ttl_hours),
+            user_agent=(request.headers.get("user-agent") or "")[:300],
+        )
+    )
     user.last_login_at = datetime.now(UTC)
     response.set_cookie(
-        SESSION_COOKIE, token, httponly=True, samesite="lax", secure=app.env.session_cookie_secure,
-        max_age=app.env.session_ttl_hours * 3600, path="/",
+        SESSION_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=app.env.session_cookie_secure,
+        max_age=app.env.session_ttl_hours * 3600,
+        path="/",
     )
 
 
@@ -45,15 +53,24 @@ async def status(s: AsyncSession = Depends(get_session)) -> dict[str, bool]:
 
 
 @router.post("/setup")
-async def setup(body: SetupIn, request: Request, response: Response, app: AppContext = Depends(get_app),
-                s: AsyncSession = Depends(get_session)) -> UserOut:
+async def setup(
+    body: SetupIn,
+    request: Request,
+    response: Response,
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> UserOut:
     """First-run: create the initial admin. Only works while there are no users at all."""
     await s.execute(select(func.pg_advisory_xact_lock(4242)))
     n = (await s.execute(select(func.count()).select_from(User))).scalar_one()
     if n > 0:
         raise HTTPException(403, "Setup has already been completed")
-    user = User(email=body.email.lower(), display_name=body.display_name, password_hash=hash_password(body.password),
-                role="admin")
+    user = User(
+        email=body.email.lower(),
+        display_name=body.display_name,
+        password_hash=hash_password(body.password),
+        role="admin",
+    )
     s.add(user)
     await s.flush()
     await _start_session(app, s, user, request, response)
@@ -63,8 +80,13 @@ async def setup(body: SetupIn, request: Request, response: Response, app: AppCon
 
 
 @router.post("/login")
-async def login(body: LoginIn, request: Request, response: Response, app: AppContext = Depends(get_app),
-                s: AsyncSession = Depends(get_session)) -> UserOut:
+async def login(
+    body: LoginIn,
+    request: Request,
+    response: Response,
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> UserOut:
     user = (await s.execute(select(User).where(User.email == body.email.lower()))).scalar_one_or_none()
     if user is None or not user.is_active:
         verify_password(_DUMMY_HASH, body.password)
@@ -82,8 +104,9 @@ async def login(body: LoginIn, request: Request, response: Response, app: AppCon
 async def logout(request: Request, response: Response, s: AsyncSession = Depends(get_session)) -> dict[str, bool]:
     token = request.cookies.get(SESSION_COOKIE)
     if token:
-        await s.execute(update(DbSession).where(DbSession.token_sha256 == token_hash(token))
-                        .values(expires_at=datetime.now(UTC)))
+        await s.execute(
+            update(DbSession).where(DbSession.token_sha256 == token_hash(token)).values(expires_at=datetime.now(UTC))
+        )
         await s.commit()
     response.delete_cookie(SESSION_COOKIE, path="/")
     return {"ok": True}
@@ -95,8 +118,9 @@ async def me(user: User = Depends(current_user)) -> UserOut:
 
 
 @router.post("/invites")
-async def create_invite(body: InviteIn, admin: User = Depends(require_admin),
-                        s: AsyncSession = Depends(get_session)) -> InviteOut:
+async def create_invite(
+    body: InviteIn, admin: User = Depends(require_admin), s: AsyncSession = Depends(get_session)
+) -> InviteOut:
     token = secrets.token_urlsafe(24)
     exp = datetime.now(UTC) + timedelta(days=body.valid_days)
     s.add(Invite(token_sha256=token_hash(token), role=body.role, created_by=admin.id, expires_at=exp))
@@ -106,20 +130,34 @@ async def create_invite(body: InviteIn, admin: User = Depends(require_admin),
 
 
 @router.post("/accept-invite")
-async def accept_invite(body: AcceptInviteIn, request: Request, response: Response,
-                        app: AppContext = Depends(get_app), s: AsyncSession = Depends(get_session)) -> UserOut:
+async def accept_invite(
+    body: AcceptInviteIn,
+    request: Request,
+    response: Response,
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> UserOut:
     inv = (
         await s.execute(
-            select(Invite).where(Invite.token_sha256 == token_hash(body.token), Invite.used_at.is_(None),
-                                 Invite.expires_at > datetime.now(UTC)).with_for_update()
+            select(Invite)
+            .where(
+                Invite.token_sha256 == token_hash(body.token),
+                Invite.used_at.is_(None),
+                Invite.expires_at > datetime.now(UTC),
+            )
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if inv is None:
         raise HTTPException(400, "This invite link is invalid or has expired")
     if (await s.execute(select(User).where(User.email == body.email.lower()))).scalar_one_or_none():
         raise HTTPException(409, "An account with this email already exists")
-    user = User(email=body.email.lower(), display_name=body.display_name,
-                password_hash=hash_password(body.password), role=inv.role)
+    user = User(
+        email=body.email.lower(),
+        display_name=body.display_name,
+        password_hash=hash_password(body.password),
+        role=inv.role,
+    )
     s.add(user)
     await s.flush()
     inv.used_at, inv.used_by = datetime.now(UTC), user.id
@@ -131,13 +169,19 @@ async def accept_invite(body: AcceptInviteIn, request: Request, response: Respon
 @admin_router.get("")
 async def list_users(_: User = Depends(require_admin), s: AsyncSession = Depends(get_session)) -> list[dict]:  # type: ignore[type-arg]
     users = (await s.execute(select(User).order_by(User.created_at))).scalars().all()
-    return [{**_user_out(u).model_dump(mode="json"), "is_active": u.is_active,
-             "last_login_at": u.last_login_at} for u in users]
+    return [
+        {**_user_out(u).model_dump(mode="json"), "is_active": u.is_active, "last_login_at": u.last_login_at}
+        for u in users
+    ]
 
 
 @admin_router.patch("/{user_id}")
-async def update_user(user_id: str, body: dict, admin: User = Depends(require_admin),  # type: ignore[type-arg]
-                      s: AsyncSession = Depends(get_session)) -> dict[str, bool]:
+async def update_user(
+    user_id: str,
+    body: dict,
+    admin: User = Depends(require_admin),  # type: ignore[type-arg]
+    s: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
     u = (await s.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
     if u is None:
         raise HTTPException(404, "No such user")

@@ -48,9 +48,15 @@ def make_worker_credentials(instance_id: uuid.UUID, valid_days: int = 7) -> Work
         .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
         .add_extension(
             x509.KeyUsage(
-                digital_signature=True, key_cert_sign=True, crl_sign=True, content_commitment=False,
-                key_encipherment=False, data_encipherment=False, key_agreement=False,
-                encipher_only=False, decipher_only=False,
+                digital_signature=True,
+                key_cert_sign=True,
+                crl_sign=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                encipher_only=False,
+                decipher_only=False,
             ),
             critical=True,
         )
@@ -70,9 +76,7 @@ def make_worker_credentials(instance_id: uuid.UUID, valid_days: int = 7) -> Work
         .add_extension(x509.SubjectAlternativeName([x509.DNSName(sni)]), critical=False)
         .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
         .add_extension(x509.ExtendedKeyUsage([x509.oid.ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
-        .add_extension(
-            x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False
-        )
+        .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(ca_key.public_key()), critical=False)
         .sign(ca_key, hashes.SHA256())
     )
     del ca_key  # never stored anywhere

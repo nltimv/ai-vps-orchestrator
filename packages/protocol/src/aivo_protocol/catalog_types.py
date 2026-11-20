@@ -108,9 +108,7 @@ class Bench(BaseModel):
 
     unit: Literal["image", "video_second", "audio_second"]
     seconds: dict[str, float]  # gpu_class -> seconds per unit at "standard" quality
-    quality_factor: dict[str, float] = Field(
-        default_factory=lambda: {"draft": 0.6, "standard": 1.0, "best": 1.6}
-    )
+    quality_factor: dict[str, float] = Field(default_factory=lambda: {"draft": 0.6, "standard": 1.0, "best": 1.6})
     model_init_s: float = 20.0
 
 

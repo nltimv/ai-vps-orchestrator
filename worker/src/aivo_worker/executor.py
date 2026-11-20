@@ -112,7 +112,10 @@ class Executor:
             except EngineError as e:
                 if e.code == "cancelled":
                     rec.status.state, rec.status.stage, rec.status.error_code = (
-                        JobState.cancelled, "cancelled", "cancelled")
+                        JobState.cancelled,
+                        "cancelled",
+                        "cancelled",
+                    )
                     rec.touch()
                 else:
                     self._fail(rec, str(e), e.code)  # type: ignore[arg-type]
@@ -131,7 +134,9 @@ class Executor:
         rec.status.state = JobState.failed
         rec.status.stage = "failed"
         rec.status.error = msg[:500]
-        rec.status.error_code = code if code in {"oom", "engine", "timeout", "missing_files", "bad_request"} else "engine"  # type: ignore[assignment]
+        rec.status.error_code = (
+            code if code in {"oom", "engine", "timeout", "missing_files", "bad_request"} else "engine"
+        )  # type: ignore[assignment]
         rec.touch()
 
     async def wait(self, job_id: str, timeout: float, since_state: str | None = None) -> JobStatus | None:

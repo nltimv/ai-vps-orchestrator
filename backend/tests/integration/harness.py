@@ -33,10 +33,14 @@ class Harness:
         self.ctx = build_context(self.env, provider=self.provider)
         async with self.ctx.sessionmaker() as s, s.begin():
             for k, v in self.settings.items():
-                await s.execute(text("INSERT INTO settings (key, value) VALUES (:k, CAST(:v AS jsonb))"),
-                                {"k": k, "v": __import__("json").dumps(v)})
+                await s.execute(
+                    text("INSERT INTO settings (key, value) VALUES (:k, CAST(:v AS jsonb))"),
+                    {"k": k, "v": __import__("json").dumps(v)},
+                )
         kwargs = dict(
-            scheduler_interval_s=0.2, reconcile_interval_s=0.3, lease_ttl_s=6,
+            scheduler_interval_s=0.2,
+            reconcile_interval_s=0.3,
+            lease_ttl_s=6,
             provisioner=Provisioner(self.ctx, pause_s=0.05, poll_s=0.1),
             runner=JobRunner(self.ctx, poll_s=0.1, long_poll_s=1),
         )
@@ -44,11 +48,13 @@ class Harness:
         self._lifespan = self.app.router.lifespan_context(self.app)
         await self._lifespan.__aenter__()
         if self.ctx.controller:
-            self.ctx.controller.reconciler = Reconciler(self.ctx, fence=self.ctx.controller.lease.still_valid,
-                                                        orphan_min_age_s=1, vanish_grace_s=0.5)
+            self.ctx.controller.reconciler = Reconciler(
+                self.ctx, fence=self.ctx.controller.lease.still_valid, orphan_min_age_s=1, vanish_grace_s=0.5
+            )
             await asyncio.wait_for(self.ctx.controller.is_leader.wait(), 10)
-        self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="http://test",
-                                        headers=HEADERS, timeout=30)
+        self.client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=self.app), base_url="http://test", headers=HEADERS, timeout=30
+        )
         return self
 
     async def __aexit__(self, *exc: object) -> None:
@@ -58,8 +64,10 @@ class Harness:
         await self.provider.aclose()
 
     async def setup_admin(self) -> dict[str, Any]:
-        r = await self.client.post("/api/v1/auth/setup", json={
-            "email": "admin@example.com", "display_name": "Admin", "password": "correct horse battery"})
+        r = await self.client.post(
+            "/api/v1/auth/setup",
+            json={"email": "admin@example.com", "display_name": "Admin", "password": "correct horse battery"},
+        )
         assert r.status_code == 200, r.text
         return r.json()
 

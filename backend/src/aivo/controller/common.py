@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import time
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -40,7 +41,9 @@ async def get_offers(app: AppContext, *, max_age_s: float = 60, force: bool = Fa
             offers = await app.provider.list_offers()
             for i, o in enumerate(offers):
                 if o.gpu_class is None:
-                    gc = app.catalog.gpu_class_for(o.gpu_model, o.size_slug.split("-")[1] if "-" in o.size_slug else None)
+                    gc = app.catalog.gpu_class_for(
+                        o.gpu_model, o.size_slug.split("-")[1] if "-" in o.size_slug else None
+                    )
                     if gc:
                         offers[i] = GpuOffer(**{**o.__dict__, "gpu_class": gc})
             oc.offers, oc.fetched_at, oc.error = offers, time.monotonic(), None
@@ -53,9 +56,19 @@ async def get_offers(app: AppContext, *, max_age_s: float = 60, force: bool = Fa
 
 def offer_from_instance(inst: Instance) -> GpuOffer:
     return GpuOffer(
-        provider=inst.provider, size_slug=inst.size_slug, region=inst.region, gpu_model=inst.gpu_model,
-        gpu_class=inst.gpu_class, gpu_count=1, vram_gb=inst.vram_gb, vcpus=0, ram_gb=inst.ram_gb or 0,
-        disk_gb=10_000, scratch_gb=0, price_hourly=float(inst.price_hourly), vendor=inst.vendor,  # type: ignore[arg-type]
+        provider=inst.provider,
+        size_slug=inst.size_slug,
+        region=inst.region,
+        gpu_model=inst.gpu_model,
+        gpu_class=inst.gpu_class,
+        gpu_count=1,
+        vram_gb=inst.vram_gb,
+        vcpus=0,
+        ram_gb=inst.ram_gb or 0,
+        disk_gb=10_000,
+        scratch_gb=0,
+        price_hourly=float(inst.price_hourly),
+        vendor=inst.vendor,  # type: ignore[arg-type]
     )
 
 
@@ -63,8 +76,9 @@ async def build_context(app: AppContext, session: AsyncSession, rs: RuntimeSetti
     now = utcnow()
     attempts = (
         await session.execute(
-            select(PlacementAttempt.size_slug, PlacementAttempt.region, PlacementAttempt.outcome, PlacementAttempt.at)
-            .where(PlacementAttempt.at > now - timedelta(hours=48))
+            select(
+                PlacementAttempt.size_slug, PlacementAttempt.region, PlacementAttempt.outcome, PlacementAttempt.at
+            ).where(PlacementAttempt.at > now - timedelta(hours=48))
         )
     ).all()
     fails: dict[tuple[str, str], float] = {}
@@ -93,8 +107,10 @@ async def build_context(app: AppContext, session: AsyncSession, rs: RuntimeSetti
         latency.setdefault(region, rtt)
 
     caches = (
-        await session.execute(select(CacheResource).where(CacheResource.status.in_(("ready", "verified"))))
-    ).scalars().all()
+        (await session.execute(select(CacheResource).where(CacheResource.status.in_(("ready", "verified")))))
+        .scalars()
+        .all()
+    )
     snapshot_regions = {c.region for c in caches if c.kind == "snapshot" and c.region}
     volume_files = {
         c.region: frozenset(c.contents or [])
@@ -127,32 +143,43 @@ async def build_context(app: AppContext, session: AsyncSession, rs: RuntimeSetti
 async def tail_share(session: AsyncSession, rs: RuntimeSettings) -> float:
     """1 - P(another job arrives before the idle timeout), from the last 30 days."""
     rows = (
-        await session.execute(
-            select(Job.created_at).where(Job.created_at > utcnow() - timedelta(days=30)).order_by(Job.created_at)
+        (
+            await session.execute(
+                select(Job.created_at).where(Job.created_at > utcnow() - timedelta(days=30)).order_by(Job.created_at)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     if len(rows) < 5:
         return 0.5
-    gaps = [(b - a).total_seconds() for a, b in zip(rows, rows[1:], strict=False)]
+    gaps = [(b - a).total_seconds() for a, b in itertools.pairwise(rows)]
     followups = sum(1 for g in gaps if g < rs.idle_timeout_s)
     return max(0.1, 1 - followups / len(gaps))
 
 
 async def live_view(session: AsyncSession, app: AppContext) -> tuple[list[Instance], list[LiveInstance]]:
     insts = (
-        await session.execute(
-            select(Instance).where(
-                Instance.state.in_(("pending", "creating", "provisioning", "booting", "ready", "busy")),
-                Instance.drain_reason.is_(None),
+        (
+            await session.execute(
+                select(Instance).where(
+                    Instance.state.in_(("pending", "creating", "provisioning", "booting", "ready", "busy")),
+                    Instance.drain_reason.is_(None),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     # remaining work reserved on each machine
     reserved = dict(
         (
             await session.execute(
                 select(Job.instance_id, func.coalesce(func.sum(Job.est_wait_s), 0))
-                .where(Job.instance_id.is_not(None), Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running")))
+                .where(
+                    Job.instance_id.is_not(None),
+                    Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running")),
+                )
                 .group_by(Job.instance_id)
             )
         ).all()
@@ -164,9 +191,13 @@ async def live_view(session: AsyncSession, app: AppContext) -> tuple[list[Instan
             boot_left = 180.0
         out.append(
             LiveInstance(
-                instance_id=i.id, offer=offer_from_instance(i), state=i.state,
-                files_present=frozenset(i.files_present or []), models_loaded=tuple(i.models_loaded or []),
-                queue_s=float(reserved.get(i.id, 0) or 0) * 0.5, remaining_boot_s=boot_left,
+                instance_id=i.id,
+                offer=offer_from_instance(i),
+                state=i.state,
+                files_present=frozenset(i.files_present or []),
+                models_loaded=tuple(i.models_loaded or []),
+                queue_s=float(reserved.get(i.id, 0) or 0) * 0.5,
+                remaining_boot_s=boot_left,
             )
         )
     return list(insts), out
@@ -181,27 +212,62 @@ def worker_client(app: AppContext, inst: Instance) -> WorkerClient:
 
 
 async def record_attempt(
-    session: AsyncSession, inst_id: uuid.UUID | None, offer: GpuOffer, outcome: str, *,
-    rank: int = 0, http_status: int | None = None, error: str | None = None, duration_ms: int | None = None,
+    session: AsyncSession,
+    inst_id: uuid.UUID | None,
+    offer: GpuOffer,
+    outcome: str,
+    *,
+    rank: int = 0,
+    http_status: int | None = None,
+    error: str | None = None,
+    duration_ms: int | None = None,
 ) -> None:
-    session.add(PlacementAttempt(
-        instance_id=inst_id, rank=rank, provider=offer.provider, size_slug=offer.size_slug, region=offer.region,
-        outcome=outcome, http_status=http_status, error_text=(error or "")[:2000] or None, duration_ms=duration_ms,
-    ))
+    session.add(
+        PlacementAttempt(
+            instance_id=inst_id,
+            rank=rank,
+            provider=offer.provider,
+            size_slug=offer.size_slug,
+            region=offer.region,
+            outcome=outcome,
+            http_status=http_status,
+            error_text=(error or "")[:2000] or None,
+            duration_ms=duration_ms,
+        )
+    )
 
 
 async def record_phase(
-    session: AsyncSession, *, phase: str, seconds: float, inst: Instance | None = None, job: Job | None = None,
-    source: str | None = None, bytes_: int | None = None, estimate_key: str | None = None,
-    units: float | None = None, quality: str | None = None,
+    session: AsyncSession,
+    *,
+    phase: str,
+    seconds: float,
+    inst: Instance | None = None,
+    job: Job | None = None,
+    source: str | None = None,
+    bytes_: int | None = None,
+    estimate_key: str | None = None,
+    units: float | None = None,
+    quality: str | None = None,
 ) -> None:
-    session.add(PhaseTiming(
-        instance_id=inst.id if inst else None, job_id=job.id if job else None, phase=phase, source=source,
-        size_slug=inst.size_slug if inst else None, gpu_class=inst.gpu_class if inst else None,
-        region=inst.region if inst else None, image_kind=inst.image_kind if inst else None,
-        model_id=job.model_id if job else None, variant_id=job.variant_id if job else None,
-        quality=quality, units=units, bytes=bytes_, seconds=seconds,
-    ))
+    session.add(
+        PhaseTiming(
+            instance_id=inst.id if inst else None,
+            job_id=job.id if job else None,
+            phase=phase,
+            source=source,
+            size_slug=inst.size_slug if inst else None,
+            gpu_class=inst.gpu_class if inst else None,
+            region=inst.region if inst else None,
+            image_kind=inst.image_kind if inst else None,
+            model_id=job.model_id if job else None,
+            variant_id=job.variant_id if job else None,
+            quality=quality,
+            units=units,
+            bytes=bytes_,
+            seconds=seconds,
+        )
+    )
     if estimate_key:
         await update_estimate(session, estimate_key, seconds)
 

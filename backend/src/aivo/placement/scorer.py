@@ -134,7 +134,8 @@ def _run_seconds(req: Request, ctx: Context, gpu_class: str | None) -> float:
 def fitting_variants(req: Request, offer: GpuOffer) -> list[VariantNeed]:
     min_vram = req.min_vram_override or 0.0
     return [
-        v for v in req.variants
+        v
+        for v in req.variants
         if offer.vendor in v.vendors
         and offer.vram_gb >= max(v.min_vram_gb, min_vram)
         and offer.ram_gb >= v.min_ram_gb
@@ -146,7 +147,13 @@ QUALITY_WEIGHT = {"draft": 0.5, "standard": 1.0, "best": 5.0}
 
 
 def _load_seconds(
-    req: Request, ctx: Context, v: VariantNeed, region: str, present: frozenset[str], loaded: bool, gpu_class: str | None
+    req: Request,
+    ctx: Context,
+    v: VariantNeed,
+    region: str,
+    present: frozenset[str],
+    loaded: bool,
+    gpu_class: str | None,
 ) -> tuple[float, str]:
     missing = v.file_dests - present
     if not missing and loaded:
@@ -230,9 +237,24 @@ def _eval_live(req: Request, ctx: Context, inst: LiveInstance, v: VariantNeed, l
     flags = {"running" if inst.state in ("ready", "busy") else "starting"}
     if source in ("loaded", "local"):
         flags.add("model_ready")
-    return _cand(inst.offer, v, inst.instance_id, wait, cost, comps, 0.0, flags, {
-        "boot": inst.remaining_boot_s, "queue": inst.queue_s, "load": t_load, "run": t_run, "xfer": t_xfer,
-    }, source)
+    return _cand(
+        inst.offer,
+        v,
+        inst.instance_id,
+        wait,
+        cost,
+        comps,
+        0.0,
+        flags,
+        {
+            "boot": inst.remaining_boot_s,
+            "queue": inst.queue_s,
+            "load": t_load,
+            "run": t_run,
+            "xfer": t_xfer,
+        },
+        source,
+    )
 
 
 def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: float) -> Candidate:
@@ -265,9 +287,24 @@ def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: 
         flags.add("snapshot")
     if source == "volume":
         flags.add("volume")
-    return _cand(offer, v, None, wait, cost, comps, p_fail, flags, {
-        "create": t_create, "boot": t_boot, "load": t_load, "run": t_run, "xfer": t_xfer,
-    }, source)
+    return _cand(
+        offer,
+        v,
+        None,
+        wait,
+        cost,
+        comps,
+        p_fail,
+        flags,
+        {
+            "create": t_create,
+            "boot": t_boot,
+            "load": t_load,
+            "run": t_run,
+            "xfer": t_xfer,
+        },
+        source,
+    )
 
 
 def _xfer(req: Request, ctx: Context, region: str) -> float:
@@ -285,8 +322,16 @@ def _cand(offer, v, iid, wait, cost, comps, p_fail, flags, times, source) -> Can
     flags = set(flags)
     flags.add(f"source:{source}")
     return Candidate(
-        offer=offer, variant=v, instance_id=iid, wait_s=wait, cost_usd=cost,
-        score=sum(comps.values()), p_fail=p_fail, times=times, components=comps, flags=flags,
+        offer=offer,
+        variant=v,
+        instance_id=iid,
+        wait_s=wait,
+        cost_usd=cost,
+        score=sum(comps.values()),
+        p_fail=p_fail,
+        times=times,
+        components=comps,
+        flags=flags,
     )
 
 

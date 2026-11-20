@@ -99,8 +99,15 @@ def plan(catalog: Catalog, p: FriendlyParams, enabled: set[str]) -> Plan:
         frames = mf.video.frames_for(secs)
         secs = frames / mf.video.fps
         units = secs * count
-        out = OutputSpec(kind="video", count=count, width=width, height=height, duration_s=secs,
-                         fps=mf.video.fps, with_audio=mf.supports.sound and p.sound)
+        out = OutputSpec(
+            kind="video",
+            count=count,
+            width=width,
+            height=height,
+            duration_s=secs,
+            fps=mf.video.fps,
+            with_audio=mf.supports.sound and p.sound,
+        )
     else:
         assert mf.music is not None
         secs = min(_duration(mf.music.durations, p.duration, "30s"), mf.music.max_seconds)
@@ -147,7 +154,9 @@ def workflow_params(
     negative = mf.defaults.get("negative", "")
     if mf.supports.avoid and p.avoid:
         negative = f"{p.avoid}, {negative}".strip(", ")
-    seed = p.seed if (p.seed is not None and mf.supports.seed) else (seed if seed is not None else random.randrange(2**32))
+    seed = (
+        p.seed if (p.seed is not None and mf.supports.seed) else (seed if seed is not None else random.randrange(2**32))
+    )
     params: dict[str, Any] = {
         **{k: v for k, v in mf.defaults.items() if k != "negative"},
         **q.params,
@@ -219,4 +228,3 @@ def placeholders(template: Any) -> set[str]:
 
     walk(template)
     return found
-

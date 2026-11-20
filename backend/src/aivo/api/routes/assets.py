@@ -19,13 +19,25 @@ from aivo.services.jobs import asset_out
 router = APIRouter(tags=["assets"])
 
 MAX_UPLOAD = 25 * 1024 * 1024
-EXT = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "video/mp4": "mp4", "audio/mp4": "m4a",
-       "audio/mpeg": "mp3", "audio/flac": "flac", "audio/wav": "wav"}
+EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+    "video/mp4": "mp4",
+    "audio/mp4": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/flac": "flac",
+    "audio/wav": "wav",
+}
 
 
 @router.post("/uploads", status_code=201)
-async def upload(file: UploadFile = File(...), user: User = Depends(current_user), app: AppContext = Depends(get_app),
-                 s: AsyncSession = Depends(get_session)) -> AssetOut:
+async def upload(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> AssetOut:
     data = await file.read(MAX_UPLOAD + 1)
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, "That image is too large (max 25 MB)")
@@ -46,9 +58,19 @@ async def upload(file: UploadFile = File(...), user: User = Depends(current_user
         raise HTTPException(422, "That file doesn't look like an image") from e
     aid = uuid.uuid4()
     stored = await asyncio.to_thread(app.store.put_bytes, aid, png)
-    a = Asset(id=aid, owner_user_id=user.id, role="input", media_type="image/png", storage_path=stored.storage_path,
-              plaintext_size=stored.plaintext_size, ciphertext_size=stored.ciphertext_size, key_id=stored.key_id,
-              content_mac=stored.content_mac, width=w, height=h)
+    a = Asset(
+        id=aid,
+        owner_user_id=user.id,
+        role="input",
+        media_type="image/png",
+        storage_path=stored.storage_path,
+        plaintext_size=stored.plaintext_size,
+        ciphertext_size=stored.ciphertext_size,
+        key_id=stored.key_id,
+        content_mac=stored.content_mac,
+        width=w,
+        height=h,
+    )
     s.add(a)
     await s.commit()
     return asset_out(a)
@@ -73,15 +95,19 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int] | None:
 
 
 @router.get("/assets/{asset_id}")
-async def get_asset(asset_id: uuid.UUID, request: Request, download: bool = False,
-                    _: User = Depends(current_user), app: AppContext = Depends(get_app),
-                    s: AsyncSession = Depends(get_session)) -> Response:
+async def get_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    download: bool = False,
+    _: User = Depends(current_user),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> Response:
     a = (await s.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
     if a is None:
         raise HTTPException(404, "Not found")
     size = a.plaintext_size
-    headers = {"accept-ranges": "bytes", "cache-control": "private, max-age=3600",
-               "x-content-type-options": "nosniff"}
+    headers = {"accept-ranges": "bytes", "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff"}
     if download:
         headers["content-disposition"] = f'attachment; filename="aivo-{str(a.id)[:8]}.{EXT.get(a.media_type, "bin")}"'
     if size == 0:

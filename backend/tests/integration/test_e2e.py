@@ -1,7 +1,5 @@
 """End-to-end: API -> scheduler -> fake machine (real TLS mock worker) -> encrypted gallery."""
 
-import pytest
-
 from tests.integration.harness import Harness
 
 
@@ -12,18 +10,32 @@ async def test_image_job_end_to_end(env):
         cat = (await h.client.get("/api/v1/catalog")).json()
         assert {m["id"] for m in cat["models"]} >= {"z-image-turbo", "wan22-a14b", "ace-step-15"}
 
-        est = (await h.client.post("/api/v1/estimate", json={
-            "kind": "image", "prompt": "a red fox in snow", "quality": "draft"})).json()
+        est = (
+            await h.client.post(
+                "/api/v1/estimate", json={"kind": "image", "prompt": "a red fox in snow", "quality": "draft"}
+            )
+        ).json()
         assert est["machine"]["gpu_class"] == "rtx4000ada", est
         assert est["est_cost_usd"] > 0 and est["est_wait_s"] > 0
 
-        r = await h.client.post("/api/v1/jobs", json={
-            "kind": "image", "prompt": "a red fox in snow", "quality": "draft", "count": 2, "aspect": "portrait",
-            "style": "photo"}, headers={"Idempotency-Key": "abc"})
+        r = await h.client.post(
+            "/api/v1/jobs",
+            json={
+                "kind": "image",
+                "prompt": "a red fox in snow",
+                "quality": "draft",
+                "count": 2,
+                "aspect": "portrait",
+                "style": "photo",
+            },
+            headers={"Idempotency-Key": "abc"},
+        )
         assert r.status_code == 201, r.text
         job = r.json()
         # idempotent re-submit returns the same job
-        r2 = await h.client.post("/api/v1/jobs", json={"kind": "image", "prompt": "x"}, headers={"Idempotency-Key": "abc"})
+        r2 = await h.client.post(
+            "/api/v1/jobs", json={"kind": "image", "prompt": "x"}, headers={"Idempotency-Key": "abc"}
+        )
         assert r2.json()["id"] == job["id"]
 
         done = await h.wait_job(job["id"])
@@ -62,12 +74,24 @@ async def test_image_job_end_to_end(env):
 async def test_video_and_music_reuse_machine(env):
     async with Harness(env, settings={"max_instances": 1}) as h:
         await h.setup_admin()
-        v = (await h.client.post("/api/v1/jobs", json={
-            "kind": "video", "prompt": "waves at sunset", "quality": "standard", "model_id": "ltx25",
-            "duration": "short"})).json()
-        mu = (await h.client.post("/api/v1/jobs", json={
-            "kind": "music", "prompt": "lofi hip hop, mellow piano", "duration": "30s",
-            "lyrics": "la la la"})).json()
+        v = (
+            await h.client.post(
+                "/api/v1/jobs",
+                json={
+                    "kind": "video",
+                    "prompt": "waves at sunset",
+                    "quality": "standard",
+                    "model_id": "ltx25",
+                    "duration": "short",
+                },
+            )
+        ).json()
+        mu = (
+            await h.client.post(
+                "/api/v1/jobs",
+                json={"kind": "music", "prompt": "lofi hip hop, mellow piano", "duration": "30s", "lyrics": "la la la"},
+            )
+        ).json()
         vd = await h.wait_job(v["id"], timeout=60)
         md = await h.wait_job(mu["id"], timeout=60)
         assert vd["state"] == "succeeded", vd
@@ -105,10 +129,12 @@ async def test_unauthenticated_and_csrf(env):
     async with Harness(env) as h:
         r = await h.client.get("/api/v1/jobs")
         assert r.status_code == 401
-        r = await h.client.post("/api/v1/auth/login", json={"email": "a@b.c", "password": "x"},
-                                headers={"X-Requested-With": ""})
+        r = await h.client.post(
+            "/api/v1/auth/login", json={"email": "a@b.c", "password": "x"}, headers={"X-Requested-With": ""}
+        )
         assert r.status_code == 403
         await h.setup_admin()
-        r = await h.client.post("/api/v1/auth/setup", json={
-            "email": "x@example.com", "display_name": "X", "password": "another password"})
+        r = await h.client.post(
+            "/api/v1/auth/setup", json={"email": "x@example.com", "display_name": "X", "password": "another password"}
+        )
         assert r.status_code == 403

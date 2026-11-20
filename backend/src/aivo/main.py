@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 
 from aivo import __version__
-from aivo.api.routes import assets, auth, catalog, events, health, jobs, machines, settings, spending
+from aivo.api.routes import admin, assets, auth, catalog, events, health, jobs, machines, settings, spending
 from aivo.auth.passwords import hash_password
 from aivo.catalog.loader import Catalog
 from aivo.config import EnvSettings, get_env
@@ -37,9 +37,14 @@ def build_context(env: EnvSettings, provider: CloudProvider | None = None) -> Ap
     keyring = Keyring.parse(env.media_keks.get_secret_value(), env.media_active_key_id or None)
     env.scratch_dir.mkdir(parents=True, exist_ok=True)
     return AppContext(
-        env=env, engine=engine, sessionmaker=make_sessionmaker(engine), keyring=keyring,
-        store=FilesystemStore(env.media_dir, keyring), catalog=Catalog.load(env.catalog_dir),
-        provider=provider or make_provider(env), bus=EventBus(asyncpg_dsn(env.database_url)),
+        env=env,
+        engine=engine,
+        sessionmaker=make_sessionmaker(engine),
+        keyring=keyring,
+        store=FilesystemStore(env.media_dir, keyring),
+        catalog=Catalog.load(env.catalog_dir),
+        provider=provider or make_provider(env),
+        bus=EventBus(asyncpg_dsn(env.database_url)),
     )
 
 
@@ -50,13 +55,24 @@ async def bootstrap_admin(ctx: AppContext) -> None:
     async with ctx.sessionmaker() as s, s.begin():
         n = (await s.execute(select(func.count()).select_from(User))).scalar_one()
         if n == 0:
-            s.add(User(email=env.admin_email.lower(), display_name="Admin",
-                       password_hash=hash_password(env.admin_password.get_secret_value()), role="admin"))
+            s.add(
+                User(
+                    email=env.admin_email.lower(),
+                    display_name="Admin",
+                    password_hash=hash_password(env.admin_password.get_secret_value()),
+                    role="admin",
+                )
+            )
             log.info("created initial admin %s", env.admin_email)
 
 
-def create_app(env: EnvSettings | None = None, *, ctx: AppContext | None = None, role: str | None = None,
-               controller_kwargs: dict | None = None) -> FastAPI:  # type: ignore[type-arg]
+def create_app(
+    env: EnvSettings | None = None,
+    *,
+    ctx: AppContext | None = None,
+    role: str | None = None,
+    controller_kwargs: dict | None = None,
+) -> FastAPI:  # type: ignore[type-arg]
     env = env or (ctx.env if ctx else get_env())
     role = role or env.role
 
@@ -82,8 +98,9 @@ def create_app(env: EnvSettings | None = None, *, ctx: AppContext | None = None,
                     controller.wake()
 
             wake_task = asyncio.create_task(wake_on_events())
-        log.info("aivo %s started (role=%s, provider=%s, deployment=%s)", __version__, role, c.provider.name,
-                 c.deployment_id)
+        log.info(
+            "aivo %s started (role=%s, provider=%s, deployment=%s)", __version__, role, c.provider.name, c.deployment_id
+        )
         try:
             yield
         finally:
@@ -96,25 +113,50 @@ def create_app(env: EnvSettings | None = None, *, ctx: AppContext | None = None,
                 await c.provider.aclose()
             await c.engine.dispose()
 
-    app = FastAPI(title="aivo", version=__version__, lifespan=lifespan, docs_url="/api/docs",
-                  openapi_url="/api/openapi.json", redoc_url=None)
+    app = FastAPI(
+        title="aivo",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url="/api/docs",
+        openapi_url="/api/openapi.json",
+        redoc_url=None,
+    )
     if env.cors_origins:
-        app.add_middleware(CORSMiddleware, allow_origins=env.cors_origins, allow_credentials=True,
-                           allow_methods=["*"], allow_headers=["*"])
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=env.cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
 
     @app.middleware("http")
     async def csrf_guard(request: Request, call_next):  # type: ignore[no-untyped-def]
         # A custom header can't be sent cross-site without a CORS preflight, which we don't allow.
-        if request.method in UNSAFE and request.url.path.startswith("/api/") \
-                and request.headers.get("x-requested-with") != "aivo":
+        if (
+            request.method in UNSAFE
+            and request.url.path.startswith("/api/")
+            and request.headers.get("x-requested-with") != "aivo"
+        ):
             return JSONResponse({"detail": "Missing X-Requested-With header"}, status_code=403)
         response = await call_next(request)
         response.headers.setdefault("x-frame-options", "DENY")
         response.headers.setdefault("referrer-policy", "same-origin")
         return response
 
-    for r in (auth.router, auth.admin_router, catalog.router, jobs.router, assets.router, machines.router,
-              spending.router, settings.router, events.router, health.router):
+    for r in (
+        auth.router,
+        auth.admin_router,
+        catalog.router,
+        jobs.router,
+        assets.router,
+        machines.router,
+        spending.router,
+        settings.router,
+        events.router,
+        health.router,
+        admin.router,
+    ):
         app.include_router(r, prefix="/api/v1")
     return app
 

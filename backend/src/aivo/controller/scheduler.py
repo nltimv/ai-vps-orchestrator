@@ -28,16 +28,19 @@ log = logging.getLogger(__name__)
 
 BILLING_STATES = ("pending", "creating", "provisioning", "booting", "ready", "busy", "draining")
 MAX_CANDIDATES = 8
+BUDGET_MESSAGE = "This month's spending limit has been reached. An admin can raise it in Settings."
 
 
 def friendly_from_job(app: AppContext, job: Job) -> FriendlyParams:
     kr = app.keyring
-    return FriendlyParams.model_validate({
-        **job.friendly_params,
-        "prompt": kr.open(job.prompt_enc, job.id.bytes) or "",
-        "avoid": kr.open(job.avoid_enc, job.id.bytes),
-        "lyrics": kr.open(job.lyrics_enc, job.id.bytes),
-    })
+    return FriendlyParams.model_validate(
+        {
+            **job.friendly_params,
+            "prompt": kr.open(job.prompt_enc, job.id.bytes) or "",
+            "avoid": kr.open(job.avoid_enc, job.id.bytes),
+            "lyrics": kr.open(job.lyrics_enc, job.id.bytes),
+        }
+    )
 
 
 def job_request(app: AppContext, job: Job, rs: RuntimeSettings) -> tuple[FriendlyParams, Plan, Request]:
@@ -77,19 +80,29 @@ class Scheduler:
             now = utcnow()
             # 1) machines that just became ready: give them the job that was waiting for them
             ready = (
-                await s.execute(
-                    select(Instance).where(Instance.state == "ready", Instance.drain_reason.is_(None))
-                    .order_by(Instance.idle_since)
-                    .with_for_update(skip_locked=True)
+                (
+                    await s.execute(
+                        select(Instance)
+                        .where(Instance.state == "ready", Instance.drain_reason.is_(None))
+                        .order_by(Instance.idle_since)
+                        .with_for_update(skip_locked=True)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for inst in ready:
                 job = (
                     await s.execute(
-                        select(Job).where(
-                            Job.instance_id == inst.id, Job.state.in_(("provisioning", "queued")),
+                        select(Job)
+                        .where(
+                            Job.instance_id == inst.id,
+                            Job.state.in_(("provisioning", "queued")),
                             Job.cancel_requested.is_(False),
-                        ).order_by(Job.created_at).limit(1).with_for_update(skip_locked=True)
+                        )
+                        .order_by(Job.created_at)
+                        .limit(1)
+                        .with_for_update(skip_locked=True)
                     )
                 ).scalar_one_or_none()
                 if job is not None and await self._assign(s, job, inst, rs, None):
@@ -97,14 +110,23 @@ class Scheduler:
 
             # 2) everything still unplaced
             jobs = (
-                await s.execute(
-                    select(Job).where(
-                        Job.state.in_(("queued", "waiting_capacity")), Job.instance_id.is_(None),
-                        Job.cancel_requested.is_(False),
-                        (Job.next_attempt_at.is_(None)) | (Job.next_attempt_at <= now),
-                    ).order_by(Job.created_at).limit(25).with_for_update(skip_locked=True)
+                (
+                    await s.execute(
+                        select(Job)
+                        .where(
+                            Job.state.in_(("queued", "waiting_capacity")),
+                            Job.instance_id.is_(None),
+                            Job.cancel_requested.is_(False),
+                            (Job.next_attempt_at.is_(None)) | (Job.next_attempt_at <= now),
+                        )
+                        .order_by(Job.created_at)
+                        .limit(25)
+                        .with_for_update(skip_locked=True)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             if not jobs:
                 return to_provision, to_run
             rows, live = await live_view(s, app)
@@ -116,10 +138,11 @@ class Scheduler:
             ctx = await build_context(app, s, rs, allow_new=live_count < rs.max_instances and not period.locked)
             for job in jobs:
                 try:
-                    fp, pl, req = job_request(app, job, rs)
+                    _fp, _pl, req = job_request(app, job, rs)
                 except CatalogError as e:
-                    await transition_job(s, job.id, job.state, "failed", error_code="bad_request",
-                                         error_message=str(e), stage="failed")
+                    await transition_job(
+                        s, job.id, job.state, "failed", error_code="bad_request", error_message=str(e), stage="failed"
+                    )
                     continue
                 # reserved-but-busy machines: only the ones with spare queue capacity
                 cands = apply_manual(job, rank(req, offers, live, ctx))
@@ -140,15 +163,29 @@ class Scheduler:
                         if await self._assign(s, job, inst, rs, top):
                             to_run.append(job.id)
                             live = [x for x in live if x.instance_id != inst.id] + [
-                                LiveInstance(**{**asdict_live(_find(live, inst.id)), "state": "busy",
-                                                "queue_s": top.times.get("run", 0)})
+                                LiveInstance(
+                                    **{
+                                        **asdict_live(_find(live, inst.id)),
+                                        "state": "busy",
+                                        "queue_s": top.times.get("run", 0),
+                                    }
+                                )
                             ]
                     else:
-                        stage = "starting_machine" if inst.state in ("pending", "creating", "provisioning", "booting") \
+                        stage = (
+                            "starting_machine"
+                            if inst.state in ("pending", "creating", "provisioning", "booting")
                             else "waiting_in_line"
+                        )
                         await transition_job(
-                            s, job.id, job.state, "provisioning" if stage == "starting_machine" else "queued",
-                            instance_id=inst.id, stage=stage, est_cost_usd=top.cost_usd, est_wait_s=top.wait_s,
+                            s,
+                            job.id,
+                            job.state,
+                            "provisioning" if stage == "starting_machine" else "queued",
+                            instance_id=inst.id,
+                            stage=stage,
+                            est_cost_usd=top.cost_usd,
+                            est_wait_s=top.wait_s,
                             event_payload={"machine": _machine_label(top.offer)},
                         )
                         live = _bump_queue(live, inst.id, top.times.get("run", 0) + top.times.get("load", 0))
@@ -159,40 +196,74 @@ class Scheduler:
                 adm = await admit(s, rs, now, reservation)
                 if not adm.ok:
                     await transition_job(
-                        s, job.id, job.state, "failed", error_code="budget", stage="failed",
-                        error_message="This month's spending limit has been reached. An admin can raise it in Settings.",
+                        s,
+                        job.id,
+                        job.state,
+                        "failed",
+                        error_code="budget",
+                        stage="failed",
+                        error_message=BUDGET_MESSAGE,
                     )
                     continue
                 iid = uuid.uuid4()
                 o = top.offer
-                s.add(Instance(
-                    id=iid, name=instance_name(app.deployment_id, iid), provider=app.provider.name,
-                    offer_key=o.key, size_slug=o.size_slug, region=o.region, gpu_class=o.gpu_class or "unknown",
-                    gpu_model=o.gpu_model, vendor=o.vendor, vram_gb=o.vram_gb, ram_gb=o.ram_gb,
-                    price_hourly=o.price_hourly, state="pending", requested_by_job_id=job.id,
-                    manual=job.placement_mode == "manual", reserved_usd=reservation,
-                    candidates=[_cand_json(c) for c in new_cands], attempt_index=0,
-                ))
+                s.add(
+                    Instance(
+                        id=iid,
+                        name=instance_name(app.deployment_id, iid),
+                        provider=app.provider.name,
+                        offer_key=o.key,
+                        size_slug=o.size_slug,
+                        region=o.region,
+                        gpu_class=o.gpu_class or "unknown",
+                        gpu_model=o.gpu_model,
+                        vendor=o.vendor,
+                        vram_gb=o.vram_gb,
+                        ram_gb=o.ram_gb,
+                        price_hourly=o.price_hourly,
+                        state="pending",
+                        requested_by_job_id=job.id,
+                        manual=job.placement_mode == "manual",
+                        reserved_usd=reservation,
+                        candidates=[_cand_json(c) for c in new_cands],
+                        attempt_index=0,
+                    )
+                )
                 await s.flush()
                 await transition_job(
-                    s, job.id, job.state, "provisioning", instance_id=iid, stage="starting_machine",
-                    est_cost_usd=top.cost_usd, est_wait_s=top.wait_s,
+                    s,
+                    job.id,
+                    job.state,
+                    "provisioning",
+                    instance_id=iid,
+                    stage="starting_machine",
+                    est_cost_usd=top.cost_usd,
+                    est_wait_s=top.wait_s,
                     event_payload={"machine": _machine_label(o)},
                 )
                 to_provision.append(iid)
                 live_count += 1
                 ctx.allow_new = live_count < rs.max_instances
-                live = [*live, LiveInstance(
-                    instance_id=iid, offer=o, state="pending", queue_s=top.times.get("run", 0),
-                    remaining_boot_s=top.times.get("create", 0) + top.times.get("boot", 0),
-                )]
+                live = [
+                    *live,
+                    LiveInstance(
+                        instance_id=iid,
+                        offer=o,
+                        state="pending",
+                        queue_s=top.times.get("run", 0),
+                        remaining_boot_s=top.times.get("create", 0) + top.times.get("boot", 0),
+                    ),
+                ]
         return to_provision, to_run
 
     async def _has_reserved(self, s: AsyncSession, inst_id: uuid.UUID) -> bool:
         n = (
             await s.execute(
-                select(func.count()).select_from(Job).where(
-                    Job.instance_id == inst_id, Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running", "fetching"))
+                select(func.count())
+                .select_from(Job)
+                .where(
+                    Job.instance_id == inst_id,
+                    Job.state.in_(("provisioning", "queued", "assigned", "preparing", "running", "fetching")),
                 )
             )
         ).scalar_one()
@@ -205,17 +276,31 @@ class Scheduler:
         if live_count >= rs.max_instances:
             # an idle machine that can't run this job is blocking the slot: replace it
             idle = (
-                await s.execute(
-                    select(Instance).where(
-                        Instance.state == "ready", Instance.drain_reason.is_(None),
-                        (Instance.keep_warm_until.is_(None)) | (Instance.keep_warm_until < now),
-                    ).with_for_update(skip_locked=True)
+                (
+                    await s.execute(
+                        select(Instance)
+                        .where(
+                            Instance.state == "ready",
+                            Instance.drain_reason.is_(None),
+                            (Instance.keep_warm_until.is_(None)) | (Instance.keep_warm_until < now),
+                        )
+                        .with_for_update(skip_locked=True)
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for inst in idle if fits_new else []:
                 if not await self._has_reserved(s, inst.id):
-                    await transition_instance(s, inst.id, "ready", "draining", drain_reason="make_room",
-                                              draining_at=now, event_payload={"reason": "make_room"})
+                    await transition_instance(
+                        s,
+                        inst.id,
+                        "ready",
+                        "draining",
+                        drain_reason="make_room",
+                        draining_at=now,
+                        event_payload={"reason": "make_room"},
+                    )
                     break
             if job.stage != "waiting_in_line":
                 await transition_job(s, job.id, job.state, "queued", stage="waiting_in_line")
@@ -223,12 +308,22 @@ class Scheduler:
         wait_until = job.capacity_wait_until or now + timedelta(seconds=rs.capacity_wait_max_s)
         if now >= wait_until:
             await transition_job(
-                s, job.id, job.state, "failed", error_code="no_capacity", stage="failed",
+                s,
+                job.id,
+                job.state,
+                "failed",
+                error_code="no_capacity",
+                stage="failed",
                 error_message="No suitable GPU machine is available right now. Please try again later.",
             )
             return
         await transition_job(
-            s, job.id, job.state, "waiting_capacity", stage="waiting_for_gpu", capacity_wait_until=wait_until,
+            s,
+            job.id,
+            job.state,
+            "waiting_capacity",
+            stage="waiting_for_gpu",
+            capacity_wait_until=wait_until,
             next_attempt_at=min(now + timedelta(seconds=min(300, 60 + 60 * job.attempt)), wait_until),
         )
 
@@ -239,15 +334,25 @@ class Scheduler:
         try:
             fp, pl, req = job_request(app, job, rs)
         except CatalogError as e:
-            await transition_job(s, job.id, job.state, "failed", error_code="bad_request", error_message=str(e),
-                                 stage="failed")
+            await transition_job(
+                s, job.id, job.state, "failed", error_code="bad_request", error_message=str(e), stage="failed"
+            )
             return False
         variant_id = cand.variant.variant_id if cand else None
         if variant_id is None:
-            live = LiveInstance(inst.id, offer_from_instance(inst), "ready",
-                                frozenset(inst.files_present or []), tuple(inst.models_loaded or []))
-            ranked = rank(req, [], [live], Context(allow_new=False, gpu_perf={
-                g.id: g.perf for g in app.catalog.gpu_classes.values()}))
+            live = LiveInstance(
+                inst.id,
+                offer_from_instance(inst),
+                "ready",
+                frozenset(inst.files_present or []),
+                tuple(inst.models_loaded or []),
+            )
+            ranked = rank(
+                req,
+                [],
+                [live],
+                Context(allow_new=False, gpu_perf={g.id: g.perf for g in app.catalog.gpu_classes.values()}),
+            )
             if not ranked:
                 # this machine can't run it (e.g. too small after an out-of-memory bump): release reservation
                 await transition_job(s, job.id, job.state, "queued", instance_id=None, stage="queued")
@@ -267,15 +372,28 @@ class Scheduler:
             inputs.append({"name": name, "asset_id": str(a.id), "storage_path": a.storage_path})
             params["reference_image"] = name
         resolved = {
-            "variant_id": variant_id, "mode": pl.mode, "quality": pl.quality, "params": params,
-            "output": pl.output.model_dump(), "units": pl.units, "inputs": inputs, "seed": params.get("seed"),
+            "variant_id": variant_id,
+            "mode": pl.mode,
+            "quality": pl.quality,
+            "params": params,
+            "output": pl.output.model_dump(),
+            "units": pl.units,
+            "inputs": inputs,
+            "seed": params.get("seed"),
             "timeout_s": 3600,
         }
         if not await transition_instance(s, inst.id, "ready", "busy", idle_since=None):
             return False
         ok = await transition_job(
-            s, job.id, job.state, "assigned", instance_id=inst.id, variant_id=variant_id, resolved=resolved,
-            stage="loading_model", assigned_at=utcnow(),
+            s,
+            job.id,
+            job.state,
+            "assigned",
+            instance_id=inst.id,
+            variant_id=variant_id,
+            resolved=resolved,
+            stage="loading_model",
+            assigned_at=utcnow(),
             est_cost_usd=cand.cost_usd if cand else job.est_cost_usd,
             est_wait_s=cand.wait_s if cand else job.est_wait_s,
             event_payload={"machine": _machine_label(offer_from_instance(inst))},
@@ -285,8 +403,12 @@ class Scheduler:
 
 def _cand_json(c: Candidate) -> dict[str, Any]:
     return {
-        "offer": asdict(c.offer), "variant_id": c.variant.variant_id, "score": round(c.score, 4),
-        "wait_s": round(c.wait_s, 1), "cost_usd": round(c.cost_usd, 4), "reasons": c.reasons,
+        "offer": asdict(c.offer),
+        "variant_id": c.variant.variant_id,
+        "score": round(c.score, 4),
+        "wait_s": round(c.wait_s, 1),
+        "cost_usd": round(c.cost_usd, 4),
+        "reasons": c.reasons,
     }
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import httpx
 
-from aivo_protocol.worker_api import FileFetch, FileSource, FileState, FilesStatus, PhaseTiming
+from aivo_protocol.worker_api import FileFetch, FileSource, FilesStatus, FileState, PhaseTiming
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ class FileManager:
         self.timings: list[PhaseTiming] = []
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._sem = asyncio.Semaphore(PARALLEL_FILES)
+        self._bg: set[asyncio.Task[None]] = set()
         self.models_dir.mkdir(parents=True, exist_ok=True)
 
     def present(self) -> list[str]:
@@ -80,7 +81,9 @@ class FileManager:
                             PhaseTiming(phase="file_fetch", seconds=st.seconds, source=src.kind, bytes=f.bytes)
                         )
                         if f.sha256 and src.kind != "volume":
-                            asyncio.create_task(self._verify_later(dest, f.sha256, st))
+                            t = asyncio.create_task(self._verify_later(dest, f.sha256, st))
+                            self._bg.add(t)
+                            t.add_done_callback(self._bg.discard)
                         return
                     except Exception as e:  # try the next source
                         log.warning("fetch %s via %s failed: %s", f.dest, src.kind, e)

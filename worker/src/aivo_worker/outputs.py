@@ -34,9 +34,7 @@ MEDIA_TYPES = {
 
 
 async def _run(*args: str) -> tuple[int, str]:
-    proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
+    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, err = await proc.communicate()
     return proc.returncode or 0, (out or err).decode(errors="replace")
 
@@ -51,22 +49,52 @@ async def postprocess(path: Path) -> OutputMeta:
         target = path
         if ext in (".flac", ".wav"):
             target = path.with_suffix(".m4a")  # universally playable, small
-            code, _ = await _run("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
-                                 "-map_metadata", "-1", "-c:a", "aac", "-b:a", "256k",
-                                 "-movflags", "+faststart", str(target))
+            code, _ = await _run(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(path),
+                "-map_metadata",
+                "-1",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "256k",
+                "-movflags",
+                "+faststart",
+                str(target),
+            )
             if code == 0:
                 path.unlink()
                 path = target
         else:
             tmp = path.with_name(path.stem + ".clean" + path.suffix)
             extra = ["-movflags", "+faststart"] if ext in (".mp4", ".m4a") else []
-            code, _ = await _run("ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(path),
-                                 "-map_metadata", "-1", "-c", "copy", *extra, str(tmp))
+            code, _ = await _run(
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(path),
+                "-map_metadata",
+                "-1",
+                "-c",
+                "copy",
+                *extra,
+                str(tmp),
+            )
             if code == 0:
                 tmp.replace(path)
         width, height, duration = await probe(path)
     sha = await asyncio.to_thread(_sha256, path)
-    media_type = MEDIA_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    media_type = (
+        MEDIA_TYPES.get(path.suffix.lower()) or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    )
     return OutputMeta(
         name=path.name,
         media_type=media_type,
@@ -92,8 +120,9 @@ def _strip_image(path: Path) -> tuple[int, int]:
 async def probe(path: Path) -> tuple[int | None, int | None, float | None]:
     if not shutil.which("ffprobe"):
         return None, None, None
-    code, out = await _run("ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
-                           "-show_format", str(path))
+    code, out = await _run(
+        "ffprobe", "-v", "error", "-print_format", "json", "-show_streams", "-show_format", str(path)
+    )
     if code != 0:
         return None, None, None
     data = json.loads(out)

@@ -18,7 +18,14 @@ from aivo.db.models import Instance, Job
 from aivo.events.bus import emit
 
 LIVE_INSTANCE_STATES = (
-    "pending", "creating", "provisioning", "booting", "ready", "busy", "draining", "destroying",
+    "pending",
+    "creating",
+    "provisioning",
+    "booting",
+    "ready",
+    "busy",
+    "draining",
+    "destroying",
 )
 STARTING_STATES = ("pending", "creating", "provisioning", "booting")
 
@@ -82,7 +89,10 @@ async def transition_instance(
     if res.first() is None:
         return False
     await emit(
-        session, scope="instance", type="instance.state", ref_id=instance_id,
+        session,
+        scope="instance",
+        type="instance.state",
+        ref_id=instance_id,
         payload={"state": to, **(event_payload or {})},
     )
     return True
@@ -124,10 +134,12 @@ async def job_progress(
     session: AsyncSession, job: Job, *, progress: float, stage: str, eta_s: float | None = None
 ) -> None:
     """Non-state update (progress/stage) with an event, used by job runners."""
-    await session.execute(
-        update(Job).where(Job.id == job.id).values(progress=progress, stage=stage, eta_s=eta_s)
-    )
+    await session.execute(update(Job).where(Job.id == job.id).values(progress=progress, stage=stage, eta_s=eta_s))
     await emit(
-        session, scope="job", type="job.progress", ref_id=job.id, user_id=job.user_id,
+        session,
+        scope="job",
+        type="job.progress",
+        ref_id=job.id,
+        user_id=job.user_id,
         payload={"progress": round(progress, 3), "stage": stage, "eta_s": eta_s},
     )

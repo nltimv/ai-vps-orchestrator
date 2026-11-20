@@ -61,7 +61,11 @@ class FakeProvider:
     machines: dict[str, FakeMachine] = field(default_factory=dict)
     firewall_cidrs: list[str] = field(default_factory=list)
     create_calls: int = 0
+    snapshots: dict[str, dict] = field(default_factory=dict)  # type: ignore[type-arg]
+    transfers: list[tuple[str, str]] = field(default_factory=list)
+    deleted_images: list[str] = field(default_factory=list)
     _seq: int = 0
+    _bg: set[asyncio.Task[None]] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self._raw = yaml.safe_load(OFFERS_FILE.read_text())
@@ -79,9 +83,18 @@ class FakeProvider:
                     continue
                 out.append(
                     GpuOffer(
-                        provider=self.name, size_slug=s["slug"], region=region, gpu_model=s["label"],
-                        gpu_class=s["model"], gpu_count=s["count"], vram_gb=s["vram"], vcpus=s["vcpus"],
-                        ram_gb=s["ram"], disk_gb=s["disk"], scratch_gb=s["scratch"], price_hourly=s["price"],
+                        provider=self.name,
+                        size_slug=s["slug"],
+                        region=region,
+                        gpu_model=s["label"],
+                        gpu_class=s["model"],
+                        gpu_count=s["count"],
+                        vram_gb=s["vram"],
+                        vcpus=s["vcpus"],
+                        ram_gb=s["ram"],
+                        disk_gb=s["disk"],
+                        scratch_gb=s["scratch"],
+                        price_hourly=s["price"],
                         vendor=s["vendor"],
                     )
                 )
@@ -91,7 +104,10 @@ class FakeProvider:
         return DO_REGIONS
 
     async def boot_image(self, offer: GpuOffer, strategy: str) -> BootImage:
-        return BootImage(ref="fake-snapshot" if strategy != "base" else "fake-base", kind="snapshot" if strategy != "base" else "base")
+        return BootImage(
+            ref="fake-snapshot" if strategy != "base" else "fake-base",
+            kind="snapshot" if strategy != "base" else "base",
+        )
 
     # -- lifecycle ----------------------------------------------------------------
 
@@ -116,8 +132,14 @@ class FakeProvider:
         self._seq += 1
         pid = str(100000 + self._seq)
         pi = ProviderInstance(
-            provider_id=pid, name=spec.name, status="new", public_ipv4=None, tags=list(spec.tags),
-            created_at=datetime.now(UTC), size_slug=spec.offer.size_slug, region=spec.offer.region,
+            provider_id=pid,
+            name=spec.name,
+            status="new",
+            public_ipv4=None,
+            tags=list(spec.tags),
+            created_at=datetime.now(UTC),
+            size_slug=spec.offer.size_slug,
+            region=spec.offer.region,
         )
         m = FakeMachine(pi=pi, spec=spec)
         self.machines[pid] = m
@@ -154,8 +176,11 @@ class FakeProvider:
         return ProviderInstance(**{**m.pi.__dict__, "tags": list(m.pi.tags)})
 
     async def list_instances(self, tag: str) -> list[ProviderInstance]:
-        return [ProviderInstance(**{**m.pi.__dict__, "tags": list(m.pi.tags)})
-                for m in self.machines.values() if tag in m.pi.tags]
+        return [
+            ProviderInstance(**{**m.pi.__dict__, "tags": list(m.pi.tags)})
+            for m in self.machines.values()
+            if tag in m.pi.tags
+        ]
 
     async def destroy_instance(self, provider_id: str) -> None:
         m = self.machines.pop(provider_id, None)
@@ -183,6 +208,54 @@ class FakeProvider:
         for pid in list(self.machines):
             await self.destroy_instance(pid)
 
+    # -- prepared-image primitives (bake) ----------------------------------------------
+
+    async def create_bake_instance(self, offer: GpuOffer, user_data: str, tags: list[str]) -> ProviderInstance:
+        self._seq += 1
+        pid = str(100000 + self._seq)
+        pi = ProviderInstance(
+            provider_id=pid,
+            name=f"aivo-bake-{pid}",
+            status="active",
+            public_ipv4="127.0.0.2",
+            tags=tags,
+            created_at=datetime.now(UTC),
+            size_slug=offer.size_slug,
+            region=offer.region,
+        )
+        self.machines[pid] = FakeMachine(pi=pi, spec=None)  # type: ignore[arg-type]
+
+        async def _finish() -> None:
+            await asyncio.sleep(self.boot_seconds)
+            pi.status = "off"
+
+        self._bg.add(t := asyncio.create_task(_finish()))
+        t.add_done_callback(self._bg.discard)
+        return pi
+
+    async def snapshot(self, provider_id: str, name: str) -> int:
+        self.snapshots[name] = {
+            "id": 900000 + len(self.snapshots),
+            "name": name,
+            "size_gigabytes": 22.5,
+            "min_disk_size": 500,
+            "regions": [],
+        }
+        return 1
+
+    async def wait_action(self, action_id: int, timeout_s: float = 3600, poll_s: float = 10) -> None:
+        await asyncio.sleep(0.01)
+
+    async def find_snapshot(self, name: str) -> dict | None:  # type: ignore[type-arg]
+        return self.snapshots.get(name)
+
+    async def transfer_image(self, image_id: str, region: str) -> int:
+        self.transfers.append((image_id, region))
+        return 2
+
+    async def delete_image(self, image_id: str) -> None:
+        self.deleted_images.append(image_id)
+
     # -- test helpers ---------------------------------------------------------------
 
     def inject_orphan(self, tags: list[str], age_s: float = 3600) -> str:
@@ -191,8 +264,14 @@ class FakeProvider:
         self._seq += 1
         pid = str(100000 + self._seq)
         pi = ProviderInstance(
-            provider_id=pid, name=f"orphan-{pid}", status="active", public_ipv4="127.0.0.9", tags=tags,
-            created_at=datetime.now(UTC) - timedelta(seconds=age_s), size_slug="gpu-4000adax1-20gb", region="tor1",
+            provider_id=pid,
+            name=f"orphan-{pid}",
+            status="active",
+            public_ipv4="127.0.0.9",
+            tags=tags,
+            created_at=datetime.now(UTC) - timedelta(seconds=age_s),
+            size_slug="gpu-4000adax1-20gb",
+            region="tor1",
         )
         self.machines[pid] = FakeMachine(pi=pi, spec=None)  # type: ignore[arg-type]
         return pid
@@ -201,4 +280,5 @@ class FakeProvider:
         """Simulate a machine disappearing outside our control."""
         m = self.machines.pop(provider_id, None)
         if m and m.server:
-            asyncio.create_task(m.server.stop())
+            self._bg.add(t := asyncio.create_task(m.server.stop()))
+            t.add_done_callback(self._bg.discard)

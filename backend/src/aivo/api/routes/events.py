@@ -19,8 +19,9 @@ router = APIRouter(tags=["events"])
 
 
 @router.get("/events")
-async def events(request: Request, since: int | None = None, user: User = Depends(current_user),
-                 app: AppContext = Depends(get_app)) -> EventSourceResponse:
+async def events(
+    request: Request, since: int | None = None, user: User = Depends(current_user), app: AppContext = Depends(get_app)
+) -> EventSourceResponse:
     last_id = since
     hdr = request.headers.get("last-event-id")
     if hdr and hdr.isdigit():
@@ -30,8 +31,13 @@ async def events(request: Request, since: int | None = None, user: User = Depend
         if user.role == "admin":
             return q
         # members: their own jobs, machine status (no secrets in payloads), gallery-wide successes
-        return q.where(or_(Event.user_id == user.id, Event.scope == "instance",
-                           (Event.scope == "job") & (Event.type == "job.state")))
+        return q.where(
+            or_(
+                Event.user_id == user.id,
+                Event.scope == "instance",
+                (Event.scope == "job") & (Event.type == "job.state"),
+            )
+        )
 
     async def gen() -> AsyncIterator[dict[str, str]]:
         nonlocal last_id
@@ -43,16 +49,30 @@ async def events(request: Request, since: int | None = None, user: User = Depend
             yield {"event": "hello", "data": json.dumps({"last_id": last_id}), "id": str(last_id)}
             while True:
                 async with app.sessionmaker() as s:
-                    rows = (await s.execute(
-                        visible(select(Event).where(Event.id > last_id)).order_by(Event.id).limit(200)
-                    )).scalars().all()
+                    rows = (
+                        (
+                            await s.execute(
+                                visible(select(Event).where(Event.id > last_id)).order_by(Event.id).limit(200)
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
                 for ev in rows:
                     last_id = ev.id
-                    yield {"event": ev.type, "id": str(ev.id), "data": json.dumps({
-                        "scope": ev.scope, "ref_id": str(ev.ref_id) if ev.ref_id else None,
-                        "user_id": str(ev.user_id) if ev.user_id else None, "payload": ev.payload,
-                        "at": ev.at.isoformat(),
-                    })}
+                    yield {
+                        "event": ev.type,
+                        "id": str(ev.id),
+                        "data": json.dumps(
+                            {
+                                "scope": ev.scope,
+                                "ref_id": str(ev.ref_id) if ev.ref_id else None,
+                                "user_id": str(ev.user_id) if ev.user_id else None,
+                                "payload": ev.payload,
+                                "at": ev.at.isoformat(),
+                            }
+                        ),
+                    }
                 if await request.is_disconnected():
                     return
                 with contextlib.suppress(TimeoutError):

@@ -148,9 +148,7 @@ class Instance(Base):
     cert_ca_pem: Mapped[str | None] = mapped_column(Text)
     sni_name: Mapped[str | None] = mapped_column(String(128))
     token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    volume_resource_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("cache_resources.id", ondelete="SET NULL")
-    )
+    volume_resource_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cache_resources.id", ondelete="SET NULL"))
     requested_by_job_id: Mapped[uuid.UUID | None]
     manual: Mapped[bool] = mapped_column(Boolean, default=False)
     reserved_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0)
@@ -295,9 +293,7 @@ class SpendPeriod(Base):
 
 class CostAccrual(Base):
     __tablename__ = "cost_accruals"
-    instance_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("instances.id", ondelete="CASCADE"), primary_key=True
-    )
+    instance_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("instances.id", ondelete="CASCADE"), primary_key=True)
     period: Mapped[date] = mapped_column(Date, primary_key=True)
     billed_seconds: Mapped[float] = mapped_column(Float, default=0)
     usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0)

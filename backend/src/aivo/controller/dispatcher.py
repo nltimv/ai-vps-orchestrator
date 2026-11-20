@@ -156,7 +156,11 @@ class JobRunner:
             data = await asyncio.to_thread(self.app.store.read_all, uuid.UUID(ref["asset_id"]), ref["storage_path"])
             await client.put_input(ref["name"], data)
         async with self.app.sessionmaker() as s, s.begin():
-            await s.execute(update(Instance).where(Instance.id == inst.id).values(files_present=sorted(set(inst.files_present or []) | set(dests))))
+            await s.execute(
+                update(Instance)
+                .where(Instance.id == inst.id)
+                .values(files_present=sorted(set(inst.files_present or []) | set(dests)))
+            )
             if fetch_s > 1:
                 await record_phase(s, phase="files_ready", seconds=fetch_s, inst=inst, job=job)
         return True
@@ -179,9 +183,13 @@ class JobRunner:
             # resolve to a short-lived signed CDN URL so the worker never holds the HF token
             try:
                 r = httpx.get(
-                    url, headers={"Authorization": f"Bearer {self.app.env.hf_token.get_secret_value()}",
-                                  "Range": "bytes=0-0"},
-                    follow_redirects=False, timeout=20,
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {self.app.env.hf_token.get_secret_value()}",
+                        "Range": "bytes=0-0",
+                    },
+                    follow_redirects=False,
+                    timeout=20,
                 )
                 if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("location"):
                     return r.headers["location"]
@@ -194,15 +202,21 @@ class JobRunner:
         out = OutputSpec.model_validate(resolved["output"])
         mf = cm.manifest
         variant = mf.variant(resolved["variant_id"])
-        await client.submit(JobIn(
-            job_id=str(job.id), model_id=job.model_id, workflow=workflow,
-            inputs=[r["name"] for r in resolved.get("inputs", [])],
-            required_files=[f.dest for f in mf.files_for(variant, resolved["mode"])],
-            output=out, timeout_s=int(resolved.get("timeout_s", 3600)),
-        ))
+        await client.submit(
+            JobIn(
+                job_id=str(job.id),
+                model_id=job.model_id,
+                workflow=workflow,
+                inputs=[r["name"] for r in resolved.get("inputs", [])],
+                required_files=[f.dest for f in mf.files_for(variant, resolved["mode"])],
+                output=out,
+                timeout_s=int(resolved.get("timeout_s", 3600)),
+            )
+        )
         async with self.app.sessionmaker() as s, s.begin():
-            await transition_job(s, job.id, "preparing", "running", stage="generating", progress=0.0,
-                                 started_at=utcnow())
+            await transition_job(
+                s, job.id, "preparing", "running", stage="generating", progress=0.0, started_at=utcnow()
+            )
 
     async def _poll(self, job: Job, client: WorkerClient):  # type: ignore[no-untyped-def]
         last = (-1.0, "")
@@ -219,7 +233,9 @@ class JobRunner:
             if (abs(st.progress - last[0]) >= 0.02 or stage != last[1]) and time.monotonic() - last_t > 0.5:
                 async with self.app.sessionmaker() as s, s.begin():
                     await job_progress(s, job, progress=st.progress, stage=stage, eta_s=st.eta_s)
-                    await s.execute(update(Instance).where(Instance.id == job.instance_id).values(last_contact_at=utcnow()))
+                    await s.execute(
+                        update(Instance).where(Instance.id == job.instance_id).values(last_contact_at=utcnow())
+                    )
                 last, last_t = (st.progress, stage), time.monotonic()
 
     async def _fetch(self, job, inst, client: WorkerClient, status, resolved) -> None:  # type: ignore[no-untyped-def]
@@ -238,22 +254,44 @@ class JobRunner:
                     raise WorkerUnreachable(f"checksum mismatch for {o.name}")
                 aid = uuid.uuid4()
                 stored = await asyncio.to_thread(self.app.store.put_file, aid, tmp)
-                assets.append(Asset(
-                    id=aid, owner_user_id=job.user_id, job_id=job.id, output_name=o.name, role="output",
-                    media_type=o.media_type, storage_path=stored.storage_path, plaintext_size=stored.plaintext_size,
-                    ciphertext_size=stored.ciphertext_size, key_id=stored.key_id, content_mac=stored.content_mac,
-                    width=o.width, height=o.height, duration_s=o.duration_s,
-                ))
+                assets.append(
+                    Asset(
+                        id=aid,
+                        owner_user_id=job.user_id,
+                        job_id=job.id,
+                        output_name=o.name,
+                        role="output",
+                        media_type=o.media_type,
+                        storage_path=stored.storage_path,
+                        plaintext_size=stored.plaintext_size,
+                        ciphertext_size=stored.ciphertext_size,
+                        key_id=stored.key_id,
+                        content_mac=stored.content_mac,
+                        width=o.width,
+                        height=o.height,
+                        duration_s=o.duration_s,
+                    )
+                )
                 thumb = await make_thumbnail(tmp, o.media_type)
                 if thumb:
                     tid = uuid.uuid4()
                     ts = await asyncio.to_thread(self.app.store.put_bytes, tid, thumb)
-                    assets.append(Asset(
-                        id=tid, owner_user_id=job.user_id, job_id=job.id, parent_asset_id=aid,
-                        output_name=o.name, role="thumb", media_type="image/webp", storage_path=ts.storage_path,
-                        plaintext_size=ts.plaintext_size, ciphertext_size=ts.ciphertext_size, key_id=ts.key_id,
-                        content_mac=ts.content_mac,
-                    ))
+                    assets.append(
+                        Asset(
+                            id=tid,
+                            owner_user_id=job.user_id,
+                            job_id=job.id,
+                            parent_asset_id=aid,
+                            output_name=o.name,
+                            role="thumb",
+                            media_type="image/webp",
+                            storage_path=ts.storage_path,
+                            plaintext_size=ts.plaintext_size,
+                            ciphertext_size=ts.ciphertext_size,
+                            key_id=ts.key_id,
+                            content_mac=ts.content_mac,
+                        )
+                    )
                 tmp.unlink(missing_ok=True)
         finally:
             for p in scratch.glob("*"):
@@ -273,7 +311,13 @@ class JobRunner:
             price = float(inst.price_hourly)
             cost = round(price * (run_s or 0) / 3600, 4) if run_s else None
             await transition_job(
-                s, job.id, "fetching", "succeeded", stage="done", progress=1.0, attributed_cost_usd=cost,
+                s,
+                job.id,
+                "fetching",
+                "succeeded",
+                stage="done",
+                progress=1.0,
+                attributed_cost_usd=cost,
                 event_payload={"outputs": [str(a.id) for a in assets if a.role == "output"]},
             )
             await record_phase(s, phase="transfer", seconds=time.monotonic() - t0, inst=inst, job=job)
@@ -281,22 +325,35 @@ class JobRunner:
                 for ph in tel.phases:
                     if ph.phase == "inference" and resolved.get("units"):
                         await record_phase(
-                            s, phase="inference", seconds=ph.seconds, inst=inst, job=job, units=resolved["units"],
+                            s,
+                            phase="inference",
+                            seconds=ph.seconds,
+                            inst=inst,
+                            job=job,
+                            units=resolved["units"],
                             quality=resolved.get("quality"),
                         )
                         # per-unit runtime estimate feeds the scorer
                         await update_estimate(
-                            s, f"run:{job.model_id}:{resolved.get('quality')}:{inst.gpu_class}",
+                            s,
+                            f"run:{job.model_id}:{resolved.get('quality')}:{inst.gpu_class}",
                             ph.seconds / max(resolved["units"], 0.001),
                         )
                     elif ph.phase == "file_fetch" and ph.source and ph.bytes and ph.seconds > 0.5:
-                        await record_phase(s, phase="file_fetch", seconds=ph.seconds, inst=inst, job=job,
-                                           source=ph.source, bytes_=ph.bytes)
+                        await record_phase(
+                            s,
+                            phase="file_fetch",
+                            seconds=ph.seconds,
+                            inst=inst,
+                            job=job,
+                            source=ph.source,
+                            bytes_=ph.bytes,
+                        )
                         await update_estimate(s, f"thr:{ph.source}:{inst.region}", ph.bytes / 1e9 / ph.seconds)
             await s.execute(
-                update(Instance).where(Instance.id == inst.id).values(
-                    models_loaded=[job.model_id], last_contact_at=utcnow()
-                )
+                update(Instance)
+                .where(Instance.id == inst.id)
+                .values(models_loaded=[job.model_id], last_contact_at=utcnow())
             )
         await self._release_instance(inst.id)
 
@@ -329,8 +386,13 @@ class JobRunner:
         log.warning("job %s failed (%s): %s", job_id, code, detail)
         async with self.app.sessionmaker() as s, s.begin():
             await transition_job(
-                s, job_id, ("assigned", "preparing", "running", "fetching"), "failed",
-                error_code=code, error_message=msg, stage="failed",
+                s,
+                job_id,
+                ("assigned", "preparing", "running", "fetching"),
+                "failed",
+                error_code=code,
+                error_message=msg,
+                stage="failed",
             )
 
     async def _requeue_or_fail(
@@ -348,15 +410,24 @@ class JobRunner:
                 await transition_job(s, job.id, job.state, "queued", **fields)
             else:
                 await transition_job(
-                    s, job.id, job.state, "failed", error_code=code,
-                    error_message=FRIENDLY_ERRORS.get(code, FRIENDLY_ERRORS["engine"]), stage="failed",
+                    s,
+                    job.id,
+                    job.state,
+                    "failed",
+                    error_code=code,
+                    error_message=FRIENDLY_ERRORS.get(code, FRIENDLY_ERRORS["engine"]),
+                    stage="failed",
                 )
             if lost_instance and inst_id:
                 await transition_instance(
-                    s, inst_id, ("ready", "busy", "draining"), "destroying",
-                    outcome="failed", failure_reason="stopped responding", destroy_requested_at=utcnow(),
+                    s,
+                    inst_id,
+                    ("ready", "busy", "draining"),
+                    "destroying",
+                    outcome="failed",
+                    failure_reason="stopped responding",
+                    destroy_requested_at=utcnow(),
                 )
                 await emit(s, scope="instance", type="instance.lost", ref_id=inst_id)
         if self.app.controller is not None:
             self.app.controller.wake()
-

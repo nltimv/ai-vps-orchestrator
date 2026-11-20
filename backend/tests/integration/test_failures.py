@@ -7,8 +7,8 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import text
 
-from aivo.controller.budget import admit, reservation_for
-from aivo.controller.lifecycle import IllegalTransition, INSTANCE_TRANSITIONS, transition_instance
+from aivo.controller.budget import admit
+from aivo.controller.lifecycle import INSTANCE_TRANSITIONS, IllegalTransition, transition_instance
 from aivo.providers.base import deployment_tag, instance_tag
 from tests.integration.harness import Harness
 
@@ -172,13 +172,16 @@ async def test_concurrent_admission_respects_cap(env):
 
                 adm = await admit(s, rs, utcnow(), amount)
                 if adm.ok:
-                    await s.execute(text(
-                        "INSERT INTO instances (id, name, provider, offer_key, size_slug, region, gpu_class, gpu_model,"
-                        " vendor, vram_gb, ram_gb, price_hourly, state, state_version, port, reserved_usd, manual,"
-                        " files_present, models_loaded, candidates, attempt_index, created_at, state_changed_at)"
-                        " VALUES (:id, :n, 'fake', 'k', 's', 'tor1', 'l40s', 'L40S', 'nvidia', 48, 64, 1.57,"
-                        " 'pending', 0, 443, :r, false, '[]', '[]', '[]', 0, now(), now())"),
-                        {"id": uuid.uuid4(), "n": f"t-{uuid.uuid4().hex[:8]}", "r": amount})
+                    await s.execute(
+                        text(
+                            "INSERT INTO instances (id, name, provider, offer_key, size_slug, region, gpu_class, gpu_model,"
+                            " vendor, vram_gb, ram_gb, price_hourly, state, state_version, port, reserved_usd, manual,"
+                            " files_present, models_loaded, candidates, attempt_index, created_at, state_changed_at)"
+                            " VALUES (:id, :n, 'fake', 'k', 's', 'tor1', 'l40s', 'L40S', 'nvidia', 48, 64, 1.57,"
+                            " 'pending', 0, 443, :r, false, '[]', '[]', '[]', 0, now(), now())"
+                        ),
+                        {"id": uuid.uuid4(), "n": f"t-{uuid.uuid4().hex[:8]}", "r": amount},
+                    )
                 return adm.ok
 
         results = await asyncio.gather(*(try_admit() for _ in range(20)))

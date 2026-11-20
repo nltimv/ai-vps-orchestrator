@@ -77,13 +77,17 @@ async def ensure_period(session: AsyncSession, rs: RuntimeSettings, when: dateti
 async def accrue(session: AsyncSession, rs: RuntimeSettings, now: datetime) -> None:
     since = now - timedelta(days=40)
     insts = (
-        await session.execute(
-            select(Instance).where(
-                Instance.create_accepted_at.is_not(None),
-                (Instance.destroy_confirmed_at.is_(None)) | (Instance.destroy_confirmed_at > since),
+        (
+            await session.execute(
+                select(Instance).where(
+                    Instance.create_accepted_at.is_not(None),
+                    (Instance.destroy_confirmed_at.is_(None)) | (Instance.destroy_confirmed_at > since),
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     for inst in insts:
         win = billed_window(inst, now, rs.min_billing_s)
         if win is None:
@@ -102,7 +106,9 @@ async def accrue(session: AsyncSession, rs: RuntimeSettings, now: datetime) -> N
 
 
 async def month_compute_spend(session: AsyncSession, period: date) -> Decimal:
-    v = (await session.execute(select(func.coalesce(func.sum(CostAccrual.usd), 0)).where(CostAccrual.period == period))).scalar_one()
+    v = (
+        await session.execute(select(func.coalesce(func.sum(CostAccrual.usd), 0)).where(CostAccrual.period == period))
+    ).scalar_one()
     return D(v)
 
 

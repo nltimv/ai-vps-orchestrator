@@ -6,9 +6,7 @@ from aivo.catalog.presets import Plan
 from aivo.placement.scorer import Request, VariantNeed
 
 
-def build_request(
-    plan: Plan, preference: str, *, k: int = 1, min_vram_override: float | None = None
-) -> Request:
+def build_request(plan: Plan, preference: str, *, k: int = 1, min_vram_override: float | None = None) -> Request:
     mf = plan.model.manifest
     qf = mf.bench.quality_factor.get(plan.quality, 1.0)
     variants = tuple(

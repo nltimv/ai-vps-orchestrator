@@ -25,8 +25,18 @@ async def _ffmpeg_png(*args: str) -> bytes | None:
     if not shutil.which("ffmpeg"):
         return None
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-hide_banner", "-loglevel", "error", *args, "-f", "image2pipe", "-vcodec", "png", "pipe:1",
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        *args,
+        "-f",
+        "image2pipe",
+        "-vcodec",
+        "png",
+        "pipe:1",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
     )
     out, _ = await proc.communicate()
     return out if proc.returncode == 0 and out else None
@@ -41,8 +51,12 @@ async def video_poster(src: Path, at_s: float = 1.0) -> bytes | None:
 
 async def audio_waveform(src: Path) -> bytes | None:
     png = await _ffmpeg_png(
-        "-i", str(src), "-filter_complex", "showwavespic=s=1024x256:colors=#8b5cf6|#ec4899:split_channels=0",
-        "-frames:v", "1",
+        "-i",
+        str(src),
+        "-filter_complex",
+        "showwavespic=s=1024x256:colors=#8b5cf6|#ec4899:split_channels=0",
+        "-frames:v",
+        "1",
     )
     return _png_to_webp(png) if png else None
 

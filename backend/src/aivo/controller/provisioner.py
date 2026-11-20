@@ -26,6 +26,7 @@ from aivo.controller.lifecycle import transition_instance, transition_job
 from aivo.db.models import CacheResource, Instance, Job
 from aivo.providers.base import (
     AuthError,
+    BootImage,
     CapacityError,
     ConfigError,
     GpuOffer,
@@ -53,6 +54,7 @@ class Provisioner:
         self.app = app
         self.pause_s = pause_s
         self.poll_s = poll_s
+        self._egress: tuple[float, str | None] | None = None
 
     async def run(self, instance_id: uuid.UUID) -> None:
         try:
@@ -130,13 +132,16 @@ class Provisioner:
                 continue
             except QuotaError as e:
                 await self._record(inst.id, offer, "quota", idx, e, t0)
-                await self._fail(inst.id, "Your cloud account's GPU limit is reached.", requeue=True,
-                                 code="quota")
+                await self._fail(inst.id, "Your cloud account's GPU limit is reached.", requeue=True, code="quota")
                 return False
             except (AuthError, ConfigError) as e:
                 await self._record(inst.id, offer, "error", idx, e, t0)
-                await self._fail(inst.id, "The cloud account is not set up correctly (check the API token).",
-                                 requeue=False, code="config")
+                await self._fail(
+                    inst.id,
+                    "The cloud account is not set up correctly (check the API token).",
+                    requeue=False,
+                    code="config",
+                )
                 return False
             except RateLimited as e:
                 wait = max(5.0, (e.reset_at or time.time() + 30) - time.time())
@@ -162,11 +167,16 @@ class Provisioner:
                 continue
             # success
             async with app.sessionmaker() as s, s.begin():
-                await record_attempt(s, inst.id, offer, "created", rank=idx,
-                                     duration_ms=int((time.monotonic() - t0) * 1000))
+                await record_attempt(
+                    s, inst.id, offer, "created", rank=idx, duration_ms=int((time.monotonic() - t0) * 1000)
+                )
                 await transition_instance(
-                    s, inst.id, "creating", "provisioning",
-                    provider_instance_id=pi.provider_id, create_accepted_at=utcnow(),
+                    s,
+                    inst.id,
+                    "creating",
+                    "provisioning",
+                    provider_instance_id=pi.provider_id,
+                    create_accepted_at=utcnow(),
                     public_ipv4=pi.public_ipv4,
                     event_payload={"size": offer.size_slug, "region": offer.region},
                 )
@@ -185,7 +195,8 @@ class Provisioner:
         rs = await app.runtime()
         creds = make_worker_credentials(inst.id)
         token = secrets.token_urlsafe(32)
-        image = await app.provider.boot_image(offer, rs.boot_strategy)
+        image = await self._choose_image(offer, rs.boot_strategy)
+        await self._ensure_access(rs)
         volume_ids: list[str] = []
         volume_row_id = None
         async with app.sessionmaker() as s, s.begin():
@@ -194,7 +205,8 @@ class Provisioner:
                     await s.execute(
                         update(CacheResource)
                         .where(
-                            CacheResource.kind == "volume", CacheResource.region == offer.region,
+                            CacheResource.kind == "volume",
+                            CacheResource.region == offer.region,
                             CacheResource.status.in_(("ready", "verified")),
                             CacheResource.attached_instance_id.is_(None),
                         )
@@ -207,34 +219,110 @@ class Provisioner:
             watchdog = WatchdogConfig()
             if rs.watchdog_enabled and app.env.do_watchdog_token:
                 watchdog = WatchdogConfig(
-                    enabled=True, token=app.env.do_watchdog_token.get_secret_value(),
-                    max_silence_s=1200, deadline_unix=time.time() + rs.max_lifetime_s + rs.lifetime_grace_s + 600,
+                    enabled=True,
+                    token=app.env.do_watchdog_token.get_secret_value(),
+                    max_silence_s=1200,
+                    deadline_unix=time.time() + rs.max_lifetime_s + rs.lifetime_grace_s + 600,
                 )
             ok = await transition_instance(
-                s, inst.id, "pending", "creating",
-                offer_key=offer.key, size_slug=offer.size_slug, region=offer.region,
-                gpu_class=offer.gpu_class or "unknown", gpu_model=offer.gpu_model, vendor=offer.vendor,
-                vram_gb=offer.vram_gb, ram_gb=offer.ram_gb, price_hourly=offer.price_hourly,
-                image_ref=image.ref, image_kind=image.kind, worker_image=app.env.worker_image,
-                cert_ca_pem=creds.ca_pem, sni_name=creds.sni_name,
-                token_enc=app.keyring.seal(token, inst.id.bytes), port=app.env.worker_port,
+                s,
+                inst.id,
+                "pending",
+                "creating",
+                offer_key=offer.key,
+                size_slug=offer.size_slug,
+                region=offer.region,
+                gpu_class=offer.gpu_class or "unknown",
+                gpu_model=offer.gpu_model,
+                vendor=offer.vendor,
+                vram_gb=offer.vram_gb,
+                ram_gb=offer.ram_gb,
+                price_hourly=offer.price_hourly,
+                image_ref=image.ref,
+                image_kind=image.kind,
+                worker_image=app.env.worker_image,
+                cert_ca_pem=creds.ca_pem,
+                sni_name=creds.sni_name,
+                token_enc=app.keyring.seal(token, inst.id.bytes),
+                port=app.env.worker_port,
                 volume_resource_id=volume_row_id,
                 event_payload={"size": offer.size_slug, "region": offer.region},
             )
             if not ok:
                 raise ProviderError("instance is no longer pending")
         boot = WorkerBootstrap(
-            instance_id=str(inst.id), deployment_id=str(app.deployment_id),
+            instance_id=str(inst.id),
+            deployment_id=str(app.deployment_id),
             token_sha256=hashlib.sha256(token.encode()).hexdigest(),
-            tls_cert_pem=creds.cert_pem, tls_key_pem=creds.key_pem, listen_port=app.env.worker_port,
-            engine="comfy", volume_mount="/mnt/aivo-cache" if volume_ids else None,
-            watchdog=watchdog, worker_image=app.env.worker_image,
+            tls_cert_pem=creds.cert_pem,
+            tls_key_pem=creds.key_pem,
+            listen_port=app.env.worker_port,
+            engine="comfy",
+            volume_mount="/mnt/aivo-cache" if volume_ids else None,
+            watchdog=watchdog,
+            worker_image=app.env.worker_image,
         )
         spec = InstanceSpec(
-            instance_id=inst.id, name=inst.name, offer=offer, image=image, bootstrap=boot,
-            tags=tags_for(app.deployment_id, inst.id), volume_ids=volume_ids, worker_image=app.env.worker_image,
+            instance_id=inst.id,
+            name=inst.name,
+            offer=offer,
+            image=image,
+            bootstrap=boot,
+            tags=tags_for(app.deployment_id, inst.id),
+            volume_ids=volume_ids,
+            worker_image=app.env.worker_image,
         )
         return spec, token
+
+    async def _choose_image(self, offer: GpuOffer, strategy: str) -> BootImage:
+        """Prefer a prepared snapshot in the machine's region (OS + drivers + worker image baked in)."""
+        if strategy != "base":
+            async with self.app.sessionmaker() as s:
+                snap = (
+                    await s.execute(
+                        select(CacheResource)
+                        .where(
+                            CacheResource.kind == "snapshot",
+                            CacheResource.provider == self.app.provider.name,
+                            CacheResource.region == offer.region,
+                            CacheResource.vendor == offer.vendor,
+                            CacheResource.status.in_(("ready", "verified")),
+                            (CacheResource.min_disk_gb.is_(None)) | (CacheResource.min_disk_gb <= offer.disk_gb),
+                        )
+                        .order_by(CacheResource.created_at.desc())
+                        .limit(1)
+                    )
+                ).scalar_one_or_none()
+            if snap and snap.provider_resource_id:
+                return BootImage(ref=snap.provider_resource_id, kind="snapshot")
+            if strategy == "snapshot":
+                log.info("no prepared image in %s; using the base image", offer.region)
+        return await self.app.provider.boot_image(offer, "base")
+
+    async def _ensure_access(self, rs) -> None:  # type: ignore[no-untyped-def]
+        """Restrict worker port to the backend's egress IP (or configured CIDRs)."""
+        from aivo.providers.base import deployment_tag
+
+        cidrs: list[str] = []
+        if rs.firewall_mode == "cidrs":
+            cidrs = list(rs.allowed_cidrs)
+        elif rs.firewall_mode == "auto_egress_ip":
+            now = time.monotonic()
+            if self._egress is None or now - self._egress[0] > 300:
+                ip = None
+                if self.app.provider.name != "fake":
+                    from aivo.providers.digitalocean.provider import detect_egress_ip
+
+                    ip = await detect_egress_ip()
+                self._egress = (now, ip)
+            if self._egress[1]:
+                cidrs = [f"{self._egress[1]}/32", *rs.allowed_cidrs]
+        try:
+            await self.app.provider.ensure_network_access(
+                deployment_tag(self.app.deployment_id), cidrs, self.app.env.worker_port
+            )
+        except Exception as e:  # never block provisioning on the firewall; TLS pinning still protects
+            log.warning("could not update firewall: %s", e)
 
     async def _adopt_by_tag(self, inst: Instance) -> bool:
         for delay in (5.0, 15.0):
@@ -248,8 +336,13 @@ class Provisioner:
                     if offer:
                         await record_attempt(s, inst.id, offer, "unknown_adopted", rank=cur.attempt_index)
                     await transition_instance(
-                        s, inst.id, ("creating", "pending"), "provisioning",
-                        provider_instance_id=pi.provider_id, create_accepted_at=utcnow(), public_ipv4=pi.public_ipv4,
+                        s,
+                        inst.id,
+                        ("creating", "pending"),
+                        "provisioning",
+                        provider_instance_id=pi.provider_id,
+                        create_accepted_at=utcnow(),
+                        public_ipv4=pi.public_ipv4,
                     )
                 return True
         return False
@@ -259,16 +352,24 @@ class Provisioner:
             await transition_instance(s, inst_id, "creating", "pending", attempt_index=idx)
             if release_volume:
                 await s.execute(
-                    update(CacheResource).where(CacheResource.attached_instance_id == inst_id)
+                    update(CacheResource)
+                    .where(CacheResource.attached_instance_id == inst_id)
                     .values(attached_instance_id=None)
                 )
                 await s.execute(update(Instance).where(Instance.id == inst_id).values(volume_resource_id=None))
 
-    async def _record(self, inst_id: uuid.UUID, offer: GpuOffer, outcome: str, rank: int, err: Exception,
-                      t0: float | None = None) -> None:
+    async def _record(
+        self, inst_id: uuid.UUID, offer: GpuOffer, outcome: str, rank: int, err: Exception, t0: float | None = None
+    ) -> None:
         async with self.app.sessionmaker() as s, s.begin():
             await record_attempt(
-                s, inst_id, offer, outcome, rank=rank, http_status=getattr(err, "http_status", None), error=str(err),
+                s,
+                inst_id,
+                offer,
+                outcome,
+                rank=rank,
+                http_status=getattr(err, "http_status", None),
+                error=str(err),
                 duration_ms=int((time.monotonic() - t0) * 1000) if t0 else None,
             )
 
@@ -286,22 +387,34 @@ class Provisioner:
             assert cur.provider_instance_id
             pi = await self.app.provider.get_instance(cur.provider_instance_id)
             if pi is None:
-                await self._fail(inst.id, "The machine disappeared while starting.", requeue=True, code="lost",
-                                 outcome="late_failure")
+                await self._fail(
+                    inst.id,
+                    "The machine disappeared while starting.",
+                    requeue=True,
+                    code="lost",
+                    outcome="late_failure",
+                )
                 return False
             if pi.public_ipv4 and pi.status == "active":
                 async with self.app.sessionmaker() as s, s.begin():
-                    await transition_instance(s, inst.id, "provisioning", "booting",
-                                              public_ipv4=pi.public_ipv4, port=pi.port, ip_at=utcnow())
+                    await transition_instance(
+                        s, inst.id, "provisioning", "booting", public_ipv4=pi.public_ipv4, port=pi.port, ip_at=utcnow()
+                    )
                     if cur.create_accepted_at:
                         secs = (utcnow() - cur.create_accepted_at).total_seconds()
-                        await record_phase(s, phase="create", seconds=secs, inst=cur,
-                                           estimate_key=f"create:{cur.image_kind}:{cur.size_slug}:{cur.region}")
+                        await record_phase(
+                            s,
+                            phase="create",
+                            seconds=secs,
+                            inst=cur,
+                            estimate_key=f"create:{cur.image_kind}:{cur.size_slug}:{cur.region}",
+                        )
                 return True
             await asyncio.sleep(delays[min(i, len(delays) - 1)] * (self.poll_s / 2.0))
             i += 1
-        await self._fail(inst.id, "The machine took too long to start.", requeue=True, code="late_failure",
-                         outcome="late_failure")
+        await self._fail(
+            inst.id, "The machine took too long to start.", requeue=True, code="late_failure", outcome="late_failure"
+        )
         return False
 
     async def _wait_healthy(self, inst: Instance) -> bool:
@@ -320,25 +433,40 @@ class Provisioner:
                 async with client:
                     h = await client.health()
                     if not protocol_compatible(h.protocol):
-                        await self._fail(inst.id, "Worker software version mismatch.", requeue=True,
-                                         code="boot_failure", outcome="boot_failure")
+                        await self._fail(
+                            inst.id,
+                            "Worker software version mismatch.",
+                            requeue=True,
+                            code="boot_failure",
+                            outcome="boot_failure",
+                        )
                         return False
                     if h.engine_ready:
                         new_token = await client.rotate_token()  # the copy in user_data is now useless
                         async with self.app.sessionmaker() as s, s.begin():
                             now = utcnow()
                             await transition_instance(
-                                s, inst.id, "booting", "ready",
-                                ready_at=now, idle_since=now, last_contact_at=now,
+                                s,
+                                inst.id,
+                                "booting",
+                                "ready",
+                                ready_at=now,
+                                idle_since=now,
+                                last_contact_at=now,
                                 max_lifetime_at=now + timedelta(seconds=rs.max_lifetime_s),
                                 token_enc=self.app.keyring.seal(new_token, inst.id.bytes),
-                                files_present=h.files_present, models_loaded=h.models_loaded,
+                                files_present=h.files_present,
+                                models_loaded=h.models_loaded,
                             )
                             if cur.ip_at:
                                 await record_phase(
-                                    s, phase="boot", seconds=(now - cur.ip_at).total_seconds(), inst=cur,
+                                    s,
+                                    phase="boot",
+                                    seconds=(now - cur.ip_at).total_seconds(),
+                                    inst=cur,
                                     estimate_key=f"boot:{cur.image_kind}:{cur.size_slug}:{cur.region}",
                                 )
+                        await self._prefetch(cur, client)
                         await self._wake_scheduler()
                         return True
             except (WorkerUnreachable, OSError):
@@ -346,9 +474,37 @@ class Provisioner:
             except Exception as e:  # TLS handshake errors while the agent starts, etc.
                 log.debug("health probe for %s failed: %s", inst.id, e)
             await asyncio.sleep(self.poll_s * 1.5)
-        await self._fail(inst.id, "The machine started but its software did not come up.", requeue=True,
-                         code="boot_failure", outcome="boot_failure")
+        await self._fail(
+            inst.id,
+            "The machine started but its software did not come up.",
+            requeue=True,
+            code="boot_failure",
+            outcome="boot_failure",
+        )
         return False
+
+    async def _prefetch(self, inst: Instance, client) -> None:  # type: ignore[no-untyped-def]
+        """Warm-up machines start downloading the expected model right away."""
+        cand = (
+            (inst.candidates or [{}])[min(inst.attempt_index, max(0, len(inst.candidates or []) - 1))]
+            if inst.candidates
+            else {}
+        )
+        mid = cand.get("prefetch_model")
+        if not mid or mid not in self.app.catalog.models:
+            return
+        try:
+            from aivo.controller.dispatcher import JobRunner
+
+            mf = self.app.catalog.get(mid).manifest
+            variant = mf.variant(cand.get("variant_id") or mf.variants[0].id)
+            runner = JobRunner(self.app)
+            fetches = [runner._fetch_spec(f, inst) for f in mf.files_for(variant, cand.get("prefetch_mode"))]
+            from aivo_protocol.worker_api import EnsureFilesIn
+
+            await client.ensure_files(EnsureFilesIn(files=fetches))
+        except Exception as e:
+            log.info("prefetch for %s skipped: %s", inst.id, e)
 
     async def _wake_scheduler(self) -> None:
         if self.app.controller is not None:
@@ -364,7 +520,9 @@ class Provisioner:
         app = self.app
         rs = await app.runtime()
         async with app.sessionmaker() as s, s.begin():
-            inst = (await s.execute(select(Instance).where(Instance.id == inst_id).with_for_update())).scalar_one_or_none()
+            inst = (
+                await s.execute(select(Instance).where(Instance.id == inst_id).with_for_update())
+            ).scalar_one_or_none()
             if inst is None:
                 return
             if outcome and inst.offer_key and inst.candidates:
@@ -375,39 +533,78 @@ class Provisioner:
                     pass
             if inst.provider_instance_id:
                 await transition_instance(
-                    s, inst.id, tuple(x for x in ("pending", "creating", "provisioning", "booting", "ready", "busy",
-                                                  "draining") if x != "destroying"),
-                    "destroying", outcome="failed", failure_reason=message, destroy_requested_at=utcnow(),
+                    s,
+                    inst.id,
+                    tuple(
+                        x
+                        for x in ("pending", "creating", "provisioning", "booting", "ready", "busy", "draining")
+                        if x != "destroying"
+                    ),
+                    "destroying",
+                    outcome="failed",
+                    failure_reason=message,
+                    destroy_requested_at=utcnow(),
                 )
             else:
                 await transition_instance(
-                    s, inst.id, ("pending", "creating"), "destroyed", outcome="failed", failure_reason=message,
+                    s,
+                    inst.id,
+                    ("pending", "creating"),
+                    "destroyed",
+                    outcome="failed",
+                    failure_reason=message,
                 )
             await s.execute(
-                update(CacheResource).where(CacheResource.attached_instance_id == inst.id)
+                update(CacheResource)
+                .where(CacheResource.attached_instance_id == inst.id)
                 .values(attached_instance_id=None)
             )
             jobs = (
-                await s.execute(
-                    select(Job).where(Job.instance_id == inst.id, Job.state.in_(("provisioning", "queued", "assigned")))
+                (
+                    await s.execute(
+                        select(Job).where(
+                            Job.instance_id == inst.id, Job.state.in_(("provisioning", "queued", "assigned"))
+                        )
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             now = utcnow()
             for j in jobs:
                 if not requeue:
-                    await transition_job(s, j.id, j.state, "failed", error_code=code, error_message=message,
-                                         stage="failed", instance_id=None)
+                    await transition_job(
+                        s,
+                        j.id,
+                        j.state,
+                        "failed",
+                        error_code=code,
+                        error_message=message,
+                        stage="failed",
+                        instance_id=None,
+                    )
                     continue
                 wait_until = j.capacity_wait_until or now + timedelta(seconds=rs.capacity_wait_max_s)
                 if now >= wait_until:
-                    await transition_job(s, j.id, j.state, "failed", error_code="no_capacity",
-                                         error_message="No GPU machine became available. Please try again later.",
-                                         stage="failed", instance_id=None)
+                    await transition_job(
+                        s,
+                        j.id,
+                        j.state,
+                        "failed",
+                        error_code="no_capacity",
+                        error_message="No GPU machine became available. Please try again later.",
+                        stage="failed",
+                        instance_id=None,
+                    )
                 else:
                     backoff = 30 if code not in ("no_capacity", "quota") else min(300, 120 + 60 * j.attempt)
                     await transition_job(
-                        s, j.id, j.state, "waiting_capacity" if code in ("no_capacity", "quota") else "queued",
-                        instance_id=None, stage="waiting_for_gpu" if code in ("no_capacity", "quota") else "queued",
+                        s,
+                        j.id,
+                        j.state,
+                        "waiting_capacity" if code in ("no_capacity", "quota") else "queued",
+                        instance_id=None,
+                        stage="waiting_for_gpu" if code in ("no_capacity", "quota") else "queued",
                         capacity_wait_until=wait_until,
                         next_attempt_at=min(now + timedelta(seconds=backoff), wait_until),
                         error_message=message if code in ("no_capacity", "quota") else None,

@@ -28,27 +28,39 @@ from aivo.providers.regions import region_meta
 
 def asset_out(a: Asset, thumb: Asset | None = None) -> AssetOut:
     return AssetOut(
-        id=a.id, media_type=a.media_type, width=a.width, height=a.height, duration_s=a.duration_s,
-        bytes=a.plaintext_size, url=f"/api/v1/assets/{a.id}", download_url=f"/api/v1/assets/{a.id}?download=1",
+        id=a.id,
+        media_type=a.media_type,
+        width=a.width,
+        height=a.height,
+        duration_s=a.duration_s,
+        bytes=a.plaintext_size,
+        url=f"/api/v1/assets/{a.id}",
+        download_url=f"/api/v1/assets/{a.id}?download=1",
         thumb_url=f"/api/v1/assets/{thumb.id}" if thumb else None,
     )
 
 
 def machine_choice(c: Candidate) -> MachineChoice:
     return MachineChoice(
-        key=c.key, instance_id=c.instance_id, gpu=c.offer.gpu_model, gpu_class=c.offer.gpu_class,
-        vram_gb=c.offer.vram_gb, region=c.offer.region, region_name=region_meta(c.offer.region).name,
-        price_hourly=c.offer.price_hourly, est_wait_s=round(c.wait_s, 1), est_cost_usd=round(c.cost_usd, 4),
-        suitability=c.suitability, reasons=c.reasons,
+        key=c.key,
+        instance_id=c.instance_id,
+        gpu=c.offer.gpu_model,
+        gpu_class=c.offer.gpu_class,
+        vram_gb=c.offer.vram_gb,
+        region=c.offer.region,
+        region_name=region_meta(c.offer.region).name,
+        price_hourly=c.offer.price_hourly,
+        est_wait_s=round(c.wait_s, 1),
+        est_cost_usd=round(c.cost_usd, 4),
+        suitability=c.suitability,
+        reasons=c.reasons,
         status="running" if "running" in c.flags else "starting" if "starting" in c.flags else "new",
         engine_version="full" if c.variant.precision in ("bf16", "fp16") else "light",
     )
 
 
 async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | None = None) -> JobOut:
-    assets = (
-        await s.execute(select(Asset).where(Asset.job_id == job.id, Asset.deleted_at.is_(None)))
-    ).scalars().all()
+    assets = (await s.execute(select(Asset).where(Asset.job_id == job.id, Asset.deleted_at.is_(None)))).scalars().all()
     thumbs = {a.parent_asset_id: a for a in assets if a.role == "thumb"}
     outputs = [asset_out(a, thumbs.get(a.id)) for a in assets if a.role == "output"]
     reference = None
@@ -64,19 +76,40 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
             machine = f"{inst.gpu_model} in {region_meta(inst.region).name}"
     kr = app.keyring
     return JobOut(
-        id=job.id, user_id=job.user_id, user_name=user_name, kind=job.kind, mode=job.mode, model_id=job.model_id,
+        id=job.id,
+        user_id=job.user_id,
+        user_name=user_name,
+        kind=job.kind,
+        mode=job.mode,
+        model_id=job.model_id,
         model_name=model.manifest.display_name if model else job.model_id,
         prompt=kr.open(job.prompt_enc, job.id.bytes) or "",
-        avoid=kr.open(job.avoid_enc, job.id.bytes), lyrics=kr.open(job.lyrics_enc, job.id.bytes),
-        params=job.friendly_params, state=job.state, stage=job.stage, progress=job.progress, eta_s=job.eta_s,
-        est_cost_usd=job.est_cost_usd, est_wait_s=job.est_wait_s, cost_usd=job.attributed_cost_usd,
-        error=job.error_message, machine=machine, seed=(job.resolved or {}).get("seed"),
-        created_at=job.created_at, finished_at=job.finished_at, outputs=outputs, reference=reference,
+        avoid=kr.open(job.avoid_enc, job.id.bytes),
+        lyrics=kr.open(job.lyrics_enc, job.id.bytes),
+        params=job.friendly_params,
+        state=job.state,
+        stage=job.stage,
+        progress=job.progress,
+        eta_s=job.eta_s,
+        est_cost_usd=job.est_cost_usd,
+        est_wait_s=job.est_wait_s,
+        cost_usd=job.attributed_cost_usd,
+        error=job.error_message,
+        machine=machine,
+        seed=(job.resolved or {}).get("seed"),
+        created_at=job.created_at,
+        finished_at=job.finished_at,
+        outputs=outputs,
+        reference=reference,
     )
 
 
 async def estimate(
-    app: AppContext, s: AsyncSession, fp: FriendlyParams, preference: str | None, *,
+    app: AppContext,
+    s: AsyncSession,
+    fp: FriendlyParams,
+    preference: str | None,
+    *,
     manual_offer_key: str | None = None,
 ) -> EstimateOut:
     rs = await app.runtime(s)
@@ -107,17 +140,33 @@ async def estimate(
     await s.rollback()  # ensure_period may have inserted a row; estimates are read-only
     model_name = pl.model.manifest.display_name
     if not cands:
-        msg = "All machines are busy — your request will wait in line." if live_count >= rs.max_instances else \
-            "No suitable GPU machine is available right now."
+        msg = (
+            "All machines are busy — your request will wait in line."
+            if live_count >= rs.max_instances
+            else "No suitable GPU machine is available right now."
+        )
         if period.locked:
             msg = "This month's spending limit has been reached."
-        return EstimateOut(model_id=pl.model.id, model_name=model_name, est_cost_usd=None, est_wait_s=None,
-                           machine=None, over_soft_cap=over_soft, budget_left_usd=left, message=msg)
+        return EstimateOut(
+            model_id=pl.model.id,
+            model_name=model_name,
+            est_cost_usd=None,
+            est_wait_s=None,
+            machine=None,
+            over_soft_cap=over_soft,
+            budget_left_usd=left,
+            message=msg,
+        )
     top = cands[0]
     return EstimateOut(
-        model_id=pl.model.id, model_name=model_name, est_cost_usd=round(top.cost_usd, 4),
-        est_wait_s=round(top.wait_s, 1), machine=machine_choice(top),
-        alternatives=[machine_choice(c) for c in cands[1:10]], over_soft_cap=over_soft, budget_left_usd=left,
+        model_id=pl.model.id,
+        model_name=model_name,
+        est_cost_usd=round(top.cost_usd, 4),
+        est_wait_s=round(top.wait_s, 1),
+        machine=machine_choice(top),
+        alternatives=[machine_choice(c) for c in cands[1:10]],
+        over_soft_cap=over_soft,
+        budget_left_usd=left,
     )
 
 
@@ -147,9 +196,12 @@ async def create_job(
     spent = await month_compute_spend(s, period.period) + await open_reservations(s)
     if float(spent) >= rs.soft_cap_usd and not body.confirm_over_soft_cap:
         raise HTTPException(
-            409, detail={"code": "confirm_soft_cap",
-                         "message": f"You've used ${float(spent):.2f} of your ${rs.soft_cap_usd:.0f} monthly "
-                                    "budget warning level. Continue anyway?"},
+            409,
+            detail={
+                "code": "confirm_soft_cap",
+                "message": f"You've used ${float(spent):.2f} of your ${rs.soft_cap_usd:.0f} monthly "
+                "budget warning level. Continue anyway?",
+            },
         )
     jid = uuid.uuid4()
     friendly = body.model_dump(
@@ -160,13 +212,23 @@ async def create_job(
     friendly["mode"] = pl.mode
     kr = app.keyring
     job = Job(
-        id=jid, user_id=user.id, idempotency_key=idem_key, kind=body.kind, mode=pl.mode, model_id=pl.model.id,
-        prompt_enc=kr.seal(body.prompt, jid.bytes), avoid_enc=kr.seal(body.avoid, jid.bytes),
-        lyrics_enc=kr.seal(body.lyrics, jid.bytes), friendly_params=friendly,
+        id=jid,
+        user_id=user.id,
+        idempotency_key=idem_key,
+        kind=body.kind,
+        mode=pl.mode,
+        model_id=pl.model.id,
+        prompt_enc=kr.seal(body.prompt, jid.bytes),
+        avoid_enc=kr.seal(body.avoid, jid.bytes),
+        lyrics_enc=kr.seal(body.lyrics, jid.bytes),
+        friendly_params=friendly,
         input_asset_ids=[body.reference_asset_id] if body.reference_asset_id else [],
-        preference=body.preference or rs.preference_default, placement_mode=body.placement.mode,
-        manual_offer_key=body.placement.offer_key, allow_fallback=body.placement.allow_fallback,
-        state="queued", stage="queued",
+        preference=body.preference or rs.preference_default,
+        placement_mode=body.placement.mode,
+        manual_offer_key=body.placement.offer_key,
+        allow_fallback=body.placement.allow_fallback,
+        state="queued",
+        stage="queued",
     )
     s.add(job)
     try:

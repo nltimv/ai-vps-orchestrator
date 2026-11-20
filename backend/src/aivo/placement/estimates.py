@@ -39,9 +39,7 @@ class Estimator:
     def throughput_gbps(self, source: str, region: str) -> float:
         return self._lookup(f"thr:{source}:{region}", f"thr:{source}", default=THROUGHPUT_GBPS.get(source, 0.25))
 
-    def run_seconds_per_unit(
-        self, model_id: str, quality: str, gpu_class: str | None, prior: float
-    ) -> float:
+    def run_seconds_per_unit(self, model_id: str, quality: str, gpu_class: str | None, prior: float) -> float:
         if gpu_class:
             return self._lookup(f"run:{model_id}:{quality}:{gpu_class}", default=prior)
         return prior
