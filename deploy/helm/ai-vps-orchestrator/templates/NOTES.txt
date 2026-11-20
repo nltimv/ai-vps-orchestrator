@@ -1,0 +1,13 @@
+aivo is installed.
+
+{{- if .Values.ingress.enabled }}
+Open https://{{ .Values.ingress.host }}
+{{- else }}
+  kubectl port-forward svc/{{ include "aivo.fullname" . }} 8080:{{ .Values.service.port }}
+  open http://localhost:8080
+{{- end }}
+
+The first visit asks you to create the admin account (unless secrets.adminEmail/adminPassword were set).
+
+IMPORTANT: back up the media encryption key (secrets.mediaKeks / AIVO_MEDIA_KEKS) separately from the
+media volume. Without it the gallery cannot be decrypted.

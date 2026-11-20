@@ -19,7 +19,7 @@ Preference = Literal["economy", "balanced", "fast"]
 
 
 class EnvSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="AIVO_", env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_prefix="AIVO_", env_file=".env", extra="ignore", env_ignore_empty=True)
 
     database_url: str = "postgresql+asyncpg://aivo:aivo@localhost:5432/aivo"
     role: Literal["api", "controller", "all"] = "all"

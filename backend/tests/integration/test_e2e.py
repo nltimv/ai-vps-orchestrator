@@ -138,3 +138,21 @@ async def test_unauthenticated_and_csrf(env):
             "/api/v1/auth/setup", json={"email": "x@example.com", "display_name": "X", "password": "another password"}
         )
         assert r.status_code == 403
+
+
+async def test_prewarm_only_when_enabled(env):
+    async with Harness(env) as h:
+        await h.setup_admin()
+        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
+        assert r == {"started": False, "reason": "disabled"}
+        await h.client.put("/api/v1/settings", json={"speculative_warmup": True})
+        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
+        assert r["started"] is True
+
+        async def ready():
+            rows = await h.sql("SELECT state FROM instances")
+            return rows and rows[0][0] == "ready"
+
+        await h.wait_for(ready, timeout=15)
+        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
+        assert r == {"started": False, "reason": "already_running"}

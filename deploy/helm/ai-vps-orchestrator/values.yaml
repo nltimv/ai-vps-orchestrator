@@ -1,0 +1,119 @@
+# -- Image settings
+image:
+  backend:
+    repository: ghcr.io/nltimv/aivo-backend
+    tag: ""          # defaults to the chart appVersion
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: ghcr.io/nltimv/aivo-frontend
+    tag: ""
+    pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# -- Cloud provider: digitalocean | fake
+provider: digitalocean
+# -- Worker image the GPU machines run
+workerImage: ghcr.io/nltimv/aivo-worker:latest
+
+# -- Secrets. Either let the chart create one from these values, or point at an existing Secret
+#    with keys: AIVO_MEDIA_KEKS, AIVO_DO_TOKEN, [AIVO_DO_WATCHDOG_TOKEN, AIVO_SPACES_KEY, AIVO_SPACES_SECRET,
+#    AIVO_HF_TOKEN, AIVO_ADMIN_PASSWORD, AIVO_DATABASE_URL]
+secrets:
+  existingSecret: ""
+  mediaKeks: ""            # `aivo generate-key` -> "k1:<base64>"; back it up, it decrypts the gallery
+  mediaActiveKeyId: ""
+  doToken: ""
+  doWatchdogToken: ""
+  spacesKey: ""
+  spacesSecret: ""
+  hfToken: ""
+  adminEmail: ""
+  adminPassword: ""
+
+spaces:
+  region: ""
+  bucket: ""
+  endpoint: ""
+
+# -- combined: one pod runs API + controller (works with a ReadWriteOnce media volume; recommended)
+#    split: separate API and controller pods (both mount the media volume -> needs ReadWriteMany)
+topology: combined
+
+# -- API pods (split topology)
+api:
+  replicas: 1
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+# -- Controller: exactly one active instance (lease-protected); Recreate on upgrade
+controller:
+  enabled: true
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 1Gi }
+
+frontend:
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+    limits: { memory: 128Mi }
+
+# -- Encrypted media volume: the ONLY place generated content is stored (ciphertext only).
+media:
+  persistence:
+    enabled: true
+    existingClaim: ""
+    storageClass: ""       # any storage you control; content is encrypted before it reaches the disk
+    accessModes: [ReadWriteOnce]
+    size: 50Gi
+
+# -- RAM-backed scratch for transient plaintext (thumbnails); never written to disk
+scratch:
+  sizeLimit: 2Gi
+
+# -- Database: bundled PostgreSQL (official image) or an external DSN
+postgresql:
+  enabled: true
+  image: postgres:17-alpine
+  storageClass: ""
+  size: 10Gi
+  password: ""             # generated if empty
+externalDatabase:
+  url: ""                  # postgresql+asyncpg://user:pass@host:5432/aivo (or via existingSecret AIVO_DATABASE_URL)
+
+# -- Backstop that destroys idle/expired machines if the controller is down
+janitor:
+  enabled: true
+  schedule: "*/5 * * * *"
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  # cert-manager.io/cluster-issuer: letsencrypt
+  host: aivo.example.com
+  tls:
+    enabled: true
+    secretName: aivo-tls
+
+# -- Gateway API alternative to Ingress
+httpRoute:
+  enabled: false
+  parentRefs: []
+  hostnames: []
+
+networkPolicy:
+  enabled: true
+
+extraEnv: []
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 10001
+nodeSelector: {}
+tolerations: []
+affinity: {}

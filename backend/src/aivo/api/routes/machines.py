@@ -156,6 +156,29 @@ async def offers(
     }
 
 
+@router.post("/prewarm", status_code=202)
+async def prewarm(
+    body: WarmupIn,
+    user: User = Depends(current_user),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """Speculative start when someone opens the Create page (only if enabled in Settings and nothing runs)."""
+    rs = await app.runtime(s)
+    if not rs.speculative_warmup:
+        return {"started": False, "reason": "disabled"}
+    live = (
+        await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
+    ).scalar_one()
+    if live:
+        return {"started": False, "reason": "already_running"}
+    try:
+        choice = await warmup(WarmupIn(kind=body.kind, quality=body.quality), user=user, app=app, s=s)
+    except HTTPException as e:
+        return {"started": False, "reason": str(e.detail)}
+    return {"started": True, "machine": choice.model_dump()}
+
+
 @router.post("/warmup", status_code=202)
 async def warmup(
     body: WarmupIn,

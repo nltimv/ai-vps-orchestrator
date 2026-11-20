@@ -1,0 +1,41 @@
+{{- if .Values.networkPolicy.enabled }}
+# Backend: reachable only from the frontend pods. (Egress stays open: it must reach the
+# cloud API, the GPU machines and model mirrors.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aivo.fullname" . }}-backend
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "aivo.selector" . | nindent 6 }}
+      aivo/backend: "true"
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "aivo.selector" . | nindent 14 }}
+              app.kubernetes.io/component: frontend
+      ports:
+        - { port: 8000 }
+{{- if .Values.postgresql.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "aivo.fullname" . }}-postgres
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- include "aivo.selector" . | nindent 6 }}
+      app.kubernetes.io/component: postgres
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {{- include "aivo.selector" . | nindent 14 }}
+              aivo/backend: "true"
+      ports:
+        - { port: 5432 }
+{{- end }}
+{{- end }}

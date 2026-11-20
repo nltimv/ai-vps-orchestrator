@@ -92,6 +92,12 @@ export function CreatePage() {
   const { prompt: _ignored, ...estimateKey } = body;
   const estimate = useEstimate({ ...estimateKey, prompt: "estimate" }, !!catalog.data && usable.length > 0);
   useEffect(() => { if (estimate.data?.model_id) setRoutedId(estimate.data.model_id); }, [estimate.data?.model_id]);
+  // speculative start (only does something when enabled in Settings and no machine is running)
+  useEffect(() => {
+    if (sessionStorage.getItem("aivo-prewarmed")) return;
+    sessionStorage.setItem("aivo-prewarmed", "1");
+    post("/machines/prewarm", { kind: "image", quality: "standard" }).catch(() => undefined);
+  }, []);
 
   const submit = async (confirmed = false) => {
     if (!fullPrompt.trim()) return;
