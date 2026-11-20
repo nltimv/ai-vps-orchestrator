@@ -124,7 +124,12 @@ class Scheduler:
                 # reserved-but-busy machines: only the ones with spare queue capacity
                 cands = apply_manual(job, rank(req, offers, live, ctx))
                 if not cands:
-                    await self._no_candidates(s, job, rs, live_count, ctx)
+                    fits_new = False
+                    if live_count >= rs.max_instances and not period.locked:
+                        ctx.allow_new = True
+                        fits_new = bool(rank(req, offers, [], ctx))
+                        ctx.allow_new = False
+                    await self._no_candidates(s, job, rs, live_count, ctx, fits_new)
                     continue
                 top = cands[0]
                 if top.instance_id is not None:
@@ -193,10 +198,25 @@ class Scheduler:
         ).scalar_one()
         return n > 0
 
-    async def _no_candidates(self, s: AsyncSession, job: Job, rs: RuntimeSettings, live_count: int, ctx: Context) -> None:
+    async def _no_candidates(
+        self, s: AsyncSession, job: Job, rs: RuntimeSettings, live_count: int, ctx: Context, fits_new: bool
+    ) -> None:
         now = utcnow()
         if live_count >= rs.max_instances:
-            # everything is busy: wait in line, re-check shortly
+            # an idle machine that can't run this job is blocking the slot: replace it
+            idle = (
+                await s.execute(
+                    select(Instance).where(
+                        Instance.state == "ready", Instance.drain_reason.is_(None),
+                        (Instance.keep_warm_until.is_(None)) | (Instance.keep_warm_until < now),
+                    ).with_for_update(skip_locked=True)
+                )
+            ).scalars().all()
+            for inst in idle if fits_new else []:
+                if not await self._has_reserved(s, inst.id):
+                    await transition_instance(s, inst.id, "ready", "draining", drain_reason="make_room",
+                                              draining_at=now, event_payload={"reason": "make_room"})
+                    break
             if job.stage != "waiting_in_line":
                 await transition_job(s, job.id, job.state, "queued", stage="waiting_in_line")
             return
@@ -209,7 +229,7 @@ class Scheduler:
             return
         await transition_job(
             s, job.id, job.state, "waiting_capacity", stage="waiting_for_gpu", capacity_wait_until=wait_until,
-            next_attempt_at=now + timedelta(seconds=min(300, 60 + 60 * job.attempt)),
+            next_attempt_at=min(now + timedelta(seconds=min(300, 60 + 60 * job.attempt)), wait_until),
         )
 
     async def _assign(

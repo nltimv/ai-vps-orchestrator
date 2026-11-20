@@ -408,6 +408,7 @@ class Provisioner:
                     await transition_job(
                         s, j.id, j.state, "waiting_capacity" if code in ("no_capacity", "quota") else "queued",
                         instance_id=None, stage="waiting_for_gpu" if code in ("no_capacity", "quota") else "queued",
-                        capacity_wait_until=wait_until, next_attempt_at=now + timedelta(seconds=backoff),
+                        capacity_wait_until=wait_until,
+                        next_attempt_at=min(now + timedelta(seconds=backoff), wait_until),
                         error_message=message if code in ("no_capacity", "quota") else None,
                     )

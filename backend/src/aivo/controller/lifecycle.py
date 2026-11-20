@@ -23,7 +23,7 @@ LIVE_INSTANCE_STATES = (
 STARTING_STATES = ("pending", "creating", "provisioning", "booting")
 
 INSTANCE_TRANSITIONS: dict[str, set[str]] = {
-    "pending": {"creating", "destroyed", "destroying"},
+    "pending": {"creating", "provisioning", "destroyed", "destroying"},
     "creating": {"pending", "provisioning", "destroying", "destroyed"},
     "provisioning": {"booting", "destroying"},
     "booting": {"ready", "destroying"},
