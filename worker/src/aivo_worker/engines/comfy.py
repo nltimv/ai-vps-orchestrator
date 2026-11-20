@@ -12,9 +12,12 @@ import contextlib
 import json
 import logging
 import os
+import re
 import shutil
 import sys
+import time
 import uuid
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +26,7 @@ import websockets
 
 from aivo_protocol.worker_api import GpuInfo, JobIn, WorkerBootstrap
 from aivo_worker.engines.base import EngineError, ProgressCb
+from aivo_worker.logbuf import LogBuffer
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +45,8 @@ MODEL_FOLDERS = (
     "latent_upscale_models",
 )
 OOM_HINTS = ("out of memory", "outofmemory", "cuda error: out of memory", "hip out of memory", "allocation")
+PROGRESS_EVERY_S = 3.0  # ComfyUI redraws progress bars with \r many times a second; keep one every few s
+_PERCENT = re.compile(r"(\d{1,3})%\|")
 
 
 class ComfyEngine:
@@ -67,6 +73,10 @@ class ComfyEngine:
         self._gpu: GpuInfo | None = None
         self._http = httpx.AsyncClient(base_url=self.base, timeout=60, trust_env=False)
         self._watch: asyncio.Task[None] | None = None
+        self._pump: asyncio.Task[None] | None = None
+        self.logs: LogBuffer | None = None
+        self.recent: deque[str] = deque(maxlen=30)  # last output lines, for error messages
+        self._last_progress = 0.0
 
     @classmethod
     def from_env(cls, boot: WorkerBootstrap) -> ComfyEngine:
@@ -125,10 +135,23 @@ class ComfyEngine:
             *self.extra_args,
         ]
         log.info("starting ComfyUI: %s", " ".join(args))
-        self._proc = await asyncio.create_subprocess_exec(*args, cwd=str(self.comfy_dir))
+        self._proc = await asyncio.create_subprocess_exec(
+            *args,
+            cwd=str(self.comfy_dir),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        assert self._proc.stdout is not None
+        self._pump = asyncio.create_task(self._pump_output(self._proc.stdout), name="comfy-output")
         for _ in range(600):
             if self._proc.returncode is not None:
-                raise EngineError(f"ComfyUI exited with code {self._proc.returncode}")
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(self._pump), 2)  # collect the last words
+                tail = " | ".join(list(self.recent)[-3:])
+                raise EngineError(
+                    f"ComfyUI exited with code {self._proc.returncode}" + (f": {_short(tail, 300)}" if tail else "")
+                )
             try:
                 r = await self._http.get("/system_stats", timeout=2)
                 if r.status_code == 200:
@@ -140,6 +163,44 @@ class ComfyEngine:
                 pass
             await asyncio.sleep(1)
         raise EngineError("ComfyUI did not start in time")
+
+    async def _pump_output(self, stream: asyncio.StreamReader) -> None:
+        """Copy ComfyUI's output to our stdout (docker logs) and into the machine log."""
+        out = getattr(sys.stdout, "buffer", None)
+        pending = ""
+        while True:
+            chunk = await stream.read(65536)
+            if not chunk:
+                break
+            if out is not None:
+                with contextlib.suppress(Exception):
+                    out.write(chunk)
+                    out.flush()
+            pending += chunk.decode("utf-8", errors="replace")
+            # A line ends at \n; a progress bar redraw ends at \r.
+            parts = re.split(r"(\r\n|\n|\r)", pending)
+            pending = parts.pop()  # incomplete remainder
+            for text, sep in zip(parts[::2], parts[1::2], strict=True):
+                self._line(text, redraw=sep == "\r")
+        if pending:
+            self._line(pending, redraw=False)
+
+    def _line(self, text: str, *, redraw: bool) -> None:
+        text = text.rstrip()
+        if not text.strip():
+            return
+        if redraw or _PERCENT.search(text):
+            m = _PERCENT.search(text)
+            done = m is not None and m.group(1) == "100"
+            now = time.monotonic()
+            if not done and now - self._last_progress < PROGRESS_EVERY_S:
+                return
+            self._last_progress = now
+        self.recent.append(text)
+        if self.logs is not None:
+            low = text.lower()
+            level = "error" if ("error" in low or "traceback" in low or "exception" in low) else None
+            self.logs.emit("engine", text, level)
 
     async def _watch_proc(self) -> None:
         assert self._proc is not None
@@ -157,6 +218,10 @@ class ComfyEngine:
                 await asyncio.wait_for(self._proc.wait(), 15)
             if self._proc.returncode is None:
                 self._proc.kill()
+        if self._pump:
+            with contextlib.suppress(TimeoutError, asyncio.CancelledError, Exception):
+                await asyncio.wait_for(self._pump, 5)
+            self._pump.cancel()
         await self._http.aclose()
 
     async def cancel(self) -> None:

@@ -18,6 +18,7 @@ from PIL import Image, ImageDraw
 
 from aivo_protocol.worker_api import GpuInfo, JobIn
 from aivo_worker.engines.base import EngineError, ProgressCb
+from aivo_worker.logbuf import LogBuffer
 
 
 class MockEngine:
@@ -29,6 +30,12 @@ class MockEngine:
         self._ready = False
         self._loaded: list[str] = []
         self._cancel = asyncio.Event()
+        self.logs: LogBuffer | None = None
+
+    def _say(self, text: str, level: str | None = None) -> None:
+        """Lines shaped like ComfyUI's own output, so the machine log looks realistic in dev."""
+        if self.logs is not None:
+            self.logs.emit("engine", text, level)
 
     @property
     def ready(self) -> bool:
@@ -39,6 +46,9 @@ class MockEngine:
         return list(self._loaded)
 
     async def start(self) -> None:
+        self._say("Total VRAM 49140 MB, total RAM 128000 MB (mock GPU)")
+        self._say("Starting server")
+        self._say("To see the GUI go to: http://127.0.0.1:8188")
         self._ready = True
 
     async def stop(self) -> None:
@@ -52,19 +62,33 @@ class MockEngine:
 
     async def run(self, job: JobIn, inputs_dir: Path, out_dir: Path, progress: ProgressCb) -> list[Path]:
         self._cancel.clear()
+        self._say("got prompt")
+        t0 = asyncio.get_running_loop().time()
         if self.fail_next:
             code, self.fail_next = self.fail_next, None
+            if code == "oom":
+                self._say("torch.OutOfMemoryError: Allocation on device (simulated)", "error")
+            else:
+                self._say("!!! Exception during processing !!! simulated failure", "error")
             raise EngineError("simulated failure", code=code)
         if job.model_id not in self._loaded:
             progress(0.0, "loading_model")
+            self._say(f"Requested to load model {job.model_id}")
             await asyncio.sleep(min(0.3, self.job_seconds / 4))
             self._loaded = [job.model_id]
+            self._say(f"loaded completely; {job.model_id}")
         steps = 10
         for i in range(steps):
             if self._cancel.is_set():
+                self._say("Processing interrupted")
                 raise EngineError("cancelled", code="cancelled")
             progress(i / steps, "generating")
+            if i % 3 == 0:
+                bar = "█" * i + " " * (steps - i)
+                self._say(f"{i * 10:3d}%|{bar}| {i}/{steps} [00:0{i}<00:0{steps - i}]")
             await asyncio.sleep(self.job_seconds / steps)
+        self._say(f"100%|{'█' * steps}| {steps}/{steps}")
+        self._say(f"Prompt executed in {asyncio.get_running_loop().time() - t0:.2f} seconds")
         progress(1.0, "saving")
         out = job.output
         seed = int(hashlib.sha256(job.job_id.encode()).hexdigest()[:8], 16)

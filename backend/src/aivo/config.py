@@ -42,6 +42,13 @@ class EnvSettings(BaseSettings):
     do_api_base: str = "https://api.digitalocean.com"
     # Optional custom-scoped token (droplet:delete) handed to workers for the self-destruct watchdog.
     do_watchdog_token: SecretStr | None = None
+    # Operating-system image for GPU machines without a prepared image. DigitalOcean's GPU images come with
+    # the GPU driver; a plain Ubuntu image has none, and the AI engine can't start there.
+    do_base_image: str = "gpu-h100x1-base"
+    do_base_image_amd: str = "gpu-amd-base"
+    # Debugging only: your own DigitalOcean SSH key ids/fingerprints, added to every machine
+    # (also open port 22 with Settings -> debug_ssh_cidrs).
+    do_ssh_key_ids: CsvList = Field(default_factory=list)
 
     spaces_key: SecretStr | None = None
     spaces_secret: SecretStr | None = None
@@ -83,10 +90,21 @@ class EnvSettings(BaseSettings):
     # Fake provider tuning (dev/CI)
     fake_boot_seconds: float = 2.0
     fake_job_seconds: float = 2.0
+    # Simulated problems for the next machines, e.g. "boot_reports_failure,boot_reports_failure"
+    # (see providers/fake/provider.py for the list). Dev only.
+    fake_chaos: CsvList = Field(default_factory=list)
 
     log_level: str = "INFO"
 
-    @field_validator("oidc_allowed_domains", "oidc_allowed_groups", "oidc_admin_groups", "cors_origins", mode="before")
+    @field_validator(
+        "oidc_allowed_domains",
+        "oidc_allowed_groups",
+        "oidc_admin_groups",
+        "cors_origins",
+        "do_ssh_key_ids",
+        "fake_chaos",
+        mode="before",
+    )
     @classmethod
     def _split_csv(cls, v: object) -> object:
         if isinstance(v, str):
@@ -139,7 +157,15 @@ class RuntimeSettings(BaseModel):
     max_create_attempts: int = 8
     provision_deadline_s: int = 900
     boot_ip_timeout_s: int = 480
-    boot_health_timeout_s: int = 600
+    # Time for a machine's software to come up. Extended while it reports progress, up to boot_health_max_s.
+    boot_health_timeout_s: int = 600  # from a prepared machine image
+    boot_health_timeout_base_s: int = 1500  # from the plain GPU image (installs and downloads everything)
+    boot_health_max_s: int = 2400
+    boot_progress_grace_s: int = 300  # each sign of start-up progress allows this much more time
+    # Pause new machines after this many start-up failures in a row (0 = never).
+    boot_failures_before_pause: int = 2
+    requeue_backoff_s: int = 30  # pause before a job gets another machine after one failed
+    debug_ssh_cidrs: list[str] = Field(default_factory=list)  # opens SSH (port 22) to these addresses
     capacity_cooldown_s: int = 600
     per_job_confirm_usd: float = 1.0
 

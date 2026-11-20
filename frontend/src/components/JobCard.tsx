@@ -2,6 +2,7 @@ import { AlertTriangle, CheckCircle2, Clock, Film, Image as ImageIcon, Loader2, 
 import { Link } from "react-router-dom";
 
 import { post } from "@/api/client";
+import { useMachines } from "@/api/queries";
 import type { Job } from "@/api/types";
 import { duration, isActive, money, stageLabel } from "@/lib/format";
 
@@ -14,6 +15,11 @@ export const KindIcon = ({ kind, className }: { kind: string; className?: string
 
 export function JobCard({ job }: { job: Job }) {
   const active = isActive(job.state);
+  const machines = useMachines();
+  const step =
+    job.stage === "starting_machine" && job.instance_id
+      ? machines.data?.live.find((m) => m.id === job.instance_id)?.boot_stage_label
+      : null;
   const stepIdx = STEPS.indexOf(job.stage);
   const overall =
     job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + (job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5)) / STEPS.length;
@@ -40,6 +46,7 @@ export function JobCard({ job }: { job: Job }) {
                 : <Loader2 className="size-3.5 animate-spin" />}
               {stageLabel(job.stage)}
               {job.stage === "generating" && job.progress > 0 ? ` ${Math.round(job.progress * 100)}%` : ""}
+              {step && <span className="font-normal text-muted">· {step}</span>}
             </span>
             <span className="text-muted">
               {job.eta_s ? `about ${duration(job.eta_s)} left` : job.est_wait_s ? `usually ~${duration(job.est_wait_s)}` : ""}

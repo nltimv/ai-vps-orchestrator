@@ -1,4 +1,5 @@
 import base64
+import gzip
 import json
 import uuid
 
@@ -145,8 +146,13 @@ def test_user_data_small_and_contains_only_bootstrap():
     boot = json.loads(base64.b64decode(doc["write_files"][0]["content"]))
     assert boot["instance_id"] == sp.bootstrap.instance_id
     assert set(boot) >= {"token_sha256", "tls_cert_pem", "tls_key_pem", "worker_image"}
-    script = base64.b64decode(doc["write_files"][1]["content"]).decode()
-    assert "169.254.169.254" in script and "tmpfs" in script
+    files = {f["path"]: f for f in doc["write_files"]}
+    assert files["/etc/aivo/bootstrap.json"]["permissions"] == "0600"
+    script = gzip.decompress(base64.b64decode(files["/opt/aivo/bootstrap.sh"]["content"])).decode()
+    assert files["/opt/aivo/bootstrap.sh"]["encoding"] == "gz+b64"
+    assert "169.254.169.254" in script and "tmpfs" in script and "boot_status.py" in script
+    status_py = gzip.decompress(base64.b64decode(files["/opt/aivo/boot_status.py"]["content"])).decode()
+    compile(status_py, "boot_status.py", "exec")
 
 
 @respx.mock

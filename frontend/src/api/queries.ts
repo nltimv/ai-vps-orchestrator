@@ -1,11 +1,7 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { del, get, post, put } from "./client";
-import type {
-  AuthStatus,
-  CacheStatus, Catalog, Estimate, GalleryPage, Health, Instance, Job, OffersResponse, SettingsResponse,
-  Spending, User,
-} from "./types";
+import type { AuthStatus, CacheStatus, Catalog, Estimate, GalleryPage, Health, Job, MachinesResponse, OffersResponse, SettingsResponse, Spending, User } from "./types";
 
 export const useMe = () =>
   useQuery({ queryKey: ["me"], queryFn: () => get<User>("/auth/me"), retry: false, staleTime: 60_000 });
@@ -40,7 +36,7 @@ export const useGallery = (kind: string, mine: boolean) =>
   });
 
 export const useMachines = () =>
-  useQuery({ queryKey: ["machines"], queryFn: () => get<{ live: Instance[]; recent: Instance[] }>("/machines"), refetchInterval: 20_000 });
+  useQuery({ queryKey: ["machines"], queryFn: () => get<MachinesResponse>("/machines"), refetchInterval: 20_000 });
 
 export const useOffers = (kind: string, modelId: string, quality: string, preference: string) =>
   useQuery({

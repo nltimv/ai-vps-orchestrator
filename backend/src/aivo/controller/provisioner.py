@@ -21,9 +21,11 @@ from typing import Any
 from sqlalchemy import select, update
 
 from aivo.context import AppContext
-from aivo.controller.common import record_attempt, record_phase, utcnow, worker_client
+from aivo.controller.common import offer_from_instance, record_attempt, record_phase, utcnow, worker_client
 from aivo.controller.lifecycle import transition_instance, transition_job
+from aivo.controller.pause import note_boot_failure, note_boot_success
 from aivo.db.models import CacheResource, Instance, Job
+from aivo.events.bus import emit
 from aivo.providers.base import (
     AuthError,
     BootImage,
@@ -39,14 +41,30 @@ from aivo.providers.base import (
     instance_tag,
     tags_for,
 )
-from aivo.worker_client.client import WorkerUnreachable
+from aivo.worker_client.client import WorkerClient, WorkerUnreachable
 from aivo.worker_client.tls import make_worker_credentials
 from aivo_protocol import protocol_compatible
-from aivo_protocol.worker_api import WatchdogConfig, WorkerBootstrap
+from aivo_protocol.worker_api import BootStatus, WatchdogConfig, WorkerBootstrap
 
 log = logging.getLogger(__name__)
 
 PAUSE_BETWEEN_ATTEMPTS_S = 2.0
+PROGRESS_BYTES_STEP = 50 * 1024 * 1024
+SAVED_LOG_LINES = 60
+
+# Start-up steps reported by the machine (bootstrap.sh / the agent), in order.
+BOOT_STAGES = {
+    "starting": "starting up",
+    "preparing_disks": "preparing disks",
+    "checking_gpu": "checking the GPU",
+    "installing_runtime": "installing the container runtime",
+    "downloading_software": "downloading the worker software",
+    "starting_engine": "starting the AI engine",
+}
+
+
+def stage_label(stage: str | None) -> str:
+    return BOOT_STAGES.get(stage or "", (stage or "starting up").replace("_", " "))
 
 
 class Provisioner:
@@ -319,7 +337,10 @@ class Provisioner:
                 cidrs = [f"{self._egress[1]}/32", *rs.allowed_cidrs]
         try:
             await self.app.provider.ensure_network_access(
-                deployment_tag(self.app.deployment_id), cidrs, self.app.env.worker_port
+                deployment_tag(self.app.deployment_id),
+                cidrs,
+                self.app.env.worker_port,
+                ssh_cidrs=list(rs.debug_ssh_cidrs),
             )
         except Exception as e:  # never block provisioning on the firewall; TLS pinning still protects
             log.warning("could not update firewall: %s", e)
@@ -418,9 +439,18 @@ class Provisioner:
         return False
 
     async def _wait_healthy(self, inst: Instance) -> bool:
+        """Wait for the agent's AI engine. Until the agent is up, the machine's start-up status server
+        answers with its current step, so problems are reported instead of ending in a silent timeout."""
         rs = await self.app.runtime()
+        budget = rs.boot_health_timeout_s if inst.image_kind == "snapshot" else rs.boot_health_timeout_base_s
         start = time.monotonic()
-        while time.monotonic() - start < rs.boot_health_timeout_s:
+        deadline = start + budget
+        hard = start + max(budget, rs.boot_health_max_s)
+        last_sig: tuple[Any, ...] | None = None
+        stage = inst.boot_stage
+        answered = False
+        cur: Instance | None = inst
+        while time.monotonic() < min(deadline, hard):
             cur = await self._load(inst.id)
             if cur is None or cur.state != "booting":
                 return False
@@ -431,57 +461,156 @@ class Provisioner:
                 continue
             try:
                 async with client:
-                    h = await client.health()
-                    if not protocol_compatible(h.protocol):
-                        await self._fail(
-                            inst.id,
-                            "Worker software version mismatch.",
-                            requeue=True,
-                            code="boot_failure",
-                            outcome="boot_failure",
-                        )
-                        return False
-                    if h.engine_ready:
-                        new_token = await client.rotate_token()  # the copy in user_data is now useless
-                        async with self.app.sessionmaker() as s, s.begin():
-                            now = utcnow()
-                            await transition_instance(
-                                s,
-                                inst.id,
-                                "booting",
-                                "ready",
-                                ready_at=now,
-                                idle_since=now,
-                                last_contact_at=now,
-                                max_lifetime_at=now + timedelta(seconds=rs.max_lifetime_s),
-                                token_enc=self.app.keyring.seal(new_token, inst.id.bytes),
-                                files_present=h.files_present,
-                                models_loaded=h.models_loaded,
+                    p = await client.probe()
+                    answered = True
+                    if isinstance(p, BootStatus):
+                        stage = await self._set_stage(cur, stage, p.stage, p.detail)
+                        if p.failed:
+                            await self._boot_failed(
+                                cur,
+                                p.error or "The machine reported a start-up problem.",
+                                definitive=True,
+                                client=client,
                             )
-                            if cur.ip_at:
-                                await record_phase(
-                                    s,
-                                    phase="boot",
-                                    seconds=(now - cur.ip_at).total_seconds(),
-                                    inst=cur,
-                                    estimate_key=f"boot:{cur.image_kind}:{cur.size_slug}:{cur.region}",
-                                )
-                        await self._prefetch(cur, client)
-                        await self._wake_scheduler()
-                        return True
+                            return False
+                        sig: tuple[Any, ...] = ("setup", p.stage, (p.progress_bytes or 0) // PROGRESS_BYTES_STEP)
+                    else:
+                        h = p
+                        if not protocol_compatible(h.protocol):
+                            await self._boot_failed(
+                                cur,
+                                f"Worker software version mismatch (machine speaks protocol {h.protocol}).",
+                                definitive=True,
+                                client=client,
+                            )
+                            return False
+                        if h.engine_error:
+                            await self._boot_failed(
+                                cur, f"The AI engine could not start: {h.engine_error}", definitive=True, client=client
+                            )
+                            return False
+                        if h.engine_ready:
+                            await self._became_ready(cur, client, h, rs)
+                            return True
+                        stage = await self._set_stage(cur, stage, "starting_engine", None)
+                        sig = ("agent", h.log_seq)
+                    if sig != last_sig:
+                        if last_sig is not None:  # progress: allow more time, up to the hard limit
+                            deadline = max(deadline, time.monotonic() + rs.boot_progress_grace_s)
+                        last_sig = sig
             except (WorkerUnreachable, OSError):
                 pass
             except Exception as e:  # TLS handshake errors while the agent starts, etc.
                 log.debug("health probe for %s failed: %s", inst.id, e)
             await asyncio.sleep(self.poll_s * 1.5)
+        minutes = max(1, round((time.monotonic() - start) / 60))
+        if not answered:
+            msg = (
+                f"The machine never answered within {minutes} min "
+                "(its start-up script may not have run, or the network blocks the worker port)."
+            )
+        else:
+            msg = f"The machine's software did not come up within {minutes} min (last step: {stage_label(stage)})."
+        await self._boot_failed(cur or inst, msg, definitive=False)
+        return False
+
+    async def _became_ready(self, cur: Instance, client: WorkerClient, h: Any, rs: Any) -> None:
+        new_token = await client.rotate_token()  # the copy in user_data is now useless
+        async with self.app.sessionmaker() as s, s.begin():
+            now = utcnow()
+            await transition_instance(
+                s,
+                cur.id,
+                "booting",
+                "ready",
+                ready_at=now,
+                idle_since=now,
+                last_contact_at=now,
+                max_lifetime_at=now + timedelta(seconds=rs.max_lifetime_s),
+                token_enc=self.app.keyring.seal(new_token, cur.id.bytes),
+                files_present=h.files_present,
+                models_loaded=h.models_loaded,
+                boot_stage=None,
+            )
+            secs = (now - cur.ip_at).total_seconds() if cur.ip_at else None
+            if secs is not None:
+                await record_phase(
+                    s,
+                    phase="boot",
+                    seconds=secs,
+                    inst=cur,
+                    estimate_key=f"boot:{cur.image_kind}:{cur.size_slug}:{cur.region}",
+                )
+            await record_attempt(
+                s,
+                cur.id,
+                self._offer_of(cur),
+                "booted",
+                rank=cur.attempt_index,
+                duration_ms=int(secs * 1000) if secs is not None else None,
+            )
+            await note_boot_success(s)
+        await self._prefetch(cur, client)
+        await self._wake_scheduler()
+
+    @staticmethod
+    def _offer_of(inst: Instance) -> GpuOffer:
+        try:
+            return GpuOffer(**inst.candidates[inst.attempt_index]["offer"])
+        except (IndexError, KeyError, TypeError):
+            return offer_from_instance(inst)
+
+    async def _set_stage(self, inst: Instance, old: str | None, new: str, detail: str | None) -> str:
+        if new == old:
+            return new
+        async with self.app.sessionmaker() as s, s.begin():
+            await s.execute(update(Instance).where(Instance.id == inst.id).values(boot_stage=new[:48]))
+            await emit(
+                s,
+                scope="instance",
+                type="boot_stage",
+                ref_id=inst.id,
+                payload={"stage": new, "label": stage_label(new), "detail": (detail or "")[:200] or None},
+            )
+        return new
+
+    async def save_log_tail(self, inst: Instance, client: WorkerClient | None = None) -> None:
+        """Keep the machine's last log lines (it is about to be destroyed). Best effort."""
+        lines: list[dict[str, Any]] = []
+        try:
+            if client is not None:
+                out = await asyncio.wait_for(client.logs(tail=SAVED_LOG_LINES), 10)
+            else:
+                async with worker_client(self.app, inst) as c:
+                    out = await asyncio.wait_for(c.logs(tail=SAVED_LOG_LINES), 10)
+            lines = [ln.model_dump() for ln in out.lines]
+        except Exception as e:
+            log.info("could not fetch the log of %s: %s", inst.id, e)
+            return
+        if lines:
+            async with self.app.sessionmaker() as s, s.begin():
+                await s.execute(update(Instance).where(Instance.id == inst.id).values(boot_log=lines))
+
+    async def _boot_failed(
+        self, inst: Instance, reason: str, *, definitive: bool, client: WorkerClient | None = None
+    ) -> None:
+        """A machine failed to start. Definitive failures (the machine says what is wrong) are not retried:
+        the job fails with the reason. Silent timeouts are retried once. Repeated failures pause new machines."""
+        await self.save_log_tail(inst, client)
         await self._fail(
             inst.id,
-            "The machine started but its software did not come up.",
-            requeue=True,
+            reason,
+            requeue=not definitive,
             code="boot_failure",
             outcome="boot_failure",
+            job_message=f"Machines can't start right now: {reason}",
         )
-        return False
+        rs = await self.app.runtime()
+        async with self.app.sessionmaker() as s, s.begin():
+            paused = await note_boot_failure(s, rs, self.app.provider.name, reason)
+        if paused:
+            log.warning("new machines paused after repeated start-up failures: %s", reason)
+            await self._wake_scheduler()
 
     async def _prefetch(self, inst: Instance, client) -> None:  # type: ignore[no-untyped-def]
         """Warm-up machines start downloading the expected model right away."""
@@ -513,7 +642,14 @@ class Provisioner:
     # ------------------------------------------------------------------ failure
 
     async def _fail(
-        self, inst_id: uuid.UUID, message: str, *, requeue: bool, code: str = "error", outcome: str | None = None
+        self,
+        inst_id: uuid.UUID,
+        message: str,
+        *,
+        requeue: bool,
+        code: str = "error",
+        outcome: str | None = None,
+        job_message: str | None = None,
     ) -> None:
         """Send the machine to destroying (or straight to destroyed if nothing exists) and
         put its waiting jobs back in the queue (or fail them)."""
@@ -572,14 +708,16 @@ class Provisioner:
             )
             now = utcnow()
             for j in jobs:
-                if not requeue:
+                # a job gets one more machine after a start-up timeout, not more
+                retry = requeue and not (code == "boot_failure" and j.error_code == "boot_failure")
+                if not retry:
                     await transition_job(
                         s,
                         j.id,
                         j.state,
                         "failed",
                         error_code=code,
-                        error_message=message,
+                        error_message=job_message or message,
                         stage="failed",
                         instance_id=None,
                     )
@@ -597,7 +735,9 @@ class Provisioner:
                         instance_id=None,
                     )
                 else:
-                    backoff = 30 if code not in ("no_capacity", "quota") else min(300, 120 + 60 * j.attempt)
+                    backoff = (
+                        rs.requeue_backoff_s if code not in ("no_capacity", "quota") else min(300, 120 + 60 * j.attempt)
+                    )
                     await transition_job(
                         s,
                         j.id,
@@ -608,4 +748,5 @@ class Provisioner:
                         capacity_wait_until=wait_until,
                         next_attempt_at=min(now + timedelta(seconds=backoff), wait_until),
                         error_message=message if code in ("no_capacity", "quota") else None,
+                        **({"error_code": "boot_failure"} if code == "boot_failure" else {}),
                     )

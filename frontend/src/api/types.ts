@@ -138,6 +138,7 @@ export interface Job {
   cost_usd: number | null;
   error: string | null;
   machine: string | null;
+  instance_id?: string | null;
   seed: number | null;
   created_at: string;
   finished_at: string | null;
@@ -170,7 +171,37 @@ export interface Instance {
   models_loaded: string[];
   current_job_id: string | null;
   failure_reason: string | null;
+  boot_stage: string | null;
+  boot_stage_label: string | null;
+  has_saved_log: boolean;
   timeline: { at: string; state: string | null; detail: Record<string, unknown> }[];
+}
+
+export interface ProvisioningPause {
+  paused: true;
+  reason: string;
+  at: string;
+  failures: number;
+}
+
+export interface MachinesResponse {
+  live: Instance[];
+  recent: Instance[];
+  provisioning_paused: ProvisioningPause | null;
+}
+
+export interface LogLine {
+  ts: number;
+  source: "aivo" | "setup" | "agent" | "engine" | string;
+  level: string | null;
+  text: string;
+  seq?: number;
+}
+
+export interface LogStatus {
+  phase: "live" | "waiting" | "unreachable" | "ending" | "ended";
+  message: string;
+  state?: string;
 }
 
 export interface OffersResponse {
@@ -227,6 +258,9 @@ export interface RuntimeSettings {
   allowed_cidrs: string[];
   speculative_warmup: boolean;
   capacity_wait_max_s: number;
+  boot_failures_before_pause: number;
+  boot_health_max_s: number;
+  debug_ssh_cidrs: string[];
   [k: string]: unknown;
 }
 

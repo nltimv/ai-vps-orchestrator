@@ -6,6 +6,7 @@ import { patch, post } from "@/api/client";
 import { useCacheStatus, useCatalog, useHealth, useSaveSettings, useSettings, useUsers } from "@/api/queries";
 import type { RuntimeSettings } from "@/api/types";
 import { LicenseBadge } from "@/components/LicenseBadge";
+import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, ErrorNote, Field, Input, Label, PageHeader, Toggle } from "@/components/ui";
 import { ago, cn, money } from "@/lib/format";
 
@@ -30,6 +31,7 @@ export function SettingsPage() {
         actions={<Button variant="primary" onClick={onSave} loading={save.isPending} disabled={!Object.keys(changed).length}>
           {saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Saved" : "Save changes"}</Button>} />
       <ErrorNote error={save.error} />
+      <PausedBanner isAdmin />
       <Status />
 
       <Section title="Spending limits" desc="Machines stop starting once the monthly limit is reached.">
@@ -75,8 +77,8 @@ export function SettingsPage() {
           { id: "open", label: "Anyone (certificate-protected)" },
         ]} />
         {draft.firewall_mode === "cidrs" && (
-          <Input className="mt-3" placeholder="203.0.113.4/32, 198.51.100.0/24" value={draft.allowed_cidrs.join(", ")}
-            onChange={(e) => set("allowed_cidrs", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))} />
+          <ListInput className="mt-3" label="Allowed addresses" placeholder="203.0.113.4/32, 198.51.100.0/24"
+            value={draft.allowed_cidrs} onChange={(v) => set("allowed_cidrs", v)} />
         )}
         <div className="mt-4">
           <Toggle checked={draft.watchdog_enabled} onChange={(v) => set("watchdog_enabled", v)}
@@ -85,6 +87,19 @@ export function SettingsPage() {
             <p className="mt-2 text-xs text-amber-500">Needs AIVO_DO_WATCHDOG_TOKEN (a token that may only delete machines; use a dedicated cloud team).</p>
           )}
         </div>
+      </Section>
+
+      <Section title="Troubleshooting" desc="When machines don't start. The machine log (Machines → Show log) shows each start-up step.">
+        <div className="grid gap-4 sm:grid-cols-2">
+          <NumberField label="Pause new machines after this many failed start-ups in a row (0 = never)"
+            value={draft.boot_failures_before_pause} min={0} onChange={(v) => set("boot_failures_before_pause", v)} />
+          <NumberField label="Longest start-up allowed (minutes)" value={Math.round(draft.boot_health_max_s / 60)} min={5}
+            onChange={(v) => set("boot_health_max_s", v * 60)} />
+        </div>
+        <Field label="Allow logging in to machines (SSH) from these addresses" hint="Debugging only. Also needs AIVO_DO_SSH_KEY_IDS. Leave empty normally.">
+          <ListInput placeholder="203.0.113.4/32" value={draft.debug_ssh_cidrs}
+            onChange={(v) => set("debug_ssh_cidrs", v)} />
+        </Field>
       </Section>
 
       <Users />
@@ -99,6 +114,21 @@ function Section({ title, desc, children }: { title: string; desc?: string; chil
       {desc && <p className="mb-5 mt-1 text-sm text-muted">{desc}</p>}
       {children}
     </Card>
+  );
+}
+
+const parseList = (t: string) => t.split(",").map((x) => x.trim()).filter(Boolean);
+
+/** Comma-separated list; keeps what's typed (e.g. a trailing comma) while editing. */
+function ListInput({ value, onChange, label, placeholder, className }: { value: string[]; onChange: (v: string[]) => void; label?: string; placeholder?: string; className?: string }) {
+  const [text, setText] = useState(value.join(", "));
+  useEffect(() => {
+    if (parseList(text).join(",") !== value.join(",")) setText(value.join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value]);
+  return (
+    <Input aria-label={label} className={className} placeholder={placeholder} value={text}
+      onChange={(e) => { setText(e.target.value); onChange(parseList(e.target.value)); }} />
   );
 }
 

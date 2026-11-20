@@ -5,20 +5,34 @@ on a random localhost port, so the backend exercises the exact same code paths
 (bootstrap, pinned TLS, token, jobs, downloads) as with a real GPU droplet,
 without spending money.
 
+Before the agent starts, each machine runs the real start-up status server
+(``templates/boot_status.py``) and walks through simulated start-up steps with a
+setup log, like ``bootstrap.sh`` on a real machine.
+
 Failure injection (``chaos``): queue outcomes per ``"<size>:<region>"`` (or ``"*"``):
 ``capacity``, ``quota``, ``volume_busy``, ``unknown_created``, ``unknown_lost``,
-``boot_hang``, ``engine_oom``, ``engine_fail``.
+``boot_hang`` (never gets an address), ``boot_silent`` (address, but nothing answers),
+``boot_reports_failure`` (the start-up script reports a missing GPU driver),
+``boot_slow_progress`` (each start-up step takes ``slow_step_s``), ``engine_start_fail``
+(the AI engine can't start), ``engine_oom``, ``engine_fail``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib.util
 import shutil
+import socket
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 import yaml
 
@@ -38,6 +52,34 @@ from aivo_worker.engines.mock import MockEngine
 from aivo_worker.server import WorkerServer, build_state
 
 OFFERS_FILE = Path(__file__).with_name("offers.yaml")
+BOOT_STATUS_PY = Path(__file__).parents[1] / "digitalocean" / "templates" / "boot_status.py"
+NO_DRIVER = (
+    "This machine has an NVIDIA GPU but no GPU driver. It was started from an operating-system image "
+    "without GPU drivers: set AIVO_DO_BASE_IMAGE to a GPU image (default gpu-h100x1-base)."
+)
+
+
+@cache
+def boot_status_module() -> ModuleType:
+    """The exact status server that real machines run, loaded from its template."""
+    spec = importlib.util.spec_from_file_location("aivo_boot_status", BOOT_STATUS_PY)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+class _FailingEngine(MockEngine):
+    async def start(self) -> None:
+        self._say("Traceback (most recent call last):", "error")
+        self._say("RuntimeError: CUDA driver initialization failed (simulated)", "error")
+        raise RuntimeError("CUDA driver initialization failed (simulated)")
 
 
 @dataclass
@@ -48,12 +90,15 @@ class FakeMachine:
     boot_task: asyncio.Task[None] | None = None
     engine: MockEngine | None = None
     root: Path | None = None
+    status_server: Any = None  # boot_status.BootStatusServer while "starting up"
+    status_thread: threading.Thread | None = None
 
 
 @dataclass
 class FakeProvider:
     boot_seconds: float = 1.0
     job_seconds: float = 1.0
+    slow_step_s: float = 2.0  # per start-up step with the boot_slow_progress chaos
     scratch_root: Path | None = None
     name: str = "fake"
     chaos: dict[str, list[str]] = field(default_factory=dict)
@@ -152,22 +197,80 @@ class FakeProvider:
     async def _boot(self, m: FakeMachine, outcome: str | None) -> None:
         await asyncio.sleep(self.boot_seconds / 2)
         m.pi.public_ipv4 = "127.0.0.1"
-        await asyncio.sleep(self.boot_seconds / 2)
         assert self.scratch_root is not None
         m.root = self.scratch_root / m.pi.provider_id
+        m.root.mkdir(parents=True, exist_ok=True)
+        if outcome == "boot_silent":  # an address, but nothing ever answers
+            m.pi.port = _free_port()
+            m.pi.status = "active"
+            return
+        setup_log = m.root / "setup.log"
+        status_file = m.root / "boot-status.json"
+        bs = boot_status_module()
+
+        def say(text: str) -> None:
+            with setup_log.open("a") as fh:
+                fh.write(f"[aivo {time.strftime('%H:%M:%S')}] {text}\n")
+
+        def stage(name: str, detail: str | None = None) -> None:
+            say(f"== step: {name}" + (f" ({detail})" if detail else ""))
+            bs.write_status(str(status_file), stage=name, detail=detail)
+
+        say("bootstrap start (fake machine)")
+        bs.write_status(str(status_file), stage="starting", failed=False, error=None)
+        srv = bs.make_server(
+            m.spec.bootstrap.model_dump(),
+            host="127.0.0.1",
+            port=0,
+            status_path=str(status_file),
+            log_path=str(setup_log),
+        )
+        m.status_server = srv
+        m.status_thread = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+        m.status_thread.start()
+        m.pi.port = srv.server_address[1]
+        m.pi.status = "active"
+
+        step = self.slow_step_s if outcome == "boot_slow_progress" else self.boot_seconds / 10
+        image = m.spec.bootstrap.worker_image or "aivo-worker"
+        stage("preparing_disks")
+        say("model storage: 100G free")
+        await asyncio.sleep(step)
+        stage("checking_gpu")
+        if outcome == "boot_reports_failure":
+            say(f"FAILED: {NO_DRIVER}")
+            bs.write_status(str(status_file), failed=True, error=NO_DRIVER)
+            return  # the status server keeps reporting the failure
+        say("GPU 0: Mock GPU (fake machine)")
+        await asyncio.sleep(step)
+        stage("installing_runtime")
+        say("Docker is already installed")
+        await asyncio.sleep(step)
+        stage("downloading_software", image)
+        say(f"{image.rsplit(':', 1)[-1]}: Pulling from {image.rsplit(':', 1)[0]}")
+        await asyncio.sleep(step)
+        say("Status: Image is up to date")
+        stage("starting_engine")
+        await self._stop_status_server(m)
+        say("bootstrap done; the worker agent takes over")
+
         boot = m.spec.bootstrap.model_copy(
             update={"models_dir": str(m.root / "models"), "job_dir": str(m.root / "jobs"), "engine": "mock"}
         )
-        m.engine = MockEngine(self.job_seconds)
+        m.engine = _FailingEngine(self.job_seconds) if outcome == "engine_start_fail" else MockEngine(self.job_seconds)
         if outcome == "engine_oom":
             m.engine.fail_next = "oom"
         elif outcome == "engine_fail":
             m.engine.fail_next = "engine"
-        state = build_state(boot, m.engine, simulate_files=True)
-        m.server = WorkerServer(state, host="127.0.0.1", port=0)
+        state = build_state(boot, m.engine, simulate_files=True, setup_log=setup_log)
+        m.server = WorkerServer(state, host="127.0.0.1", port=m.pi.port)  # same port, like the real handover
         await m.server.start()
-        m.pi.port = m.server.port
-        m.pi.status = "active"
+
+    async def _stop_status_server(self, m: FakeMachine) -> None:
+        srv, m.status_server = m.status_server, None
+        if srv is not None:
+            await asyncio.to_thread(srv.shutdown)
+            srv.server_close()
 
     async def get_instance(self, provider_id: str) -> ProviderInstance | None:
         m = self.machines.get(provider_id)
@@ -190,13 +293,17 @@ class FakeProvider:
             m.boot_task.cancel()
             with contextlib.suppress(BaseException):
                 await m.boot_task
+        await self._stop_status_server(m)
         if m.server:
             await m.server.stop()
         if m.root:
             shutil.rmtree(m.root, ignore_errors=True)
 
-    async def ensure_network_access(self, tag: str, allowed_cidrs: list[str], port: int) -> None:
+    async def ensure_network_access(
+        self, tag: str, allowed_cidrs: list[str], port: int, *, ssh_cidrs: list[str] | None = None
+    ) -> None:
         self.firewall_cidrs = list(allowed_cidrs)
+        self.ssh_cidrs = list(ssh_cidrs or [])
 
     async def account_month_to_date_usd(self) -> float | None:
         return None

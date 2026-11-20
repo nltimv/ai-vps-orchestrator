@@ -4,21 +4,108 @@
 # - model weights go to the local scratch NVMe when present, else the boot disk
 # - the shared cache volume (public model files only) is mounted read-only
 # - containers cannot reach the cloud metadata service
-set -euo pipefail
-exec >>/var/log/aivo-bootstrap.log 2>&1
-echo "[aivo] bootstrap start $(date -Is)"
+# - until the worker agent is up, boot_status.py answers the backend with the current step and this
+#   log, so problems are visible in the dashboard ("Show log") instead of a silent timeout
+# - never prints bootstrap.json (it holds the machine's private key)
+set -Eeuo pipefail
+LOG="${AIVO_SETUP_LOG:-/var/log/aivo-bootstrap.log}"
+BOOT="${AIVO_BOOTSTRAP:-/etc/aivo/bootstrap.json}"
+STATUS_PY="${AIVO_STATUS_PY:-/opt/aivo/boot_status.py}"
+SELF="$(readlink -f "$0")"
+export AIVO_SETUP_LOG="$LOG" AIVO_BOOTSTRAP="$BOOT"
+exec >>"$LOG" 2>&1
 
-BOOT=/etc/aivo/bootstrap.json
-cfg() { python3 -c "import json,sys; v=json.load(open('$BOOT')).get('$1'); print('' if v is None else v)"; }
+say() { echo "[aivo $(date +%H:%M:%S)] $*"; }
+STEP="starting"
+stage() { STEP="$1"; say "== step: $1${2:+ ($2)}"; python3 "$STATUS_PY" stage "$1" "${2:-}" || true; }
+fail() {
+  trap - ERR
+  say "FAILED: $1"
+  python3 "$STATUS_PY" fail "$1" || true
+  exit 1
+}
+on_err() {
+  local code=$? line=$1 cmd=$2
+  trap - ERR
+  say "FAILED (exit code $code) at line $line: $cmd"
+  python3 "$STATUS_PY" fail "Start-up failed during '${STEP//_/ }': '$cmd' exited with code $code" || true
+  exit "$code"
+}
+trap 'on_err $LINENO "$BASH_COMMAND"' ERR
+
+# Run a command in the background so it outlives this script (systemd unit when available).
+bg_run() {
+  local unit=$1; shift
+  if [ -d /run/systemd/system ] && command -v systemd-run >/dev/null 2>&1; then
+    systemctl stop "$unit" >/dev/null 2>&1 || true
+    systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+    systemd-run --unit="$unit" --collect --quiet \
+      --setenv=AIVO_SETUP_LOG="$LOG" --setenv=AIVO_BOOTSTRAP="$BOOT" --setenv=AIVO_STATUS_PY="$STATUS_PY" "$@"
+  else
+    setsid nohup "$@" >>"$LOG" 2>&1 </dev/null &
+  fi
+}
+start_status_server() { python3 "$STATUS_PY" stop || true; bg_run aivo-boot-status python3 "$STATUS_PY" serve; }
+retry() {
+  local n=0
+  until "$@"; do
+    n=$((n + 1))
+    [ "$n" -ge 3 ] && return 1
+    say "retrying in $((n * 15)) s: $*"
+    sleep $((n * 15))
+  done
+}
+has_pci_vendor() { grep -qsx "$1" /sys/bus/pci/devices/*/vendor; }
+cfg() { python3 -c "import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print('' if v is None else v)" "$BOOT" "$1"; }
+
+# Watch the worker container for its first 15 minutes: if it keeps stopping before the AI engine
+# is ready, keep its last output, stop it and report the failure through the status server.
+watch_container() {
+  set +eE +o pipefail
+  trap - ERR
+  local deadline=$(($(date +%s) + 900)) state restarts last
+  sleep 20
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if docker logs aivo-worker 2>&1 | grep -c "AI engine ready" >/dev/null; then return 0; fi
+    state="$(docker inspect -f '{{.State.Status}} {{.RestartCount}}' aivo-worker 2>/dev/null || echo 'missing 0')"
+    restarts="${state##* }"
+    state="${state%% *}"
+    if [ "${restarts:-0}" -ge 2 ] || [ "$state" = exited ] || [ "$state" = dead ] || [ "$state" = missing ]; then
+      say "the worker software stopped ($state, restarted ${restarts:-0} times). Its last output:"
+      docker logs --tail 80 aivo-worker 2>&1 | sed 's/^/  | /'
+      last="$(docker logs --tail 20 aivo-worker 2>&1 | grep -v '^[[:space:]]*$' | tail -n 1 | cut -c1-300)"
+      docker rm -f aivo-worker >/dev/null 2>&1
+      python3 "$STATUS_PY" fail "The worker software keeps stopping${last:+: $last}"
+      start_status_server
+      return 0
+    fi
+    sleep 10
+  done
+}
+if [ "${1:-}" = "watch" ]; then
+  watch_container
+  exit 0
+fi
+
+say "bootstrap start $(date -Is)"
+mkdir -p /run/aivo
+chmod 755 /run/aivo
+python3 "$STATUS_PY" stage starting "" || true
+start_status_server
+
 IMAGE="$(cfg worker_image)"
 PORT="$(cfg listen_port)"
+ENGINE="$(cfg engine)"
 VOLUME_MOUNT="$(cfg volume_mount)"
+say "worker software: $IMAGE, engine: $ENGINE, port: $PORT"
 
-# 1) RAM-backed job directory
+# 1) disks -------------------------------------------------------------------------------
+stage preparing_disks
+# RAM-backed job directory
 mkdir -p /run/aivo/jobs
 mountpoint -q /run/aivo/jobs || mount -t tmpfs -o size=40%,mode=0700 tmpfs /run/aivo/jobs
 
-# 2) model storage on scratch NVMe if available (H100/H200 sizes have one)
+# model storage on scratch NVMe if available (H100/H200 sizes have one)
 mkdir -p /var/lib/aivo/models
 if ! mountpoint -q /var/lib/aivo/models; then
   VOLREAL=""
@@ -28,55 +115,113 @@ if ! mountpoint -q /var/lib/aivo/models; then
     [ "$dev" = "$VOLREAL" ] && continue
     lsblk -no MOUNTPOINT "$dev" | grep -q . && continue
     [ "$(lsblk -no TYPE "$dev" | head -n1)" = "disk" ] || continue
-    [ -n "$(lsblk -no NAME "$dev" | tail -n +2)" ] && continue   # partitioned -> not scratch
+    [ -n "$(lsblk -no NAME "$dev" | tail -n +2)" ] && continue # partitioned -> not scratch
     blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -F -q -E nodiscard "$dev"
-    mount -o noatime "$dev" /var/lib/aivo/models && echo "[aivo] using scratch disk $dev" && break
+    mount -o noatime "$dev" /var/lib/aivo/models && say "using scratch disk $dev" && break
   done
 fi
+say "model storage: $(df -h --output=avail /var/lib/aivo/models | tail -n1 | tr -d ' ') free"
 
-# 3) read-only cache volume
+# read-only cache volume
 if [ -n "$VOLUME_MOUNT" ]; then
   mkdir -p "$VOLUME_MOUNT"
   for v in /dev/disk/by-id/scsi-0DO_Volume_*; do
     [ -e "$v" ] || continue
-    mountpoint -q "$VOLUME_MOUNT" || mount -o ro,noatime "$v" "$VOLUME_MOUNT" || true
+    mountpoint -q "$VOLUME_MOUNT" || mount -o ro,noatime "$v" "$VOLUME_MOUNT" || say "warning: could not mount the model disk"
   done
 fi
 
-# 4) container runtime (preinstalled on the prepared machine image)
-if ! command -v docker >/dev/null 2>&1; then
-  curl -fsSL https://get.docker.com | sh
+# 2) GPU driver (checked first: a missing driver is the most common cause of a machine never starting)
+stage checking_gpu
+GPU=none
+GPU_ARGS=""
+if [ "$ENGINE" = "mock" ]; then
+  say "test engine: no GPU needed"
+elif [ -e /dev/kfd ]; then
+  GPU=amd
+  GPU_ARGS="--device /dev/kfd --device /dev/dri --group-add video"
+  say "AMD GPU found"
+elif command -v nvidia-smi >/dev/null 2>&1; then
+  if ! GPU_INFO="$(nvidia-smi -L 2>&1)"; then
+    echo "$GPU_INFO"
+    fail "The NVIDIA GPU driver is installed but not working: $(echo "$GPU_INFO" | tail -n1 | cut -c1-200)"
+  fi
+  echo "$GPU_INFO"
+  nvidia-smi --query-gpu=driver_version,memory.total --format=csv,noheader || true
+  GPU=nvidia
+  GPU_ARGS="--gpus all"
+elif has_pci_vendor 0x10de; then
+  fail "This machine has an NVIDIA GPU but no GPU driver. It was started from an operating-system image without GPU drivers: set AIVO_DO_BASE_IMAGE to a GPU image (default gpu-h100x1-base)."
+elif has_pci_vendor 0x1002; then
+  fail "This machine has an AMD GPU but no GPU driver. It was started from an operating-system image without GPU drivers: set AIVO_DO_BASE_IMAGE_AMD to a GPU image (default gpu-amd-base)."
+else
+  fail "No GPU was found on this machine."
 fi
-if ! command -v nvidia-ctk >/dev/null 2>&1 && command -v nvidia-smi >/dev/null 2>&1; then
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-  apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nvidia-container-toolkit
-  nvidia-ctk runtime configure --runtime=docker
-  systemctl restart docker
+
+# 3) container runtime (preinstalled on the prepared machine image) ------------------------
+stage installing_runtime
+install_docker() { curl -fsSL https://get.docker.com -o /tmp/get-docker.sh && sh /tmp/get-docker.sh; }
+install_nvidia_toolkit() {
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg &&
+    curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+      >/etc/apt/sources.list.d/nvidia-container-toolkit.list &&
+    apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nvidia-container-toolkit
+}
+if command -v docker >/dev/null 2>&1; then
+  say "Docker is already installed"
+else
+  retry install_docker || fail "Could not install Docker (the container runtime). Check the machine's internet access."
+fi
+if [ "$GPU" = nvidia ]; then
+  if ! command -v nvidia-ctk >/dev/null 2>&1; then
+    retry install_nvidia_toolkit || fail "Could not install the NVIDIA container toolkit."
+  fi
+  if ! grep -qs '"nvidia"' /etc/docker/daemon.json; then
+    nvidia-ctk runtime configure --runtime=docker
+    systemctl restart docker
+  fi
 fi
 systemctl enable --now docker
+docker --version
 
-# 5) containers must not read user_data/metadata
+# containers must not read user_data/metadata
 iptables -C DOCKER-USER -d 169.254.169.254/32 -j DROP 2>/dev/null || iptables -I DOCKER-USER -d 169.254.169.254/32 -j DROP
 
-# 6) worker image (only the changed layers are pulled when the prepared image is a bit stale)
-docker pull -q "$IMAGE" || docker image inspect "$IMAGE" >/dev/null
+# 4) worker software (only the changed layers are pulled when the prepared image is a bit stale)
+stage downloading_software "$IMAGE"
+if ! retry docker pull "$IMAGE"; then
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "Could not download the worker software ($IMAGE)."
+  say "warning: download failed, using the copy already on this machine"
+fi
+if [ "$GPU" = nvidia ]; then
+  say "checking that containers can use the GPU"
+  if ! GPU_INFO="$(docker run --rm --gpus all --entrypoint nvidia-smi "$IMAGE" -L 2>&1)"; then
+    echo "$GPU_INFO"
+    fail "The GPU can't be used inside containers: $(echo "$GPU_INFO" | tail -n1 | cut -c1-200)"
+  fi
+fi
 
-# 7) run the agent
+# 5) hand over to the worker agent ---------------------------------------------------------
+stage starting_engine
 docker rm -f aivo-worker >/dev/null 2>&1 || true
-GPU_ARGS="--gpus all"
-if [ -e /dev/kfd ]; then GPU_ARGS="--device /dev/kfd --device /dev/dri --group-add video"; fi
 VOL_ARGS=""
 if [ -n "$VOLUME_MOUNT" ] && mountpoint -q "$VOLUME_MOUNT"; then VOL_ARGS="-v $VOLUME_MOUNT:$VOLUME_MOUNT:ro"; fi
+python3 "$STATUS_PY" stop # frees the port for the agent
 # shellcheck disable=SC2086
-docker run -d --name aivo-worker --restart unless-stopped $GPU_ARGS --shm-size 16g \
+if ! docker run -d --name aivo-worker --restart unless-stopped $GPU_ARGS --shm-size 16g \
   -p "$PORT:$PORT" \
   -v /etc/aivo:/etc/aivo:ro \
   -v /var/lib/aivo/models:/var/lib/aivo/models \
   -v /run/aivo/jobs:/run/aivo/jobs \
+  -v "$LOG:/var/log/aivo-bootstrap.log:ro" \
   $VOL_ARGS \
   -e AIVO_WORKER_BOOTSTRAP=/etc/aivo/bootstrap.json \
-  "$IMAGE"
-echo "[aivo] bootstrap done $(date -Is)"
+  -e AIVO_SETUP_LOG=/var/log/aivo-bootstrap.log \
+  "$IMAGE"; then
+  docker rm -f aivo-worker >/dev/null 2>&1 || true
+  start_status_server
+  fail "Could not start the worker software (see the log above)."
+fi
+bg_run aivo-boot-watch bash "$SELF" watch
+say "bootstrap done $(date -Is); the worker agent takes over"

@@ -117,6 +117,7 @@ class JobOut(BaseModel):
     cost_usd: float | None
     error: str | None
     machine: str | None = None
+    instance_id: uuid.UUID | None = None
     seed: int | None = None
     created_at: datetime
     finished_at: datetime | None
@@ -149,6 +150,9 @@ class InstanceOut(BaseModel):
     models_loaded: list[str]
     current_job_id: uuid.UUID | None = None
     failure_reason: str | None = None
+    boot_stage: str | None = None  # current start-up step (while starting)
+    boot_stage_label: str | None = None
+    has_saved_log: bool = False  # last log lines were kept when the machine went away
     timeline: list[dict[str, Any]] = Field(default_factory=list)
 
 

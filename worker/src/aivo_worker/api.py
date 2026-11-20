@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import re
 import shutil
@@ -20,6 +22,7 @@ from aivo_protocol.worker_api import (
     Health,
     JobIn,
     JobStatus,
+    LogsOut,
     RotateTokenOut,
     TelemetryOut,
     WorkerBootstrap,
@@ -27,6 +30,7 @@ from aivo_protocol.worker_api import (
 from aivo_worker import __version__
 from aivo_worker.engines.base import Engine
 from aivo_worker.executor import Executor
+from aivo_worker.logbuf import LogBuffer
 from aivo_worker.security import TokenAuth
 from aivo_worker.weights import FileManager
 
@@ -34,22 +38,49 @@ _SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class WorkerState:
-    def __init__(self, boot: WorkerBootstrap, engine: Engine, files: FileManager, executor: Executor):
+    def __init__(
+        self,
+        boot: WorkerBootstrap,
+        engine: Engine,
+        files: FileManager,
+        executor: Executor,
+        logs: LogBuffer | None = None,
+    ):
         self.boot = boot
         self.engine = engine
         self.files = files
         self.executor = executor
+        self.logs = logs or LogBuffer()
         self.auth = TokenAuth(boot.token_sha256)
         self.started = time.monotonic()
+        self.engine_error: str | None = None
+        self._engine_task: asyncio.Task[None] | None = None
+
+    async def start_engine(self) -> None:
+        """Start the AI engine in the background so health and logs are served meanwhile."""
+        self.logs.emit("agent", f"agent {__version__} up; starting the AI engine ({self.engine.name})")
+        t0 = time.monotonic()
+        try:
+            await self.engine.start()
+            self.logs.emit("agent", f"AI engine ready after {time.monotonic() - t0:.0f} s")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.engine_error = f"{type(e).__name__}: {e}"[:500]
+            self.logs.emit("agent", f"AI engine failed to start: {self.engine_error}", "error")
 
 
 def create_app(state: WorkerState) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        await state.engine.start()
+        state._engine_task = asyncio.create_task(state.start_engine(), name="engine-start")
         try:
             yield
         finally:
+            if state._engine_task and not state._engine_task.done():
+                state._engine_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await state._engine_task
             await state.engine.stop()
 
     app = FastAPI(title="aivo worker", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -79,7 +110,20 @@ def create_app(state: WorkerState) -> FastAPI:
             draining=state.executor.draining,
             uptime_s=time.monotonic() - state.started,
             image_digest=state.boot.worker_image,
+            engine_error=state.engine_error,
+            log_seq=state.logs.last_seq,
         )
+
+    @app.get("/v1/logs", dependencies=[Depends(auth)])
+    async def logs(
+        since: int = Query(0, ge=0),
+        wait: float = Query(0, ge=0, le=30),
+        limit: int = Query(1000, ge=1, le=5000),
+        tail: int | None = Query(None, ge=0, le=5000),
+    ) -> LogsOut:
+        if tail is not None:
+            return state.logs.read(tail=tail)
+        return await state.logs.wait_read(since, wait, limit)
 
     @app.post("/v1/files/ensure", dependencies=[Depends(auth)])
     async def ensure_files(body: EnsureFilesIn) -> FilesStatus:
@@ -105,6 +149,8 @@ def create_app(state: WorkerState) -> FastAPI:
 
     @app.post("/v1/jobs", dependencies=[Depends(auth)])
     async def submit(job: JobIn) -> JobStatus:
+        if not state.engine.ready:
+            raise HTTPException(409, "the AI engine is not ready")
         try:
             return state.executor.submit(job)
         except RuntimeError as e:

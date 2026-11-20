@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sse_starlette.sse import EventSourceResponse
 
 from aivo.api.deps import current_user, get_app, get_session, require_admin
 from aivo.api.schemas import InstanceOut, KeepWarmIn, MachineChoice, WarmupIn
@@ -14,6 +18,9 @@ from aivo.context import AppContext
 from aivo.controller.budget import admit, reservation_for
 from aivo.controller.common import build_context, get_offers, live_view
 from aivo.controller.lifecycle import transition_instance
+from aivo.controller.pause import get_pause
+from aivo.controller.pause import resume as resume_provisioning
+from aivo.controller.provisioner import stage_label
 from aivo.controller.scheduler import BILLING_STATES, MAX_CANDIDATES, _cand_json
 from aivo.db.models import CostAccrual, Event, Instance, Job, User
 from aivo.events.bus import emit
@@ -21,6 +28,7 @@ from aivo.placement.request import build_request
 from aivo.placement.scorer import rank
 from aivo.providers.base import instance_name
 from aivo.providers.regions import region_meta
+from aivo.services import machine_log
 from aivo.services.jobs import machine_choice
 
 router = APIRouter(prefix="/machines", tags=["machines"])
@@ -72,6 +80,9 @@ async def _instance_out(s: AsyncSession, i: Instance, idle_timeout_s: int, with_
         models_loaded=list(i.models_loaded or []),
         current_job_id=job_id,
         failure_reason=i.failure_reason,
+        boot_stage=i.boot_stage if i.state == "booting" else None,
+        boot_stage_label=stage_label(i.boot_stage) if i.state == "booting" and i.boot_stage else None,
+        has_saved_log=bool(i.boot_log),
         timeline=timeline,
     )
 
@@ -82,7 +93,7 @@ async def list_machines(
     _: User = Depends(current_user),
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
-) -> dict[str, list[InstanceOut]]:
+) -> dict[str, Any]:
     rs = await app.runtime(s)
     live = (
         (await s.execute(select(Instance).where(Instance.state != "destroyed").order_by(Instance.created_at.desc())))
@@ -101,7 +112,46 @@ async def list_machines(
     return {
         "live": [await _instance_out(s, i, rs.idle_timeout_s, True) for i in live],
         "recent": [await _instance_out(s, i, rs.idle_timeout_s, False) for i in past],
+        # new machines are paused after repeated start-up failures (None when not paused)
+        "provisioning_paused": await get_pause(s),
     }
+
+
+@router.get("/{instance_id}/logs")
+async def machine_logs(
+    instance_id: uuid.UUID,
+    request: Request,
+    cursor: str | None = None,
+    _: User = Depends(require_admin),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> EventSourceResponse:
+    """Live log of one machine (admins): aivo's decisions, the start-up script, the agent and the AI engine."""
+    exists = (await s.execute(select(Instance.id).where(Instance.id == instance_id))).first()
+    if exists is None:
+        raise HTTPException(404, "No such machine")
+    await s.close()  # don't hold a database connection for the life of the stream
+    cur = machine_log.Cursor.parse(request.headers.get("last-event-id") or cursor)
+
+    async def gen() -> AsyncIterator[dict[str, str]]:
+        async for m in machine_log.stream(app, instance_id, cur, request.is_disconnected):
+            yield {"event": m["event"], "id": m["id"], "data": json.dumps(m["data"])}
+
+    return EventSourceResponse(gen(), ping=15, headers={"X-Accel-Buffering": "no"})
+
+
+@router.post("/provisioning/resume")
+async def resume_start_ups(
+    admin: User = Depends(require_admin),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Allow new machines again after start-ups were paused."""
+    was = await resume_provisioning(s, by=str(admin.id))
+    await s.commit()
+    if app.controller:
+        app.controller.wake()
+    return {"resumed": was}
 
 
 @router.get("/offers")
@@ -172,6 +222,8 @@ async def prewarm(
     ).scalar_one()
     if live:
         return {"started": False, "reason": "already_running"}
+    if await get_pause(s):
+        return {"started": False, "reason": "paused"}
     try:
         choice = await warmup(WarmupIn(kind=body.kind, quality=body.quality), user=user, app=app, s=s)
     except HTTPException as e:
@@ -198,6 +250,8 @@ async def warmup(
     ).scalar_one()
     if live_count >= rs.max_instances:
         raise HTTPException(409, "The maximum number of machines is already running")
+    if await get_pause(s):
+        raise HTTPException(409, "New machines are paused after repeated start-up problems. Resume them first.")
     ctx = await build_context(app, s, rs, allow_new=True)
     cands = [c for c in rank(req, await get_offers(app), [], ctx) if c.instance_id is None]
     if body.offer_key:

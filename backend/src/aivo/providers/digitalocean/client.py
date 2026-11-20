@@ -56,6 +56,8 @@ def classify(status: int, body: dict[str, Any] | None, *, creating: bool = False
     if status == 422 or status == 400:
         if any(h in low for h in VOLUME_HINTS) and any(h in low for h in VOLUME_BUSY_HINTS):
             return VolumeBusy(text, http_status=status)
+        if "image" in low:  # e.g. an unknown base image slug: retrying elsewhere won't help
+            return ConfigError(f"{text} (check AIVO_DO_BASE_IMAGE)", http_status=status)
         if (
             "droplet limit" in low
             or ("gpu" in low and "limit" in low)

@@ -172,6 +172,10 @@ class Instance(Base):
     drain_reason: Mapped[str | None] = mapped_column(String(64))
     outcome: Mapped[str | None] = mapped_column(String(16))  # ok | failed | external
     failure_reason: Mapped[str | None] = mapped_column(Text)
+    # start-up step reported by the machine (preparing_disks, downloading_software, starting_engine, ...)
+    boot_stage: Mapped[str | None] = mapped_column(String(48))
+    # last machine log lines, kept when a machine fails (the machine itself is destroyed)
+    boot_log: Mapped[list[Any] | None] = mapped_column(JSONB)
     candidates: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # ranked fallback list
     attempt_index: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(server_default=_now())

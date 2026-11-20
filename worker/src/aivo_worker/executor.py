@@ -12,6 +12,7 @@ from pathlib import Path
 
 from aivo_protocol.worker_api import JobIn, JobState, JobStatus, PhaseTiming
 from aivo_worker.engines.base import Engine, EngineError
+from aivo_worker.logbuf import LogBuffer
 from aivo_worker.outputs import postprocess
 from aivo_worker.weights import FileManager
 
@@ -32,9 +33,10 @@ class JobRecord:
 
 
 class Executor:
-    def __init__(self, engine: Engine, files: FileManager, job_root: Path):
+    def __init__(self, engine: Engine, files: FileManager, job_root: Path, *, logs: LogBuffer | None = None):
         self.engine = engine
         self.files = files
+        self.logs = logs or LogBuffer()
         self.job_root = job_root
         self.inputs_dir = job_root / "inputs"
         self.jobs: dict[str, JobRecord] = {}
@@ -64,6 +66,18 @@ class Executor:
         (jdir / "out").mkdir(parents=True, exist_ok=True)
         rec = JobRecord(job=job, status=JobStatus(job_id=job.job_id, state=JobState.queued, stage="queued"), dir=jdir)
         self.jobs[job.job_id] = rec
+        # Never log prompts: only ids, model and output shape.
+        o = job.output
+        shape = " ".join(
+            x
+            for x in (
+                f"{o.count}x {o.kind}",
+                f"{o.width}x{o.height}" if o.width and o.height else "",
+                f"{o.duration_s:g} s" if o.duration_s else "",
+            )
+            if x
+        )
+        self.logs.emit("agent", f"job {_short_id(job.job_id)} received: model {job.model_id}, {shape}")
         rec.task = asyncio.create_task(self._run(rec), name=f"job:{job.job_id}")
         return rec.status
 
@@ -79,6 +93,9 @@ class Executor:
             rec.status.state, rec.status.stage = JobState.running, "starting"
             rec.touch()
             t0 = time.monotonic()
+            sid = _short_id(job.job_id)
+            self.logs.emit("agent", f"job {sid}: started")
+            reported = {"stage": "", "pct": -1}
 
             def progress(p: float, stage: str) -> None:
                 rec.status.progress = max(0.0, min(1.0, p))
@@ -86,6 +103,10 @@ class Executor:
                 elapsed = time.monotonic() - t0
                 rec.status.eta_s = elapsed / p - elapsed if p > 0.05 else None
                 rec.touch()
+                pct = int(rec.status.progress * 4) * 25  # log milestones only: 0/25/50/75/100 %
+                if stage != reported["stage"] or pct > reported["pct"]:
+                    reported["stage"], reported["pct"] = stage, pct
+                    self.logs.emit("agent", f"job {sid}: {stage.replace('_', ' ')} ({pct} %)")
 
             try:
                 inputs_dir = rec.dir / "in"
@@ -106,6 +127,12 @@ class Executor:
                 rec.status.state, rec.status.progress, rec.status.stage = JobState.succeeded, 1.0, "done"
                 rec.status.eta_s = 0
                 rec.touch()
+                size = sum(o.bytes for o in rec.status.outputs) / 1e6
+                self.logs.emit(
+                    "agent",
+                    f"job {sid}: done in {time.monotonic() - t0:.1f} s, "
+                    f"{len(rec.status.outputs)} output(s), {size:.1f} MB ready to collect",
+                )
             except TimeoutError:
                 await self.engine.cancel()
                 self._fail(rec, "generation timed out", "timeout")
@@ -117,11 +144,13 @@ class Executor:
                         "cancelled",
                     )
                     rec.touch()
+                    self.logs.emit("agent", f"job {sid}: cancelled")
                 else:
                     self._fail(rec, str(e), e.code)  # type: ignore[arg-type]
             except asyncio.CancelledError:
                 rec.status.state, rec.status.stage = JobState.cancelled, "cancelled"
                 rec.touch()
+                self.logs.emit("agent", f"job {sid}: cancelled")
                 raise
             except Exception as e:
                 log.exception("job %s failed", job.job_id)
@@ -138,6 +167,8 @@ class Executor:
             code if code in {"oom", "engine", "timeout", "missing_files", "bad_request"} else "engine"
         )  # type: ignore[assignment]
         rec.touch()
+        sid = _short_id(rec.job.job_id)
+        self.logs.emit("agent", f"job {sid}: failed ({rec.status.error_code}): {msg[:500]}", "error")
 
     async def wait(self, job_id: str, timeout: float, since_state: str | None = None) -> JobStatus | None:
         rec = self.jobs.get(job_id)
@@ -177,3 +208,7 @@ class Executor:
             rec.task.cancel()
         shutil.rmtree(rec.dir, ignore_errors=True)
         return True
+
+
+def _short_id(job_id: str) -> str:
+    return job_id[:8]

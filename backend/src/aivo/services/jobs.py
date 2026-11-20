@@ -96,6 +96,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         cost_usd=job.attributed_cost_usd,
         error=job.error_message,
         machine=machine,
+        instance_id=job.instance_id,
         seed=(job.resolved or {}).get("seed"),
         created_at=job.created_at,
         finished_at=job.finished_at,
