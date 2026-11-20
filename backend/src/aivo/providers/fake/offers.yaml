@@ -1,0 +1,8 @@
+# Mirrors DigitalOcean GPU sizes (Nov 2026) for local development and tests.
+- {slug: gpu-4000adax1-20gb, model: rtx4000ada, label: "RTX 4000 Ada", count: 1, vram: 20, vcpus: 8, ram: 32, disk: 500, scratch: 0, price: 0.76, vendor: nvidia, regions: [tor1]}
+- {slug: gpu-6000adax1-48gb, model: rtx6000ada, label: "RTX 6000 Ada", count: 1, vram: 48, vcpus: 8, ram: 64, disk: 500, scratch: 0, price: 1.57, vendor: nvidia, regions: [tor1]}
+- {slug: gpu-l40sx1-48gb, model: l40s, label: "L40S", count: 1, vram: 48, vcpus: 8, ram: 64, disk: 500, scratch: 0, price: 1.57, vendor: nvidia, regions: [tor1]}
+- {slug: gpu-h100x1-80gb, model: h100, label: "H100", count: 1, vram: 80, vcpus: 20, ram: 240, disk: 720, scratch: 5120, price: 4.41, vendor: nvidia, regions: [nyc2, ams3, tor1]}
+- {slug: gpu-h200x1-141gb, model: h200, label: "H200", count: 1, vram: 141, vcpus: 24, ram: 240, disk: 720, scratch: 5120, price: 4.47, vendor: nvidia, regions: [nyc2, atl1]}
+- {slug: gpu-mi300x1-192gb, model: mi300x, label: "MI300X", count: 1, vram: 192, vcpus: 20, ram: 240, disk: 720, scratch: 5120, price: 2.59, vendor: amd, regions: [atl1]}
+- {slug: gpu-h100x8-640gb, model: h100, label: "8x H100", count: 8, vram: 640, vcpus: 160, ram: 1920, disk: 2000, scratch: 40960, price: 35.28, vendor: nvidia, regions: [nyc2]}
