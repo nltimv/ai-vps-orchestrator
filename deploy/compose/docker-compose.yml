@@ -1,0 +1,80 @@
+# Local development: everything runs on your machine; GPU machines are simulated
+# by default (AIVO_PROVIDER=fake). Set AIVO_PROVIDER=digitalocean + AIVO_DO_TOKEN
+# in .env to use real GPU Droplets.
+#
+#   cp deploy/compose/.env.example deploy/compose/.env
+#   docker compose -f deploy/compose/docker-compose.yml up --build
+#   open http://localhost:5173
+name: aivo
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: aivo
+      POSTGRES_PASSWORD: aivo
+      POSTGRES_DB: aivo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aivo"]
+      interval: 3s
+      retries: 20
+
+  migrate:
+    build: { context: ../.., dockerfile: backend/Dockerfile }
+    command: ["aivo", "migrate"]
+    env_file: .env
+    environment:
+      AIVO_DATABASE_URL: postgresql+asyncpg://aivo:aivo@postgres:5432/aivo
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  backend:
+    build: { context: ../.., dockerfile: backend/Dockerfile }
+    command: ["aivo", "serve", "--role", "all", "--reload"]
+    env_file: .env
+    environment:
+      AIVO_DATABASE_URL: postgresql+asyncpg://aivo:aivo@postgres:5432/aivo
+      AIVO_MEDIA_DIR: /var/lib/aivo/media
+      AIVO_SCRATCH_DIR: /scratch
+    volumes:
+      # the encrypted media volume: the ONLY place generated content is stored
+      - media:/var/lib/aivo/media
+      - ../../backend/src:/app/backend/src:ro
+      - ../../catalog:/app/catalog:ro
+    tmpfs:
+      - /scratch:size=2g,mode=1777   # transient plaintext (thumbnails) stays in RAM
+    ports: ["8000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+  frontend:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm ci --no-audit --no-fund && npx vite --host 0.0.0.0 --port 5173"
+    environment:
+      AIVO_BACKEND_URL: http://backend:8000
+    volumes:
+      - ../../frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports: ["5173:5173"]
+    depends_on: [backend]
+
+  # Optional S3-compatible stand-in for DigitalOcean Spaces (model mirror) in dev:
+  #   docker compose --profile minio up
+  minio:
+    profiles: ["minio"]
+    image: minio/minio:latest
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: aivo
+      MINIO_ROOT_PASSWORD: aivo-dev-secret
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio:/data]
+
+volumes:
+  pgdata:
+  media:
+  minio:
+  frontend_node_modules:

@@ -1,0 +1,39 @@
+{{- if .Values.janitor.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "aivo.fullname" . }}-janitor
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.janitor.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 240
+      template:
+        metadata:
+          labels: {{- include "aivo.selector" . | nindent 12 }}
+            app.kubernetes.io/component: janitor
+            aivo/backend: "true"
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext: {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: janitor
+              image: {{ include "aivo.backendImage" . }}
+              # destroy-only pass; does nothing while the controller is healthy
+              command: ["aivo", "janitor"]
+              env: {{- include "aivo.backendEnv" . | nindent 16 }}
+              envFrom: {{- include "aivo.backendEnvFrom" . | nindent 16 }}
+              securityContext: {{- include "aivo.containerSecurity" . | nindent 16 }}
+              volumeMounts:
+                - { name: tmp, mountPath: /tmp }
+                - { name: scratch, mountPath: /scratch }
+          volumes:
+            - { name: tmp, emptyDir: {} }
+            - { name: scratch, emptyDir: { medium: Memory, sizeLimit: 64Mi } }
+{{- end }}

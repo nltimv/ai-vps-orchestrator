@@ -1,0 +1,73 @@
+id: ltx25
+kind: video
+display_name: "Video · Quick with sound"
+tagline: "Fast clips with matching sound effects and ambience"
+description: >
+  LTX-2.5 (Lightricks, open weights Aug 2026): audio+video generated together,
+  distilled for very fast few-step generation.
+family: cinematic
+license:
+  name: LTX-2 Community License
+  url: https://huggingface.co/Lightricks/LTX-2
+  commercial: true
+  summary: Free for individuals and organisations under $10M annual revenue.
+supports: {avoid: true, seed: true, sound: true}
+modes:
+  - {mode: t2v, workflow: workflows/t2v.json}
+  - {mode: i2v, workflow: workflows/i2v.json}
+variants:
+  - id: fp8
+    precision: fp8
+    min_vram_gb: 32
+    recommended_vram_gb: 48
+    min_ram_gb: 64
+    quality_rank: 2
+    files: [ckpt_fp8, te]
+    params: {ckpt: ltx-2.5-distilled-fp8.safetensors}
+  - id: bf16
+    precision: bf16
+    min_vram_gb: 64
+    recommended_vram_gb: 80
+    min_ram_gb: 96
+    quality_rank: 3
+    files: [ckpt_bf16, te]
+    params: {ckpt: ltx-2.5-distilled.safetensors}
+files:
+  - {id: ckpt_fp8, repo: Lightricks/LTX-2.5, path: ltx-2.5-distilled-fp8.safetensors,
+     dest: checkpoints/ltx-2.5-distilled-fp8.safetensors, bytes: 27000000000}
+  - {id: ckpt_bf16, repo: Lightricks/LTX-2.5, path: ltx-2.5-distilled.safetensors,
+     dest: checkpoints/ltx-2.5-distilled.safetensors, bytes: 44000000000}
+  - {id: te, repo: Comfy-Org/ltx-2, path: split_files/text_encoders/gemma_3_12B_it_fp8_scaled.safetensors,
+     dest: text_encoders/gemma_3_12B_it_fp8_scaled.safetensors, bytes: 13200000000}
+quality:
+  draft:
+    label: Draft
+    params: {steps: 6}
+    sizes: {square: [640, 640], portrait: [512, 768], landscape: [768, 512], wide: [960, 544]}
+  standard:
+    label: Standard
+    params: {steps: 8}
+    sizes: {square: [960, 960], portrait: [704, 1280], landscape: [1280, 704], wide: [1280, 704]}
+  best:
+    label: Best
+    params: {steps: 12}
+    sizes: {square: [1088, 1088], portrait: [832, 1472], landscape: [1472, 832], wide: [1920, 1088]}
+video:
+  fps: 24
+  frame_multiple: 8
+  frame_offset: 1
+  durations: {short: 5, medium: 10}
+  max_seconds: 10
+bench:
+  unit: video_second
+  seconds: {l40s: 6, rtx6000ada: 6, h100: 2.5, h200: 2.3}
+  model_init_s: 45
+defaults:
+  negative: "blurry, low quality, distorted, watermark, static"
+max_count: 1
+output_mb: 8
+tags: [video, sound, fast]
+notes: >
+  Workflow follows the LTX-2 native ComfyUI node graph (audio+video latents).
+  File names for LTX-2.5 must be confirmed against the official repo and the
+  pinned ComfyUI version (catalog/comfy_object_info.json) before first use.

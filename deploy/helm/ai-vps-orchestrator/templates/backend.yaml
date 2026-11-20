@@ -1,0 +1,83 @@
+{{- $roles := ternary (list "all") (list "api" "controller") (eq .Values.topology "combined") -}}
+{{- range $role := $roles }}
+{{- if or (ne $role "controller") $.Values.controller.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aivo.fullname" $ }}-{{ $role }}
+  labels: {{- include "aivo.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: backend-{{ $role }}
+spec:
+  replicas: {{ ternary $.Values.api.replicas 1 (eq $role "api") }}
+  strategy:
+    type: {{ ternary "RollingUpdate" "Recreate" (eq $role "api") }}
+  selector:
+    matchLabels: {{- include "aivo.selector" $ | nindent 6 }}
+      app.kubernetes.io/component: backend-{{ $role }}
+  template:
+    metadata:
+      labels: {{- include "aivo.selector" $ | nindent 8 }}
+        app.kubernetes.io/component: backend-{{ $role }}
+        aivo/backend: "true"
+      annotations:
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") $ | sha256sum }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext: {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: migrate
+          image: {{ include "aivo.backendImage" $ }}
+          imagePullPolicy: {{ $.Values.image.backend.pullPolicy }}
+          command: ["aivo", "migrate"]
+          env: {{- include "aivo.backendEnv" $ | nindent 12 }}
+          envFrom: {{- include "aivo.backendEnvFrom" $ | nindent 12 }}
+          securityContext: {{- include "aivo.containerSecurity" $ | nindent 12 }}
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+      containers:
+        - name: backend
+          image: {{ include "aivo.backendImage" $ }}
+          imagePullPolicy: {{ $.Values.image.backend.pullPolicy }}
+          command: ["aivo", "serve", "--role", "{{ $role }}"]
+          env: {{- include "aivo.backendEnv" $ | nindent 12 }}
+          envFrom: {{- include "aivo.backendEnvFrom" $ | nindent 12 }}
+          ports:
+            - { name: http, containerPort: 8000 }
+          readinessProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/v1/health, port: http }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources: {{- toYaml (ternary $.Values.controller.resources $.Values.api.resources (eq $role "controller")) | nindent 12 }}
+          securityContext: {{- include "aivo.containerSecurity" $ | nindent 12 }}
+          volumeMounts: {{- include "aivo.backendMounts" $ | nindent 12 }}
+      volumes: {{- include "aivo.backendVolumes" $ | nindent 8 }}
+      {{- with $.Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aivo.fullname" . }}-backend
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector: {{- include "aivo.selector" . | nindent 4 }}
+    app.kubernetes.io/component: backend-{{ ternary "all" "api" (eq .Values.topology "combined") }}
+  ports:
+    - { name: http, port: 8000, targetPort: http }

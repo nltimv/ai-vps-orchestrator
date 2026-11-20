@@ -1,0 +1,19 @@
+# Friendly "Style" chips -> phrasing appended to the user's description.
+- id: photo
+  label: Photo
+  suffix: "photorealistic, natural lighting, sharp focus, high detail"
+- id: cinematic
+  label: Cinematic
+  suffix: "cinematic film still, dramatic lighting, shallow depth of field, color graded"
+- id: illustration
+  label: Illustration
+  suffix: "digital illustration, clean lines, vibrant colors"
+- id: anime
+  label: Anime
+  suffix: "anime style, cel shading, expressive characters"
+- id: 3d
+  label: 3D
+  suffix: "3D render, soft global illumination, octane style, detailed materials"
+- id: painting
+  label: Painting
+  suffix: "oil painting, visible brush strokes, rich texture"

@@ -1,0 +1,24 @@
+# "Auto" engine choice per kind / mode / quality. First enabled entry wins.
+image:
+  t2i:
+    draft: [z-image-turbo, flux2-klein-4b]
+    standard: [z-image-turbo, qwen-image-2512]
+    best: [flux2-dev, qwen-image-2512, z-image-turbo]
+  edit:
+    draft: [flux2-klein-4b, qwen-image-edit-2511]
+    standard: [qwen-image-edit-2511, flux2-klein-4b]
+    best: [qwen-image-edit-2511]
+video:
+  t2v:
+    draft: [wan22-ti2v-5b, ltx25]
+    standard: [ltx25, wan22-a14b]
+    best: [wan22-a14b, ltx25]
+  i2v:
+    draft: [wan22-ti2v-5b, ltx25]
+    standard: [ltx25, wan22-a14b]
+    best: [wan22-a14b, ltx25]
+music:
+  t2m:
+    draft: [ace-step-15]
+    standard: [ace-step-15]
+    best: [ace-step-15]

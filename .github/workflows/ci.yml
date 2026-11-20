@@ -1,0 +1,105 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: aivo
+          POSTGRES_PASSWORD: aivo
+          POSTGRES_DB: aivo_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U aivo" --health-interval 3s --health-retries 20
+    env:
+      AIVO_TEST_DATABASE_URL: postgresql+asyncpg://aivo:aivo@localhost:5432/aivo_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: uv sync --frozen
+      - name: lint
+        run: uv run ruff check backend worker packages && uv run ruff format --check backend worker packages
+      - name: catalog
+        run: AIVO_MEDIA_KEKS=x uv run aivo catalog-check
+      - name: tests (unit + integration with the fake cloud provider)
+        run: uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run lint:jargon
+      - run: npm run build
+
+  e2e:
+    needs: [backend, frontend]
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env: { POSTGRES_USER: aivo, POSTGRES_PASSWORD: aivo, POSTGRES_DB: aivo }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U aivo" --health-interval 3s --health-retries 20
+    env:
+      AIVO_DATABASE_URL: postgresql+asyncpg://aivo:aivo@localhost:5432/aivo
+      AIVO_PROVIDER: fake
+      AIVO_MEDIA_DIR: /tmp/aivo-media
+      AIVO_FAKE_BOOT_SECONDS: "2"
+      AIVO_FAKE_JOB_SECONDS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: uv sync --frozen
+      - run: cd frontend && npm ci && npx playwright install --with-deps chromium
+      - name: start stack
+        run: |
+          export AIVO_MEDIA_KEKS=$(uv run aivo generate-key)
+          uv run aivo migrate
+          nohup uv run aivo serve --role all --port 8000 > backend.log 2>&1 &
+          cd frontend && nohup npx vite --port 5173 > ../frontend.log 2>&1 &
+          for i in $(seq 1 60); do curl -fs localhost:5173/api/v1/health && break; sleep 1; done
+      - name: dashboard end-to-end
+        run: node frontend/e2e/walkthrough.cjs
+      - if: failure()
+        run: tail -100 backend.log frontend.log
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - run: helm lint deploy/helm/ai-vps-orchestrator --set secrets.mediaKeks=k1:AAAA
+      - name: render + validate
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          helm template t deploy/helm/ai-vps-orchestrator --set secrets.mediaKeks=k1:AAAA --set ingress.enabled=true > combined.yaml
+          helm template t deploy/helm/ai-vps-orchestrator --set secrets.mediaKeks=k1:AAAA --set topology=split \
+            --set postgresql.enabled=false --set externalDatabase.url=postgresql+asyncpg://x@y/z > split.yaml
+          ./kubeconform -strict -summary -ignore-missing-schemas combined.yaml split.yaml

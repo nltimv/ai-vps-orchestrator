@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aivo.fullname" . }}-frontend
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+spec:
+  replicas: {{ .Values.frontend.replicas }}
+  selector:
+    matchLabels: {{- include "aivo.selector" . | nindent 6 }}
+      app.kubernetes.io/component: frontend
+  template:
+    metadata:
+      labels: {{- include "aivo.selector" . | nindent 8 }}
+        app.kubernetes.io/component: frontend
+    spec:
+      automountServiceAccountToken: false
+      securityContext: { runAsNonRoot: true }
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: frontend
+          image: {{ include "aivo.frontendImage" . }}
+          imagePullPolicy: {{ .Values.image.frontend.pullPolicy }}
+          env:
+            - name: AIVO_BACKEND_UPSTREAM
+              value: http://{{ include "aivo.fullname" . }}-backend:8000
+          ports:
+            - { name: http, containerPort: 8080 }
+          readinessProbe:
+            httpGet: { path: /, port: http }
+          resources: {{- toYaml .Values.frontend.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aivo.fullname" . }}
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }}
+  selector: {{- include "aivo.selector" . | nindent 4 }}
+    app.kubernetes.io/component: frontend
+  ports:
+    - { name: http, port: {{ .Values.service.port }}, targetPort: http }

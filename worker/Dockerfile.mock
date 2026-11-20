@@ -1,0 +1,8 @@
+# CPU-only mock worker (placeholder outputs). Same API as the GPU worker; for CI and demos.
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+COPY packages/protocol /src/protocol
+COPY worker /src/worker
+RUN pip install --no-cache-dir /src/protocol /src/worker
+ENV AIVO_WORKER_BOOTSTRAP=/etc/aivo/bootstrap.json
+ENTRYPOINT ["aivo-worker"]

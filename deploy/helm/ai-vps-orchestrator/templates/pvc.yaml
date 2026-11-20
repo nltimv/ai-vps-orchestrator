@@ -1,0 +1,17 @@
+{{- if and .Values.media.persistence.enabled (not .Values.media.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aivo.pvcName" . }}
+  labels: {{- include "aivo.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep   # never delete the gallery on uninstall
+spec:
+  accessModes: {{- toYaml .Values.media.persistence.accessModes | nindent 4 }}
+  {{- with .Values.media.persistence.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.media.persistence.size }}
+{{- end }}

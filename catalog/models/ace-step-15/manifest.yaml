@@ -1,0 +1,44 @@
+id: ace-step-15
+kind: music
+display_name: "Music · Song"
+tagline: "Full songs with vocals and lyrics, or instrumentals, in seconds"
+description: >
+  ACE-Step 1.5 (turbo): describe genre, mood and instruments; optionally add
+  your own lyrics. Runs comfortably on the smallest machine.
+family: music
+license:
+  name: MIT
+  url: https://huggingface.co/ACE-Step/Ace-Step1.5
+  commercial: true
+supports: {avoid: false, seed: true, lyrics: true, instrumental: true}
+modes:
+  - {mode: t2m, workflow: workflows/t2m.json}
+variants:
+  - id: turbo
+    precision: bf16
+    min_vram_gb: 8
+    recommended_vram_gb: 12
+    min_ram_gb: 16
+    quality_rank: 2
+    files: [ckpt]
+files:
+  - {id: ckpt, repo: Comfy-Org/ace_step_1.5_ComfyUI_files, path: checkpoints/ace_step_1.5_turbo_aio.safetensors,
+     dest: checkpoints/ace_step_1.5_turbo_aio.safetensors, bytes: 9800000000}
+quality:
+  draft: {label: Draft, params: {steps: 8}}
+  standard: {label: Standard, params: {steps: 8}}
+  best: {label: Best, params: {steps: 16}}
+music:
+  durations: {30s: 30, 1min: 60, 3min: 180}
+  max_seconds: 240
+bench:
+  unit: audio_second
+  seconds: {rtx4000ada: 0.25, l40s: 0.1, rtx6000ada: 0.1, h100: 0.05, h200: 0.05}
+  model_init_s: 15
+defaults: {lyrics_strength: 1.0}
+max_count: 2
+output_mb: 3
+tags: [music]
+notes: >
+  Graph mirrors the ACE-Step ComfyUI nodes; confirm the 1.5 node/class names
+  against the pinned ComfyUI object_info before first use.

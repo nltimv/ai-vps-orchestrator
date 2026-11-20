@@ -1,0 +1,18 @@
+{
+  "_comment": "Qwen-Image-Edit-2511: edit the reference image according to the instruction.",
+  "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "$unet", "weight_dtype": "default"}},
+  "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors", "type": "qwen_image", "device": "default"}},
+  "3": {"class_type": "VAELoader", "inputs": {"vae_name": "qwen_image_vae.safetensors"}},
+  "4": {"class_type": "LoadImage", "inputs": {"image": "$reference_image"}},
+  "5": {"class_type": "ImageScaleToTotalPixels", "inputs": {"image": ["4", 0], "upscale_method": "lanczos", "megapixels": "$megapixels"}},
+  "6": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": "$shift"}},
+  "7": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["2", 0], "prompt": "$prompt", "vae": ["3", 0], "image1": ["5", 0]}},
+  "8": {"class_type": "TextEncodeQwenImageEditPlus", "inputs": {"clip": ["2", 0], "prompt": "$negative", "vae": ["3", 0], "image1": ["5", 0]}},
+  "9": {"class_type": "VAEEncode", "inputs": {"pixels": ["5", 0], "vae": ["3", 0]}},
+  "10": {"class_type": "RepeatLatentBatch", "inputs": {"samples": ["9", 0], "amount": "$batch"}},
+  "11": {"class_type": "KSampler", "inputs": {"model": ["6", 0], "positive": ["7", 0], "negative": ["8", 0],
+         "latent_image": ["10", 0], "seed": "$seed", "steps": "$steps", "cfg": "$cfg",
+         "sampler_name": "euler", "scheduler": "simple", "denoise": 1.0}},
+  "12": {"class_type": "VAEDecode", "inputs": {"samples": ["11", 0], "vae": ["3", 0]}},
+  "13": {"class_type": "SaveImage", "inputs": {"images": ["12", 0], "filename_prefix": "$prefix"}}
+}
