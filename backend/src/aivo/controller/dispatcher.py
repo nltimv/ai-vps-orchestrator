@@ -137,7 +137,7 @@ class JobRunner:
                 break
             if st.failed:
                 await client.delete_job(str(job.id))
-                await self._finish_failed(job.id, "missing_files", "; ".join(f.error or "" for f in st.failed)[:300])
+                await self._finish_failed(job.id, "missing_files", download_error(st.failed, files))
                 await self._release_instance(inst.id)
                 return False
             done = sum(f.bytes_done for f in st.files)
@@ -431,3 +431,18 @@ class JobRunner:
                 await emit(s, scope="instance", type="instance.lost", ref_id=inst_id)
         if self.app.controller is not None:
             self.app.controller.wake()
+
+
+def download_error(failed, files) -> str:  # type: ignore[no-untyped-def]
+    """A job-facing message for model files that couldn't be downloaded."""
+    detail = "; ".join(f"{f.dest}: {f.error or 'failed'}" for f in failed)[:300]
+    refused = [f for f in failed if any(c in (f.error or "") for c in ("HTTP 401", "HTTP 403"))]
+    if refused:
+        gated = {f.dest for f in files if getattr(f, "gated", False)}
+        if any(f.dest in gated for f in refused):
+            return (
+                "This engine's model files need a Hugging Face token: accept the model's license on "
+                f"huggingface.co and set AIVO_HF_TOKEN. ({detail})"
+            )
+        return f"Hugging Face refused to download this engine's model files (moved, or now gated). ({detail})"
+    return f"The AI model's files couldn't be downloaded. ({detail})"

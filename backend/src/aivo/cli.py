@@ -170,7 +170,9 @@ def inventory() -> None:
 
 
 @app.command("catalog-check")
-def catalog_check() -> None:
+def catalog_check(
+    online: bool = typer.Option(False, help="Also check every model file on Hugging Face (exists, size, gated)"),
+) -> None:
     """Validate the model catalog and render every preset combination."""
     from aivo.catalog.loader import Catalog
     from aivo.catalog.presets import FriendlyParams, plan, render_workflow, workflow_params
@@ -193,6 +195,51 @@ def catalog_check() -> None:
                     render_workflow(m.workflows[mode], workflow_params(cat, pl, fp, v, seed=1))
                     n += 1
     typer.echo(f"catalog OK: {len(cat.models)} models, {n} renders")
+    if online:
+        problems = _check_files_online(cat)
+        for p in problems:
+            typer.echo(f"PROBLEM: {p}", err=True)
+        if problems:
+            raise typer.Exit(1)
+        typer.echo("model files OK on Hugging Face")
+
+
+def _check_files_online(cat) -> list[str]:  # type: ignore[no-untyped-def]
+    import httpx
+
+    from aivo.cache.spaces import hf_url
+
+    token = get_env().hf_token
+    seen: dict[str, object] = {}
+    for m in cat.models.values():
+        for f in m.manifest.files:
+            seen.setdefault(hf_url(f), f)
+    problems: list[str] = []
+    with httpx.Client(timeout=30) as c:
+        for url, f in seen.items():
+            headers = {"Authorization": f"Bearer {token.get_secret_value()}"} if token and f.gated else {}  # type: ignore[attr-defined]
+            size = None
+            for _ in range(3):  # follow Hugging Face's own redirects, not the download CDN
+                r = c.head(url, headers=headers)
+                size = size or r.headers.get("x-linked-size")
+                loc = r.headers.get("location", "")
+                if r.status_code in (301, 302, 307, 308) and loc.startswith("/"):
+                    url = f"https://huggingface.co{loc}"
+                    continue
+                break
+            name = f"{f.repo}/{f.path}"  # type: ignore[attr-defined]
+            if r.status_code in (401, 403):
+                if not f.gated:  # type: ignore[attr-defined]
+                    problems.append(f"{name}: needs a Hugging Face token but isn't marked gated")
+                elif token:
+                    problems.append(f"{name}: refused with AIVO_HF_TOKEN (license not accepted?)")
+                else:
+                    typer.echo(f"note: {name} is gated (needs AIVO_HF_TOKEN)")
+            elif r.status_code >= 400:
+                problems.append(f"{name}: HTTP {r.status_code} {r.headers.get('x-error-message', '')}".strip())
+            elif size and f.bytes and abs(int(size) - f.bytes) > 0.05 * f.bytes:  # type: ignore[attr-defined]
+                problems.append(f"{name}: {int(size) / 1e9:.2f} GB, catalog says {f.bytes / 1e9:.2f} GB")  # type: ignore[attr-defined]
+    return problems
 
 
 if __name__ == "__main__":

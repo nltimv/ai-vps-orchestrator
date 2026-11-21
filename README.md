@@ -76,7 +76,7 @@ NetworkPolicies. See [`values.yaml`](deploy/helm/ai-vps-orchestrator/values.yaml
 | Image · Best | FLUX.2 [dev] | Non-commercial | L40S / RTX 6000 Ada (48 GB) |
 | Image · Text & posters | Qwen-Image-2512 | Apache-2.0 | 48 GB |
 | Edit an image | Qwen-Image-Edit-2511, FLUX.2 [klein] 4B | Apache-2.0 | 48 GB / 20 GB |
-| Video · Quick with sound | LTX-2.5 | LTX community (free < $10M revenue) | 48 GB (H100 for speed) |
+| Video · Quick with sound | LTX-2 (19B, distilled) | LTX community (free < $10M revenue) | 48 GB (H100 for speed) |
 | Video · Cinematic | Wan 2.2 A14B + 4-step speed-up | Apache-2.0 | 48 GB (H100 for speed) |
 | Video · Budget | Wan 2.2 TI2V-5B | Apache-2.0 | 20 GB |
 | Music · Song | ACE-Step 1.5 | MIT | 20 GB |
@@ -131,8 +131,9 @@ tested end to end with the simulated provider.
 
 Not yet verified on real GPUs:
 
-- The ComfyUI workflow templates.
-- The exact model file names, especially for the newest models (LTX-2.5, ACE-Step 1.5).
+- The ComfyUI workflow templates. Verified so far on a real H100: Video · Budget (Wan 2.2 5B) and
+  Image · Best (FLUX.2 [dev]).
+- Model file names and sizes are checked against Hugging Face with `aivo catalog-check --online`.
 
 Run `scripts/do_smoke.py` per engine before relying on one. Check each model's license
 on its card before commercial use.

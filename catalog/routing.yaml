@@ -10,13 +10,13 @@ image:
     best: [qwen-image-edit-2511]
 video:
   t2v:
-    draft: [wan22-ti2v-5b, ltx25]
-    standard: [ltx25, wan22-a14b]
-    best: [wan22-a14b, ltx25]
+    draft: [wan22-ti2v-5b, ltx2]
+    standard: [ltx2, wan22-a14b]
+    best: [wan22-a14b, ltx2]
   i2v:
-    draft: [wan22-ti2v-5b, ltx25]
-    standard: [ltx25, wan22-a14b]
-    best: [wan22-a14b, ltx25]
+    draft: [wan22-ti2v-5b, ltx2]
+    standard: [ltx2, wan22-a14b]
+    best: [wan22-a14b, ltx2]
 music:
   t2m:
     draft: [ace-step-15]

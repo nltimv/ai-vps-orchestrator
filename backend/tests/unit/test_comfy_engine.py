@@ -63,3 +63,19 @@ async def test_engine_maps_oom(engine, tmp_path):
 async def test_extra_model_paths_written(engine):
     cfg = (engine.work_dir / "extra_model_paths.yaml").read_text()
     assert "diffusion_models: diffusion_models/" in cfg and str(engine.models_dir) in cfg
+
+
+async def test_progress_never_goes_back_from_creating_to_loading(engine, tmp_path):
+    """Current ComfyUI also sends progress_state/executed messages while sampling: they must not
+    flip the stage back to loading_model, and progress must not go down."""
+    seen: list[tuple[float, str]] = []
+    out_dir = tmp_path / "out2"
+    out_dir.mkdir()
+    job = JobIn(job_id="j3", model_id="z-image-turbo", workflow=zimage_workflow(), output=OutputSpec(kind="image"))
+    await engine.run(job, tmp_path, out_dir, lambda p, s: seen.append((p, s)))
+    stages = [s for _, s in seen]
+    first_gen = stages.index("generating")
+    assert "loading_model" not in stages[first_gen:], stages
+    values = [p for p, _ in seen]
+    assert values == sorted(values), values
+    assert values[-1] >= 0.9

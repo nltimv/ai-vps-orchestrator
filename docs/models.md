@@ -26,7 +26,7 @@ type or datacenter.
 | **Image · Best** (Auto for Best) | **FLUX.2 [dev]** 32B (fp8 on 48 GB, full on 80 GB) | Top open-weight quality and prompt adherence | **Non-commercial**: personal use |
 | **Image · Text & posters** | **Qwen-Image-2512** 20B (+ Lightning speed-up for Draft) | Best text rendering and complex layouts | Apache-2.0 |
 | **Edit an image** | **Qwen-Image-Edit-2511**; quick: **FLUX.2 [klein] 4B** | Instruction-based edits that keep the rest intact | Apache-2.0 |
-| **Video · Quick with sound** (Auto for Standard) | **LTX-2.5** (distilled) | Very fast, generates matching audio; 16–48 GB | LTX community license (free < $10M revenue) |
+| **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled) | Very fast, generates matching audio; 16–48 GB | LTX community license (free < $10M revenue) |
 | **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** + Lightx2v 4-step | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
 | **Video · Budget** (Auto for Draft) | **Wan 2.2 TI2V-5B** | 720p on the cheapest GPU | Apache-2.0 |
 | **Music · Song** | **ACE-Step 1.5** (turbo) | Full songs with vocals/lyrics or instrumentals in seconds; tiny VRAM | MIT |
@@ -53,13 +53,19 @@ with the right model loaded nearly always wins.
 
 ## Caveats
 
-- **Pin before production.** Model file names and sizes in the manifests come from the public
-  repos and are approximate until pinned. `sha256` and `revision` should be set per file.
-  Until then the worker skips exact size and checksum checks.
+- **Check the files.** `aivo catalog-check --online` checks every model file on Hugging Face:
+  that it exists, its size, and whether it needs a token. Run it after changing a manifest.
+  `sha256` and `revision` should still be pinned per file; until then the worker skips exact
+  size and checksum checks.
+- **Gated models.** Some repos (FLUX.2 [dev] full precision, LTX-2.5) require accepting a license
+  on huggingface.co and a token (`AIVO_HF_TOKEN`). Without a token, aivo never picks a variant
+  whose files are gated.
+- **LTX-2.5** is not offered yet: its repo is gated and its files are split differently
+  (22B transformer, Gemma 4 text encoder, separate video and audio VAEs), so it needs its own
+  workflow. "Quick with sound" uses LTX-2 19B (public) meanwhile.
 - **Verify the newest workflows.** The workflow graphs follow ComfyUI's native nodes for each
-  model family. For **LTX-2.5** and **ACE-Step 1.5** (both 2026 releases), confirm the node
-  names against the pinned ComfyUI version before first use. The manifests note this. Then run
-  `scripts/do_smoke.py --model <id>` once per engine.
+  model family. Confirm the node names for **ACE-Step 1.5** against the pinned ComfyUI version
+  before first use. Then run `scripts/do_smoke.py --model <id>` once per engine.
 - **Check licenses yourself.** Re-check each model card before any commercial use.
   FLUX.2 [dev] is personal/non-commercial only. LTX-2.x needs a paid license above $10M yearly
   revenue.

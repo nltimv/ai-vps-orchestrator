@@ -1,10 +1,10 @@
-id: ltx25
+id: ltx2
 kind: video
 display_name: "Video · Quick with sound"
 tagline: "Fast clips with matching sound effects and ambience"
 description: >
-  LTX-2.5 (Lightricks, open weights Aug 2026): audio+video generated together,
-  distilled for very fast few-step generation.
+  LTX-2 19B (Lightricks): audio+video generated together, distilled for very
+  fast 8-step generation.
 family: cinematic
 license:
   name: LTX-2 Community License
@@ -23,7 +23,7 @@ variants:
     min_ram_gb: 64
     quality_rank: 2
     files: [ckpt_fp8, te]
-    params: {ckpt: ltx-2.5-distilled-fp8.safetensors}
+    params: {ckpt: ltx-2-19b-distilled-fp8.safetensors}
   - id: bf16
     precision: bf16
     min_vram_gb: 64
@@ -31,12 +31,13 @@ variants:
     min_ram_gb: 96
     quality_rank: 3
     files: [ckpt_bf16, te]
-    params: {ckpt: ltx-2.5-distilled.safetensors}
+    params: {ckpt: ltx-2-19b-distilled.safetensors}
 files:
-  - {id: ckpt_fp8, repo: Lightricks/LTX-2.5, path: ltx-2.5-distilled-fp8.safetensors,
-     dest: checkpoints/ltx-2.5-distilled-fp8.safetensors, bytes: 27000000000}
-  - {id: ckpt_bf16, repo: Lightricks/LTX-2.5, path: ltx-2.5-distilled.safetensors,
-     dest: checkpoints/ltx-2.5-distilled.safetensors, bytes: 44000000000}
+  # Lightricks/LTX-2 is public (no token needed); checked against the Hugging Face API, Nov 2026
+  - {id: ckpt_fp8, repo: Lightricks/LTX-2, path: ltx-2-19b-distilled-fp8.safetensors,
+     dest: checkpoints/ltx-2-19b-distilled-fp8.safetensors, bytes: 27078716346}
+  - {id: ckpt_bf16, repo: Lightricks/LTX-2, path: ltx-2-19b-distilled.safetensors,
+     dest: checkpoints/ltx-2-19b-distilled.safetensors, bytes: 43285058186}
   - {id: te, repo: Comfy-Org/ltx-2, path: split_files/text_encoders/gemma_3_12B_it_fp8_scaled.safetensors,
      dest: text_encoders/gemma_3_12B_it_fp8_scaled.safetensors, bytes: 13200000000}
 quality:
@@ -68,6 +69,7 @@ max_count: 1
 output_mb: 8
 tags: [video, sound, fast]
 notes: >
-  Workflow follows the LTX-2 native ComfyUI node graph (audio+video latents).
-  File names for LTX-2.5 must be confirmed against the official repo and the
-  pinned ComfyUI version (catalog/comfy_object_info.json) before first use.
+  Workflow follows the LTX-2 native ComfyUI node graph (audio+video latents, distilled:
+  8 steps, CFG 1). LTX-2.5 (Lightricks/LTX-2.5) is a gated repo with a different file
+  layout (22B transformer, Gemma 4 text encoder, separate video/audio VAEs); it needs a
+  Hugging Face token and its own workflow before it can be offered.
