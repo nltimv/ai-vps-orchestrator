@@ -171,6 +171,7 @@ time is extended as long as the machine makes progress (a new step, or the downl
 | What the log says | Cause and fix |
 |---|---|
 | *This machine has an NVIDIA GPU but no GPU driver* | The machine was started from an image without GPU drivers. Leave `AIVO_DO_BASE_IMAGE` unset (default `gpu-h100x1-base`) or point it at a GPU image. Prepared images baked from a plain image have the same problem: delete them and bake again. |
+| *The model storage on this machine (/var/lib/aivo/models) is read-only* | The disk meant for model files can't be written to. Before this check existed, the start-up script could mistake DigitalOcean's small read-only config drive (`/dev/vdb`) for a scratch disk; the AI engine then failed with `Read-only file system`. Now only a blank, writable disk of 100 GB or more is used as a scratch disk. |
 | *The GPU can't be used inside containers* | The NVIDIA container toolkit isn't working. The message includes Docker's error. |
 | *Could not download the worker software* | `AIVO_WORKER_IMAGE` is wrong or private, or the registry is unreachable. |
 | *The worker software keeps stopping* | The worker container crashes on start. Its last output is in the Start-up lines. |

@@ -339,3 +339,16 @@ def test_template_is_valid_for_the_machines_python():
     src = Path(BOOT_STATUS_PY).read_text()
     compile(src, "boot_status.py", "exec")
     assert "bootstrap.json" in src and "print(boot" not in src
+
+
+def test_retry_after_sold_out_is_not_shown_as_a_new_request():
+    from datetime import UTC, datetime
+
+    from aivo.db.models import Event
+    from aivo.services.machine_log import render_event
+
+    at = datetime.now(UTC)
+    first = Event(scope="instance", type="instance.state", payload={"state": "pending"}, at=at)
+    retry = Event(scope="instance", type="instance.state", payload={"state": "pending", "retry": True}, at=at)
+    assert render_event(first)["text"] == "Machine requested"
+    assert render_event(retry) is None
