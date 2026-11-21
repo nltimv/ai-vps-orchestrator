@@ -87,6 +87,8 @@ def render_event(ev: Event) -> dict[str, Any] | None:
     p = ev.payload or {}
     if ev.type == "instance.state":
         state = p.get("state") or "?"
+        if state == "pending" and p.get("retry"):
+            return None  # back in line for the next option: the placement attempt already says so
         text = STATE_TEXT.get(state, f"State: {state}")
         if state == "creating" and p.get("size"):
             text += f" ({p['size']} in {p.get('region', '?')})"

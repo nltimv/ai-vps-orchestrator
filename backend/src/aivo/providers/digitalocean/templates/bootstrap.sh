@@ -15,7 +15,7 @@ SELF="$(readlink -f "$0")"
 export AIVO_SETUP_LOG="$LOG" AIVO_BOOTSTRAP="$BOOT"
 exec >>"$LOG" 2>&1
 
-say() { echo "[aivo $(date +%H:%M:%S)] $*"; }
+say() { echo "[aivo $(date -u +%H:%M:%S) UTC] $*"; }
 STEP="starting"
 stage() { STEP="$1"; say "== step: $1${2:+ ($2)}"; python3 "$STATUS_PY" stage "$1" "${2:-}" || true; }
 fail() {
@@ -105,22 +105,54 @@ stage preparing_disks
 mkdir -p /run/aivo/jobs
 mountpoint -q /run/aivo/jobs || mount -t tmpfs -o size=40%,mode=0700 tmpfs /run/aivo/jobs
 
-# model storage on scratch NVMe if available (H100/H200 sizes have one)
+# Model storage: a local scratch disk if the size has one (H100/H200), else the boot disk.
+# Only a writable, large, unpartitioned disk that is blank (or that we formatted before) qualifies.
+# Never DigitalOcean's read-only config drive (/dev/vdb, under 1 MB) or an attached volume.
+is_volume() {
+  local v
+  for v in /dev/disk/by-id/scsi-0DO_Volume_*; do
+    [ -e "$v" ] && [ "$(readlink -f "$v")" = "$1" ] && return 0
+  done
+  return 1
+}
+pick_scratch_disk() {
+  local name type ro size fstype label
+  while read -r name type ro size; do
+    [ "$type" = disk ] && [ "$ro" = 0 ] || continue
+    [ "${size:-0}" -ge $((100 * 1024 * 1024 * 1024)) ] || continue
+    is_volume "$name" && continue
+    [ "$(lsblk -no NAME "$name" | wc -l)" -eq 1 ] || continue # partitioned: the boot disk
+    [ -z "$(lsblk -no MOUNTPOINT "$name" | tr -d '[:space:]')" ] || continue
+    fstype="$(blkid -o value -s TYPE "$name" 2>/dev/null || true)"
+    label="$(blkid -o value -s LABEL "$name" 2>/dev/null || true)"
+    [ -z "$fstype" ] || [ "$label" = aivo-scratch ] || continue
+    echo "$name"
+    return 0
+  done < <(lsblk -bdpno NAME,TYPE,RO,SIZE)
+  return 1
+}
+writable() { touch "$1/.aivo-write-test" 2>/dev/null && rm -f "$1/.aivo-write-test"; }
+
 mkdir -p /var/lib/aivo/models
 if ! mountpoint -q /var/lib/aivo/models; then
-  VOLREAL=""
-  for v in /dev/disk/by-id/scsi-0DO_Volume_*; do [ -e "$v" ] && VOLREAL="$(readlink -f "$v")"; done
-  for dev in /dev/nvme0n1 /dev/nvme1n1 /dev/vdb /dev/vdc; do
-    [ -b "$dev" ] || continue
-    [ "$dev" = "$VOLREAL" ] && continue
-    lsblk -no MOUNTPOINT "$dev" | grep -q . && continue
-    [ "$(lsblk -no TYPE "$dev" | head -n1)" = "disk" ] || continue
-    [ -n "$(lsblk -no NAME "$dev" | tail -n +2)" ] && continue # partitioned -> not scratch
-    blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -F -q -E nodiscard "$dev"
-    mount -o noatime "$dev" /var/lib/aivo/models && say "using scratch disk $dev" && break
-  done
+  if SCRATCH="$(pick_scratch_disk)"; then
+    [ -n "$(blkid -o value -s TYPE "$SCRATCH" 2>/dev/null || true)" ] || mkfs.ext4 -F -q -L aivo-scratch -E nodiscard "$SCRATCH"
+    if mount -o noatime "$SCRATCH" /var/lib/aivo/models; then
+      if writable /var/lib/aivo/models; then
+        say "using scratch disk $SCRATCH"
+      else
+        say "warning: scratch disk $SCRATCH is not writable, using the boot disk instead"
+        umount /var/lib/aivo/models
+      fi
+    fi
+  else
+    say "no scratch disk on this machine: model files go on the boot disk"
+  fi
 fi
-say "model storage: $(df -h --output=avail /var/lib/aivo/models | tail -n1 | tr -d ' ') free"
+writable /var/lib/aivo/models || fail "The model storage on this machine (/var/lib/aivo/models) is read-only."
+FREE_GB="$(df -BG --output=avail /var/lib/aivo/models | tail -n1 | tr -dc '0-9')"
+say "model storage: ${FREE_GB:-?} GB free"
+[ "${FREE_GB:-0}" -ge 30 ] || say "warning: little space for model files (${FREE_GB:-0} GB)"
 
 # read-only cache volume
 if [ -n "$VOLUME_MOUNT" ]; then

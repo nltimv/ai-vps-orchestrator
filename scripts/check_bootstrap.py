@@ -56,6 +56,42 @@ esac
 """
 NOOP = "#!/bin/bash\nexit 0\n"
 IPTABLES_STUB = '#!/bin/bash\n[ "$1" = "-C" ] && exit 1\nexit 0\n'
+RECORD = '#!/bin/bash\necho "$(basename "$0") $*" >> /tmp/disk-calls\n'
+
+# Disk tools answer from /check/disks.json, so the check never looks at (or formats) a real disk.
+LSBLK_STUB = """#!/usr/bin/env python3
+import json, sys
+disks, a = json.load(open("/check/disks.json")), sys.argv[1:]
+if "-bdpno" in a:
+    for name, d in disks.items():
+        print(name, d["type"], d["ro"], d["size"])
+elif "-no" in a:
+    col, dev = a[a.index("-no") + 1], a[-1]
+    d = disks.get(dev)
+    if d is None:
+        sys.exit(32)
+    if col == "NAME":
+        print("\\n".join([dev.rsplit("/", 1)[1], *d.get("parts", [])]))
+    elif col == "MOUNTPOINT":
+        print(d.get("mount", ""))
+"""
+BLKID_STUB = """#!/usr/bin/env python3
+import json, sys
+disks, a = json.load(open("/check/disks.json")), sys.argv[1:]
+d = disks.get(a[-1], {})
+v = d.get({"TYPE": "fstype", "LABEL": "label"}.get(a[a.index("-s") + 1] if "-s" in a else "TYPE", "fstype"))
+if not v:
+    sys.exit(2)
+print(v)
+"""
+GB = 1024**3
+# A DigitalOcean RTX 4000/6000 Ada or L40S droplet: partitioned boot disk + the read-only config drive.
+DO_DISKS = {
+    "/dev/vda": {"type": "disk", "ro": 0, "size": 500 * GB, "parts": ["vda1", "vda14", "vda15"], "mount": "/"},
+    "/dev/vdb": {"type": "disk", "ro": 1, "size": 485376, "fstype": "iso9660", "label": "config-2"},
+}
+# An H100 droplet also has a blank local scratch disk.
+H100_DISKS = DO_DISKS | {"/dev/nvme0n1": {"type": "disk", "ro": 0, "size": 5000 * GB}}
 
 PROBE = r"""
 import json, socket, ssl, sys
@@ -88,7 +124,17 @@ def ensure_image() -> None:
     subprocess.run(["docker", "build", "-q", "-t", IMAGE, "-"], input=dockerfile.encode(), check=True)
 
 
-def run_case(name: str, *, engine: str, mode: str, nvidia: bool, pci_vendor: str | None, wait_after_s: int = 2) -> dict:
+def run_case(
+    name: str,
+    *,
+    engine: str,
+    mode: str,
+    nvidia: bool,
+    pci_vendor: str | None,
+    wait_after_s: int = 2,
+    disks: dict | None = None,
+    read_only_models: bool = False,
+) -> dict:
     iid = uuid.uuid4()
     creds = make_worker_credentials(iid)
     token = secrets.token_urlsafe(24)
@@ -109,9 +155,19 @@ def run_case(name: str, *, engine: str, mode: str, nvidia: bool, pci_vendor: str
         (work / "etc/bootstrap.json").write_text(json.dumps(boot))
         (work / "ca.pem").write_text(creds.ca_pem)
         (work / "probe.py").write_text(PROBE)
+        (work / "disks.json").write_text(json.dumps(disks or DO_DISKS))
         stubs = work / "stubs"
         stubs.mkdir()
-        files = {"docker": DOCKER_STUB, "systemctl": NOOP, "mount": NOOP, "iptables": IPTABLES_STUB}
+        files = {
+            "docker": DOCKER_STUB,
+            "systemctl": NOOP,
+            "iptables": IPTABLES_STUB,
+            "lsblk": LSBLK_STUB,
+            "blkid": BLKID_STUB,
+            "mount": RECORD,
+            "umount": RECORD,
+            "mkfs.ext4": RECORD,
+        }
         if nvidia:
             files |= {"nvidia-smi": NVIDIA_SMI_STUB, "nvidia-ctk": NOOP}
         for f, body in files.items():
@@ -126,6 +182,9 @@ def run_case(name: str, *, engine: str, mode: str, nvidia: bool, pci_vendor: str
             "-v", f"{TEMPLATES}/bootstrap.sh:/opt/aivo/bootstrap.sh:ro",
             "-v", f"{TEMPLATES}/boot_status.py:/opt/aivo/boot_status.py:ro",
         ]  # fmt: skip
+        if read_only_models:
+            (work / "models").mkdir()
+            args += ["-v", f"{work}/models:/var/lib/aivo/models:ro"]
         if pci_vendor:
             dev = work / "pci/0000:00:05.0"
             dev.mkdir(parents=True)
@@ -136,15 +195,17 @@ def run_case(name: str, *, engine: str, mode: str, nvidia: bool, pci_vendor: str
             sleep {wait_after_s}
             python3 /check/probe.py {token} {creds.sni_name}
             echo "DOCKER-CALLS"; cat /tmp/docker-calls 2>/dev/null
+            echo "DISK-CALLS"; cat /tmp/disk-calls 2>/dev/null
             echo "SETUP-LOG"; cat /var/log/aivo-bootstrap.log
         """)
         out = subprocess.run([*args, IMAGE, "bash", "-c", script], capture_output=True, text=True, timeout=300)
         text = out.stdout
         exit_code = int(text.split("EXIT ", 1)[1].split()[0])
         probe = json.loads(text.split("PROBE ", 1)[1].split("\n", 1)[0])
-        calls = text.split("DOCKER-CALLS\n", 1)[1].split("SETUP-LOG\n", 1)[0]
+        calls = text.split("DOCKER-CALLS\n", 1)[1].split("DISK-CALLS\n", 1)[0]
+        disk_calls = text.split("DISK-CALLS\n", 1)[1].split("SETUP-LOG\n", 1)[0]
         log = text.split("SETUP-LOG\n", 1)[1]
-        return {"exit": exit_code, "probe": probe, "calls": calls, "log": log, "stderr": out.stderr}
+        return {"exit": exit_code, "probe": probe, "calls": calls + disk_calls, "log": log, "stderr": out.stderr}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -182,9 +243,11 @@ def main() -> None:
     check(r["exit"] == 1 and st["failed"] and "can't be used inside containers" in st["error"], "reported", r)
     check("could not select device driver" in st["error"], "with docker's own message", r)
 
-    print("3) healthy start: hands over to the agent")
+    print("3) healthy start on an RTX/L40S size: hands over to the agent")
     r = run_case("ok", engine="comfy", mode="ok", nvidia=True, pci_vendor="0x10de")
     check(r["exit"] == 0, "script succeeds", r)
+    check("/dev/vdb" not in r["calls"] and "mkfs" not in r["calls"], "the read-only config drive is left alone", r)
+    check("model files go on the boot disk" in r["log"] and " GB free" in r["log"], "models on the boot disk", r)
     check(
         "error" in r["probe"] and "Refused" in r["probe"]["error"], "status server stopped (port free for the agent)", r
     )
@@ -198,6 +261,19 @@ def main() -> None:
     st = r["probe"]["health"][1]["bootstrap"]
     check(st["failed"] and "keeps stopping: Error: boom" in st["error"], "failure reported by the restarted server", r)
     check("  | Error: boom" in r["log"], "the agent's last output is in the setup log", r)
+
+    print("5) H100 size: blank scratch disk is formatted and used for models")
+    r = run_case("h100", engine="comfy", mode="ok", nvidia=True, pci_vendor="0x10de", disks=H100_DISKS)
+    check(r["exit"] == 0, "script succeeds", r)
+    check("mkfs.ext4 -F -q -L aivo-scratch -E nodiscard /dev/nvme0n1" in r["calls"], "scratch disk formatted", r)
+    check("mount -o noatime /dev/nvme0n1 /var/lib/aivo/models" in r["calls"], "and mounted for models", r)
+    check("/dev/vdb" not in r["calls"], "config drive still left alone", r)
+
+    print("6) model storage is read-only")
+    r = run_case("ro", engine="comfy", mode="ok", nvidia=True, pci_vendor="0x10de", read_only_models=True)
+    st = r["probe"]["health"][1]["bootstrap"]
+    check(r["exit"] == 1 and st["failed"] and "read-only" in st["error"], "reported before downloading anything", r)
+    check("pull" not in r["calls"], "nothing downloaded", r)
     print("bootstrap check: OK")
 
 

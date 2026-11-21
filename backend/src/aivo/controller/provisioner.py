@@ -370,7 +370,9 @@ class Provisioner:
 
     async def _back_to_pending(self, inst_id: uuid.UUID, idx: int, *, release_volume: bool = True) -> None:
         async with self.app.sessionmaker() as s, s.begin():
-            await transition_instance(s, inst_id, "creating", "pending", attempt_index=idx)
+            await transition_instance(
+                s, inst_id, "creating", "pending", attempt_index=idx, event_payload={"retry": True}
+            )
             if release_volume:
                 await s.execute(
                     update(CacheResource)
