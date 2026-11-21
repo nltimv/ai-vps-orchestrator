@@ -27,7 +27,7 @@ from aivo.context import AppContext
 from aivo.controller.budget import accrue, admit, ensure_period, month_compute_spend
 from aivo.controller.common import utcnow, worker_client
 from aivo.controller.lifecycle import STARTING_STATES, transition_instance, transition_job
-from aivo.db.models import CacheResource, Event, Instance, Job
+from aivo.db.models import BackgroundRun, CacheResource, Event, Instance, Job
 from aivo.events.bus import emit
 from aivo.providers.base import ProviderInstance, deployment_tag
 from aivo.worker_client.client import WorkerUnreachable
@@ -37,6 +37,9 @@ SAVED_LOG_LINES = 60  # log lines kept when a machine is shut down
 log = logging.getLogger(__name__)
 
 ORPHAN_MIN_AGE_S = 180
+# Helper machines (not tracked as instances) are left alone while their task runs, up to this age:
+# preparing a machine image (bake) and filling a model disk. Older ones are orphans after all.
+HELPER_MAX_AGE_S = {"aivo-bake": 3 * 3600, "aivo-fill": 5 * 3600}
 VANISH_GRACE_S = 90
 
 
@@ -109,6 +112,7 @@ class Reconciler:
                     self._missing.pop(inst.id, None)
                     await self._mark_gone(s, inst, external=inst.state != "destroying")
             # orphans: tagged with our deployment but not (or no longer) tracked
+            helpers_busy = await self._helpers_busy(s)
             for r in remote:
                 if r.provider_id in known_pids:
                     continue
@@ -118,6 +122,9 @@ class Reconciler:
                 age = (now - r.created_at).total_seconds() if r.created_at else 1e9
                 if age < self.orphan_min_age_s:
                     continue
+                helper = next((t for t in r.tags if t in HELPER_MAX_AGE_S), None)
+                if helper and helpers_busy.get(helper) and age < HELPER_MAX_AGE_S[helper]:
+                    continue  # preparing a machine image / filling a model disk right now
                 if not await self._fenced(s):
                     return
                 log.warning("destroying orphan machine %s (%s)", r.provider_id, r.name)
@@ -131,6 +138,23 @@ class Reconciler:
                     )
                 except Exception as e:
                     log.warning("orphan destroy failed: %s", e)
+
+    async def _helpers_busy(self, s: AsyncSession) -> dict[str, bool]:
+        bake = (
+            await s.execute(
+                select(func.count())
+                .select_from(BackgroundRun)
+                .where(BackgroundRun.kind == "bake", BackgroundRun.state.in_(("pending", "running")))
+            )
+        ).scalar_one()
+        fill = (
+            await s.execute(
+                select(func.count())
+                .select_from(CacheResource)
+                .where(CacheResource.kind == "volume", CacheResource.status == "filling")
+            )
+        ).scalar_one()
+        return {"aivo-bake": bake > 0, "aivo-fill": fill > 0}
 
     async def _mark_gone(self, s: AsyncSession, inst: Instance, *, external: bool) -> None:
         await s.execute(

@@ -99,6 +99,7 @@ class FakeProvider:
     boot_seconds: float = 1.0
     job_seconds: float = 1.0
     slow_step_s: float = 2.0  # per start-up step with the boot_slow_progress chaos
+    bake_seconds: float | None = None  # how long preparing a machine image takes (default: boot_seconds)
     scratch_root: Path | None = None
     name: str = "fake"
     chaos: dict[str, list[str]] = field(default_factory=dict)
@@ -333,7 +334,7 @@ class FakeProvider:
         self.machines[pid] = FakeMachine(pi=pi, spec=None)  # type: ignore[arg-type]
 
         async def _finish() -> None:
-            await asyncio.sleep(self.boot_seconds)
+            await asyncio.sleep(self.bake_seconds if self.bake_seconds is not None else self.boot_seconds)
             pi.status = "off"
 
         self._bg.add(t := asyncio.create_task(_finish()))

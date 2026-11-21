@@ -32,6 +32,35 @@ async def test_bake_creates_snapshot_and_new_machines_boot_from_it(env):
         assert h.provider.deleted_images
 
 
+async def test_slow_bake_is_not_mistaken_for_an_orphan(env):
+    """A real bake takes 10+ minutes. Its machine carries the deployment tag but isn't a tracked instance,
+    so the reconciler's orphan cleanup must leave it alone while the bake runs."""
+    async with Harness(env) as h:
+        await h.setup_admin()
+        h.provider.bake_seconds = 3  # well past the harness's 1 s orphan age, several reconcile ticks
+        b = Baker(h.ctx, poll_s=0.1)
+        run_id = await b.start()
+        await b.run(run_id)
+        rows = await h.sql("SELECT state, step FROM background_runs")
+        assert rows[0][0] == "succeeded", rows
+        orphans = await h.sql("SELECT count(*) FROM events WHERE type = 'orphan.destroyed'")
+        assert orphans[0][0] == 0
+
+
+async def test_bake_machine_left_behind_is_still_cleaned_up(env):
+    """If the bake run is over (or the backend lost track of it), its machine is an orphan again."""
+    from aivo.providers.base import deployment_tag
+
+    async with Harness(env) as h:
+        await h.setup_admin()
+        pid = h.provider.inject_orphan(["aivo", deployment_tag(h.ctx.deployment_id), "aivo-bake"])
+
+        async def gone() -> bool:
+            return pid not in h.provider.machines
+
+        await h.wait_for(gone, timeout=10)
+
+
 async def test_admin_cache_status(env):
     async with Harness(env) as h:
         await h.setup_admin()
