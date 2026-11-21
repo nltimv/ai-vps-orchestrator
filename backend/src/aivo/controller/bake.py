@@ -165,12 +165,19 @@ class Baker:
             await self._save(run_id, "wait_off", **data)
             run.step = "wait_off"
         if run.step == "wait_off":
+            missing = 0
             for _ in range(int(3600 / self.poll_s)):
                 pi = await p.get_instance(data["droplet_id"])
-                if pi is None:
-                    raise RuntimeError("bake machine disappeared")
-                if pi.status == "off":
+                if pi is None:  # tolerate a brief gap in the provider's listing
+                    missing += 1
+                    if missing >= 3:
+                        raise RuntimeError(
+                            f"the machine preparing the image (#{data['droplet_id']}) was deleted before it finished"
+                        )
+                elif pi.status == "off":
                     break
+                else:
+                    missing = 0
                 await asyncio.sleep(self.poll_s)
             else:
                 raise TimeoutError("bake machine did not finish in an hour")

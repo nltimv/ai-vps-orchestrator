@@ -122,7 +122,8 @@ The "Balanced" default (~$10–25/month) is:
 - **Monthly limits.** Above the warning level, users are asked to confirm. At the limit, new
   machines stop starting and running ones finish up. At the limit plus $2 they are destroyed.
 - **Orphans.** Machines carrying this deployment's tag but unknown to the database are
-  destroyed after 3 minutes.
+  destroyed after 3 minutes. Exceptions: the machine preparing a machine image and the one filling
+  a model disk, while that task runs (at most 3 h and 5 h).
 - **Machine access.** A per-deployment Cloud Firewall allows port 443 only from the backend's
   public IP, which is detected automatically. On top of that, TLS is pinned to a per-machine
   certificate.
