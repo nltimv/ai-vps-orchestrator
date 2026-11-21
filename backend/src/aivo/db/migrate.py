@@ -12,9 +12,12 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 def alembic_config(database_url: str) -> Config:
+    from aivo.db.session import normalize_db_url
+
     cfg = Config()
     cfg.set_main_option("script_location", str(MIGRATIONS_DIR))
-    cfg.set_main_option("sqlalchemy.url", database_url)
+    # Alembic's config uses ConfigParser interpolation: escape "%" (URL-encoded passwords)
+    cfg.set_main_option("sqlalchemy.url", normalize_db_url(database_url).replace("%", "%%"))
     return cfg
 
 

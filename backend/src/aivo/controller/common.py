@@ -85,7 +85,7 @@ async def build_context(app: AppContext, session: AsyncSession, rs: RuntimeSetti
     totals: dict[tuple[str, str], float] = {}
     cooldown: set[tuple[str, str]] = set()
     for size, region, outcome, at in attempts:
-        if outcome in ("volume_busy", "unknown_adopted"):
+        if outcome in ("volume_busy", "unknown_adopted", "booted"):
             continue
         age_h = (now - at).total_seconds() / 3600
         w = 0.5 ** (age_h / 6)

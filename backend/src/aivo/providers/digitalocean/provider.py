@@ -35,8 +35,7 @@ FALLBACK_REGIONS = {
     "gpu-h200x1-141gb": ["nyc2", "atl1"],
     "gpu-mi300x1-192gb": ["atl1"],
 }
-BASE_IMAGE_CANDIDATES = ("gpu-h100x1-base", "gpu-h100x8-base")
-AMD_BASE_IMAGE_CANDIDATES = ("gpu-amd-base",)
+# CPU-only helper machines (filling a model disk). GPU machines use AIVO_DO_BASE_IMAGE(_AMD).
 FALLBACK_BASE_IMAGE = "ubuntu-24-04-x64"
 GPU_TOKENS = {
     "4000ada": "rtx4000ada",
@@ -149,7 +148,6 @@ class DigitalOceanProvider:
         self.env = env
         self.api = DOClient(env.do_token.get_secret_value(), env.do_api_base, transport=transport)
         self.port = env.worker_port
-        self._base_images: dict[str, str] = {}
         self._ssh_key_id: int | None = None
         self._fw_cache: tuple[float, tuple[str, ...]] | None = None
 
@@ -166,21 +164,13 @@ class DigitalOceanProvider:
     # -- images ---------------------------------------------------------------------
 
     async def boot_image(self, offer: GpuOffer, strategy: str) -> BootImage:
-        """Base (vendor) image. Prepared snapshots are chosen by the caller from the cache table."""
-        vendor = offer.vendor
-        if vendor in self._base_images:
-            return BootImage(ref=self._base_images[vendor], kind="base")
-        wanted = AMD_BASE_IMAGE_CANDIDATES if vendor == "amd" else BASE_IMAGE_CANDIDATES
-        try:
-            images = await self.api.paginate("/v2/images", "images", {"type": "distribution"})
-            slugs = {i.get("slug") for i in images if i.get("slug")}
-            gpu_slugs = sorted(s for s in slugs if s and s.startswith("gpu-") and "base" in s)
-            choice = next((s for s in wanted if s in slugs), None) or (gpu_slugs[0] if gpu_slugs else None)
-        except Exception as e:
-            log.warning("could not list images: %s", e)
-            choice = None
-        ref = choice or FALLBACK_BASE_IMAGE
-        self._base_images[vendor] = ref
+        """Base GPU image (with the GPU driver). Prepared snapshots are chosen by the caller from the cache table.
+
+        Deliberately no fallback to a plain OS image: without a GPU driver the machine can never run
+        the AI engine, so a wrong slug must fail loudly (ConfigError) instead of burning GPU hours.
+        DigitalOcean documents gpu-h100x1-base for all single-GPU NVIDIA sizes, gpu-amd-base for AMD.
+        """
+        ref = self.env.do_base_image_amd if offer.vendor == "amd" else self.env.do_base_image
         return BootImage(ref=ref, kind="base")
 
     # -- machines -------------------------------------------------------------------
@@ -209,14 +199,18 @@ class DigitalOceanProvider:
         self._ssh_key_id = int(r["ssh_key"]["id"])
         return self._ssh_key_id
 
+    async def _ssh_keys(self) -> list[int | str]:
+        keys: list[int | str] = [await self.ensure_ssh_key()]
+        keys += [int(k) if k.isdigit() else k for k in self.env.do_ssh_key_ids if k.strip()]
+        return keys
+
     async def create_instance(self, spec: InstanceSpec) -> ProviderInstance:
-        ssh_key = await self.ensure_ssh_key()
         body: dict[str, Any] = {
             "name": spec.name,
             "region": spec.offer.region,
             "size": spec.offer.size_slug,
             "image": int(spec.image.ref) if spec.image.ref.isdigit() else spec.image.ref,
-            "ssh_keys": [ssh_key],
+            "ssh_keys": await self._ssh_keys(),
             "tags": spec.tags,
             "user_data": render_user_data(spec.bootstrap),
             "monitoring": False,
@@ -252,7 +246,6 @@ class DigitalOceanProvider:
 
     async def create_bake_instance(self, offer: GpuOffer, user_data: str, tags: list[str]) -> ProviderInstance:
         img = await self.boot_image(offer, "base")
-        ssh_key = await self.ensure_ssh_key()
         r = await self.api.request(
             "POST",
             "/v2/droplets",
@@ -262,7 +255,7 @@ class DigitalOceanProvider:
                 "region": offer.region,
                 "size": offer.size_slug,
                 "image": img.ref,
-                "ssh_keys": [ssh_key],
+                "ssh_keys": await self._ssh_keys(),
                 "tags": tags,
                 "user_data": user_data,
                 "monitoring": False,
@@ -370,16 +363,23 @@ class DigitalOceanProvider:
 
     # -- network ----------------------------------------------------------------------
 
-    async def ensure_network_access(self, tag: str, allowed_cidrs: list[str], port: int) -> None:
+    async def ensure_network_access(
+        self, tag: str, allowed_cidrs: list[str], port: int, *, ssh_cidrs: list[str] | None = None
+    ) -> None:
         """One Cloud Firewall per deployment, attached by tag, so new machines are covered from
-        the moment they are created."""
+        the moment they are created. ``ssh_cidrs`` (debugging only) also opens port 22."""
         sources = tuple(sorted(allowed_cidrs)) or ("0.0.0.0/0", "::/0")
-        if self._fw_cache and self._fw_cache[1] == sources and time.monotonic() - self._fw_cache[0] < 300:
+        ssh = tuple(sorted(c for c in (ssh_cidrs or []) if c.strip()))
+        key = (*sources, "ssh:", *ssh)
+        if self._fw_cache and self._fw_cache[1] == key and time.monotonic() - self._fw_cache[0] < 300:
             return
         name = f"aivo-{tag[len('aivo-dep-') :][:30]}"
+        inbound = [{"protocol": "tcp", "ports": str(port), "sources": {"addresses": list(sources)}}]
+        if ssh:
+            inbound.append({"protocol": "tcp", "ports": "22", "sources": {"addresses": list(ssh)}})
         body = {
             "name": name,
-            "inbound_rules": [{"protocol": "tcp", "ports": str(port), "sources": {"addresses": list(sources)}}],
+            "inbound_rules": inbound,
             "outbound_rules": [
                 {
                     "protocol": p,
@@ -399,7 +399,7 @@ class DigitalOceanProvider:
             await self.api.request("PUT", f"/v2/firewalls/{existing['id']}", json=body)
         else:
             await self.api.request("POST", "/v2/firewalls", json=body)
-        self._fw_cache = (time.monotonic(), sources)
+        self._fw_cache = (time.monotonic(), key)
 
     # -- account ----------------------------------------------------------------------
 

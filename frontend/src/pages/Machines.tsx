@@ -1,10 +1,12 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Cpu, Flame, Power, Timer, Zap } from "lucide-react";
+import { Cpu, Flame, Power, ScrollText, Timer, Zap } from "lucide-react";
 import { useState } from "react";
 
 import { post } from "@/api/client";
 import { useCatalog, useMachines, useOffers } from "@/api/queries";
 import type { Instance, Kind, MachineChoice, Preference, Quality } from "@/api/types";
+import { LogViewer } from "@/components/LogViewer";
+import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, Empty, ErrorNote, Label, PageHeader } from "@/components/ui";
 import { ago, cn, duration, machineStateLabel, money, until } from "@/lib/format";
 
@@ -19,6 +21,7 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   const offers = useOffers(kind, modelId, quality, preference);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [logOf, setLogOf] = useState<Instance | null>(null);
 
   const act = async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key);
@@ -38,14 +41,16 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div>
       <PageHeader title="Machines" subtitle="GPU machines start when there's work and shut down automatically when idle." />
+      <PausedBanner isAdmin={isAdmin} />
       <ErrorNote error={error} />
+      {logOf && <LogViewer machine={logOf} onClose={() => setLogOf(null)} />}
       <section className="mb-10">
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Running now</h2>
         {live.length === 0 ? (
           <Empty icon={<Cpu className="size-8" />} title="No machines running">You're not paying for anything right now.</Empty>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {live.map((m) => <MachineCard key={m.id} m={m} isAdmin={isAdmin} busy={busy} act={act}
+            {live.map((m) => <MachineCard key={m.id} m={m} isAdmin={isAdmin} busy={busy} act={act} onLog={() => setLogOf(m)}
               names={Object.fromEntries((catalog.data?.models ?? []).map((x) => [x.id, x.name]))} />)}
           </div>
         )}
@@ -95,10 +100,15 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
           <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Recently shut down</h2>
           <Card className="divide-y divide-[var(--border)]">
             {machines.data!.recent.map((m) => (
-              <div key={m.id} className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 text-sm">
-                <span>{m.gpu} · {m.region_name}</span>
-                <span className="text-muted">{ago(m.created_at)} · ran {duration(m.uptime_s)} · {money(m.cost_so_far_usd)}
-                  {m.failure_reason ? ` · ${m.failure_reason}` : ""}</span>
+              <div key={m.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
+                <span className="flex-1">{m.gpu} · {m.region_name}</span>
+                <span className="text-muted">{ago(m.created_at)} · ran {duration(m.uptime_s)} · {money(m.cost_so_far_usd)}</span>
+                {isAdmin && (
+                  <Button size="sm" variant="ghost" onClick={() => setLogOf(m)} title={m.has_saved_log ? "Includes the machine's last log lines" : "aivo's own record of this machine"}>
+                    <ScrollText className="size-4" /> Show log
+                  </Button>
+                )}
+                {m.failure_reason && <div className="w-full text-red-500">{m.failure_reason}</div>}
               </div>
             ))}
           </Card>
@@ -108,7 +118,7 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function MachineCard({ m, isAdmin, busy, act, names }: { m: Instance; isAdmin: boolean; busy: string | null; act: (k: string, fn: () => Promise<unknown>) => void; names: Record<string, string> }) {
+function MachineCard({ m, isAdmin, busy, act, names, onLog }: { m: Instance; isAdmin: boolean; busy: string | null; act: (k: string, fn: () => Promise<unknown>) => void; names: Record<string, string>; onLog: () => void }) {
   const starting = ["pending", "creating", "provisioning", "booting"].includes(m.state);
   // start-up journey only: first time each state was reached
   const journey = m.timeline.map((t) => t.state).filter((st, i, a): st is string => !!st && a.indexOf(st) === i && st !== "busy");
@@ -124,6 +134,7 @@ function MachineCard({ m, isAdmin, busy, act, names }: { m: Instance; isAdmin: b
         </Badge>
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-y-1 text-sm">
+        {m.boot_stage_label && <><dt className="text-muted">Start-up step</dt><dd data-testid="boot-stage">{m.boot_stage_label}</dd></>}
         <dt className="text-muted">Running for</dt><dd>{duration(m.uptime_s)}</dd>
         <dt className="text-muted">Cost so far</dt><dd>{money(m.cost_so_far_usd)}</dd>
         {m.state === "ready" && <><dt className="text-muted">Shuts down</dt><dd className="flex items-center gap-1"><Timer className="size-3.5" />{until(m.idle_shutdown_at)}</dd></>}
@@ -135,7 +146,10 @@ function MachineCard({ m, isAdmin, busy, act, names }: { m: Instance; isAdmin: b
         </ol>
       )}
       {isAdmin && (
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button size="sm" onClick={onLog}>
+            <ScrollText className="size-4" /> Show log
+          </Button>
           <Button size="sm" loading={busy === `warm-${m.id}`} onClick={() => act(`warm-${m.id}`, () => post(`/machines/${m.id}/keep-warm`, { minutes: 30 }))}>
             <Flame className="size-4" /> Keep warm 30 min
           </Button>

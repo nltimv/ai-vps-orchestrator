@@ -16,18 +16,32 @@ from aivo_protocol.worker_api import WorkerBootstrap
 from aivo_worker.api import WorkerState, create_app, ensure_dirs
 from aivo_worker.engines.base import Engine
 from aivo_worker.executor import Executor
+from aivo_worker.logbuf import LogBuffer
 from aivo_worker.weights import FileManager
 
 
-def build_state(boot: WorkerBootstrap, engine: Engine, *, simulate_files: bool = False) -> WorkerState:
+def build_state(
+    boot: WorkerBootstrap,
+    engine: Engine,
+    *,
+    simulate_files: bool = False,
+    logs: LogBuffer | None = None,
+    setup_log: Path | None = None,
+) -> WorkerState:
     ensure_dirs(boot)
+    logs = logs or LogBuffer()
+    if setup_log is not None:
+        logs.load_file(setup_log, "setup")  # start-up history (mounted from the host)
     files = FileManager(
         Path(boot.models_dir),
         simulate=simulate_files,
         volume_mount=Path(boot.volume_mount) if boot.volume_mount else None,
+        logs=logs,
     )
-    executor = Executor(engine, files, Path(boot.job_dir))
-    return WorkerState(boot, engine, files, executor)
+    executor = Executor(engine, files, Path(boot.job_dir), logs=logs)
+    if hasattr(engine, "logs"):
+        engine.logs = logs
+    return WorkerState(boot, engine, files, executor, logs)
 
 
 class WorkerServer:

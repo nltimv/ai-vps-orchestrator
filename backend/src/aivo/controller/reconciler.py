@@ -12,11 +12,13 @@ Every tick:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +31,8 @@ from aivo.db.models import CacheResource, Event, Instance, Job
 from aivo.events.bus import emit
 from aivo.providers.base import ProviderInstance, deployment_tag
 from aivo.worker_client.client import WorkerUnreachable
+
+SAVED_LOG_LINES = 60  # log lines kept when a machine is shut down
 
 log = logging.getLogger(__name__)
 
@@ -290,10 +294,14 @@ class Reconciler:
             rows = (await s.execute(select(Instance).where(Instance.state == "draining"))).scalars().all()
         for inst in rows:
             busy = False
+            tail: list[dict[str, Any]] = []
             try:
                 async with worker_client(self.app, inst) as c:
                     h = await c.drain()
                     busy = bool(h.running_job) or h.outputs_pending > 0
+                    if not busy:  # about to be destroyed: keep its last log lines for "Show log"
+                        with contextlib.suppress(Exception):
+                            tail = [ln.model_dump() for ln in (await c.logs(tail=SAVED_LOG_LINES)).lines]
             except Exception:
                 busy = False  # unreachable -> nothing to wait for
             async with self.app.sessionmaker() as s, s.begin():
@@ -309,7 +317,13 @@ class Reconciler:
                 if busy and active:
                     continue
                 await transition_instance(
-                    s, inst.id, "draining", "destroying", destroy_requested_at=utcnow(), outcome=inst.outcome or "ok"
+                    s,
+                    inst.id,
+                    "draining",
+                    "destroying",
+                    destroy_requested_at=utcnow(),
+                    outcome=inst.outcome or "ok",
+                    **({"boot_log": tail} if tail else {}),
                 )
                 await self._requeue_jobs(s, inst.id)
 

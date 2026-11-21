@@ -8,7 +8,11 @@ def make_provider(env: EnvSettings) -> CloudProvider:
     if env.provider == "fake":
         from aivo.providers.fake.provider import FakeProvider
 
-        return FakeProvider(boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds)
+        return FakeProvider(
+            boot_seconds=env.fake_boot_seconds,
+            job_seconds=env.fake_job_seconds,
+            chaos={"*": list(env.fake_chaos)} if env.fake_chaos else {},
+        )
     if env.provider == "digitalocean":
         from aivo.providers.digitalocean.provider import DigitalOceanProvider
 

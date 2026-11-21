@@ -9,11 +9,13 @@ from typing import Any
 import httpx
 
 from aivo_protocol.worker_api import (
+    BootStatus,
     EnsureFilesIn,
     FilesStatus,
     Health,
     JobIn,
     JobStatus,
+    LogsOut,
     RotateTokenOut,
     TelemetryOut,
 )
@@ -62,6 +64,27 @@ class WorkerClient:
         r = await self._req("GET", "/v1/health", timeout=10)
         r.raise_for_status()
         return Health.model_validate(r.json())
+
+    async def probe(self) -> Health | BootStatus:
+        """Health of the agent, or, while the machine is still setting up, its start-up status."""
+        r = await self._req("GET", "/v1/health", timeout=10)
+        if r.status_code == 503:
+            try:
+                body = r.json()
+            except ValueError:
+                body = None
+            if isinstance(body, dict) and isinstance(body.get("bootstrap"), dict):
+                return BootStatus.model_validate(body["bootstrap"])
+        r.raise_for_status()
+        return Health.model_validate(r.json())
+
+    async def logs(self, since: int = 0, *, wait: float = 0, tail: int | None = None, limit: int = 1000) -> LogsOut:
+        params: dict[str, Any] = {"tail": tail} if tail is not None else {"since": since, "wait": wait, "limit": limit}
+        r = await self._req("GET", "/v1/logs", params=params, timeout=wait + 15)
+        if r.status_code == 404:  # older worker software without a log endpoint
+            return LogsOut(next_seq=since)
+        r.raise_for_status()
+        return LogsOut.model_validate(r.json())
 
     async def ensure_files(self, body: EnsureFilesIn) -> FilesStatus:
         r = await self._req("POST", "/v1/files/ensure", json=body.model_dump())

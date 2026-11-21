@@ -178,6 +178,37 @@ class Health(BaseModel):
     draining: bool = False
     uptime_s: float = 0.0
     image_digest: str | None = None
+    engine_error: str | None = None  # the AI engine failed to start (definitive)
+    log_seq: int = 0  # number of the newest machine log line (grows while the machine is busy starting)
+
+
+class BootStatus(BaseModel):
+    """Served (HTTP 503) by the machine's start-up status server until the agent takes over."""
+
+    stage: str = "starting"
+    detail: str | None = None
+    progress_bytes: int | None = None
+    failed: bool = False
+    error: str | None = None
+    updated_at: float | None = None
+
+
+LogSource = Literal["setup", "agent", "engine"]
+
+
+class LogLine(BaseModel):
+    seq: int
+    ts: float
+    source: str
+    level: str | None = None
+    text: str
+
+
+class LogsOut(BaseModel):
+    lines: list[LogLine] = Field(default_factory=list)
+    next_seq: int = 0  # pass back as ?since= to get only newer lines
+    dropped: int = 0  # lines that were evicted before the caller saw them
+    reset: bool = False  # the machine software restarted: numbering began again (lines are from seq 1)
 
 
 class RotateTokenOut(BaseModel):

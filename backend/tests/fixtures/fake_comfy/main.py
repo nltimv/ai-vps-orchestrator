@@ -3,6 +3,8 @@
 import argparse
 import asyncio
 import json
+import os
+import sys
 import uuid
 from pathlib import Path
 
@@ -23,6 +25,14 @@ ap.add_argument("--disable-metadata", action="store_true")
 ap.add_argument("--disable-auto-launch", action="store_true")
 args = ap.parse_args()
 assert args.disable_metadata
+
+# Output like ComfyUI's, so the engine's log capture can be tested.
+print("Total VRAM 49140 MB, total RAM 128000 MB (fake)")
+if os.environ.get("FAKE_COMFY_CRASH"):
+    print("Traceback (most recent call last):")
+    print("RuntimeError: Found no NVIDIA driver on your system (fake)")
+    sys.exit(3)
+print("Starting server")
 
 app = FastAPI()
 clients: dict[str, WebSocket] = {}
@@ -86,10 +96,15 @@ async def run(pid, wf, ws):
                     )
                 )
                 return
+            print("got prompt", flush=True)
             for i in range(3):
+                sys.stderr.write(f"\r{(i + 1) * 33 + (i == 2)}%|{'#' * (i + 1)}{' ' * (2 - i)}| {i + 1}/3")
+                sys.stderr.flush()
                 await ws.send_text(
                     json.dumps({"type": "progress", "data": {"value": i + 1, "max": 3, "prompt_id": pid}})
                 )
+            sys.stderr.write("\n")
+            print("Prompt executed in 0.10 seconds", flush=True)
     outputs = {}
     for node, spec in wf.items():
         if spec["class_type"] == "SaveImage":

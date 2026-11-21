@@ -9,18 +9,57 @@
   Request an increase in the control panel if you want more than one machine at a time
   (Settings → *Machines at the same time*).
 - **Create a billing alert** in the DO control panel as an independent last line of defence.
-- **Create an API token** (`AIVO_DO_TOKEN`). Custom scopes needed:
-  - droplet: create/read/delete
-  - ssh_key: create/read
-  - firewall: create/read/update
-  - image and snapshot: read/update/delete (prepared images)
-  - volume: create/read/delete (model disks)
-  - action: read
-  - size, region: read
-  - account and billing: read (quota and the "cloud bill so far" figure)
-- **Optional: a watchdog token** (`AIVO_DO_WATCHDOG_TOKEN`) with *only* `droplet:delete`.
-  Each machine receives it and deletes itself if the backend stays silent for 20 minutes.
-  This matters for a laptop backend that might sleep. Enable it in Settings → Security.
+- **Create an API token** (`AIVO_DO_TOKEN`) with custom scopes. See
+  [API token scopes](#api-token-scopes) below.
+- **Optional: a watchdog token** (`AIVO_DO_WATCHDOG_TOKEN`). Each machine receives it and
+  deletes itself if the backend stays silent for 20 minutes. This matters for a laptop backend
+  that might sleep. Enable it in Settings → Security. Its scopes are listed
+  [below](#watchdog-token).
+
+### API token scopes
+
+Create the token under **API → Tokens → Generate New Token → Custom Scopes**. "Full Access"
+works too, but isn't recommended.
+
+**Required** (start, watch and destroy GPU machines):
+
+| Scope | Used for |
+|---|---|
+| `droplet:create` | Start GPU machines (and the short-lived bake and disk-fill machines) |
+| `droplet:read` | Poll a machine's status and IP; find machines by tag (safe retries, orphan cleanup) |
+| `droplet:delete` | Destroy idle, expired or orphaned machines |
+| `droplet:update` | Droplet actions: power-off and snapshot when preparing a machine image |
+| `tag:create` | Machines are created with aivo's tags (`aivo`, `aivo-dep-…`, `aivo-inst-…`) |
+| `sizes:read` | Live GPU sizes, prices and availability |
+| `regions:read` | Which datacenters offer which sizes |
+| `ssh_key:read`, `ssh_key:create` | Register a throwaway "no-login" key, so DigitalOcean never emails a root password |
+| `firewall:read`, `firewall:create`, `firewall:update` | The per-deployment firewall that limits the worker port to the backend's IP |
+| `actions:read` | Wait for droplet and image actions to finish |
+
+**Optional, per feature.** Leaving these out only disables that feature; creating images,
+videos and music keeps working.
+
+| Feature | Scopes |
+|---|---|
+| Prepared machine image (Settings → Faster start-up) | `snapshot:read` (find the new snapshot), `image:read`, `image:update` (copy it to other regions), `image:delete` (remove old ones) |
+| Model disks (block storage) | `block_storage:create`, `block_storage:read`, `block_storage:delete` |
+| GPU quota check and the "Cloud bill so far" figure | `account:read`, `billing:read` |
+
+#### Watchdog token
+
+A separate token with only `droplet:delete`. The control panel may add `droplet:read`
+automatically. Each machine gets a copy, and the token can delete **any** droplet in the
+account or team. Only use it inside a dedicated team for aivo.
+
+#### Notes
+
+- **Companion scopes.** When you pick some scopes (e.g. `droplet:create`), the control panel
+  automatically adds the read scopes they depend on. Keep those.
+- **A missing scope** makes the API answer `403`.
+  - aivo shows "The cloud account is not set up correctly (check the API token)".
+  - The backend log contains DigitalOcean's message naming the missing scope.
+- **Check a new token for free** with `scripts/do_smoke.py --dry-run`. It uses the read
+  scopes only and costs $0.
 
 ## 2. Configure
 
@@ -29,6 +68,10 @@
 | `AIVO_PROVIDER=digitalocean` | use real GPU droplets |
 | `AIVO_DO_TOKEN` | API token |
 | `AIVO_WORKER_IMAGE` | GPU worker image (built by CI: `ghcr.io/<owner>/aivo-worker`) |
+| `AIVO_DO_BASE_IMAGE` | Operating-system image for NVIDIA machines. Default `gpu-h100x1-base`: DigitalOcean's GPU image (Ubuntu 24.04 with the NVIDIA driver), which DigitalOcean documents for all single-GPU sizes. It **must** include the GPU driver; aivo never falls back to plain Ubuntu. |
+| `AIVO_DO_BASE_IMAGE_AMD` | The same for AMD machines. Default `gpu-amd-base` |
+| `AIVO_DO_SSH_KEY_IDS` | Debugging only: ids or fingerprints of your own DigitalOcean SSH keys, added to every machine. See [debugging](#6-machines-dont-start--debugging). |
+| `AIVO_DATABASE_URL` | Postgres URL. A managed database's connection string can be pasted as given (e.g. DigitalOcean's `postgresql://…?sslmode=require`); the `postgresql+asyncpg://…?ssl=require` form works too. |
 | `AIVO_MEDIA_KEKS` | media encryption key(s): `aivo generate-key`; **back up separately** |
 | `AIVO_SPACES_*` | optional private model mirror (bucket, region, key, secret) |
 | `AIVO_HF_TOKEN` | optional: gated models (e.g. FLUX.2 [dev] full precision); used backend-side only |
@@ -85,3 +128,88 @@ The "Balanced" default (~$10–25/month) is:
   certificate.
 - **Inventory check.** `aivo inventory` lists every machine with this deployment's tag and its
   hourly price.
+- **Start-up failures.** A machine that reports a definite problem (for example no GPU driver) is
+  destroyed right away, and the job fails with the reason instead of trying machine after machine.
+  A machine that stays silent gets one retry. After 2 failed start-ups in a row, new machines are
+  paused until an admin resumes them (see below).
+
+## 6. Machines don't start / debugging
+
+### The machine log
+Admins can open **Machines → Show log** on any running machine, and on recently shut down ones.
+The log is live and combines four sources:
+
+| Source | What it shows |
+|---|---|
+| **aivo** | The backend's own decisions: which GPU and region it asked for, sold-out fallbacks, start-up steps, timeouts, shutdown |
+| **Start-up** | The machine's start-up script (`/var/log/aivo-bootstrap.log`) |
+| **Agent** | aivo's worker program on the machine: model downloads, jobs received, finished, failed |
+| **AI engine** | ComfyUI's own output, including errors and tracebacks |
+
+You can filter by source, search, copy, and download it as a text file. When a machine shuts down, aivo
+keeps its last 60 lines, so you can still read why it failed.
+
+### Start-up steps
+Until the worker program runs, a small status server on the machine (same port, same pinned
+certificate and token) reports the current step:
+
+1. **preparing disks**: the RAM disk for job files, the scratch disk, the model disk (if any)
+2. **checking the GPU**: is there a working GPU driver?
+3. **installing the container runtime**: Docker and the NVIDIA container toolkit (already present on a prepared image)
+4. **downloading the worker software**: the worker image, ~8 GB the first time
+5. **starting the AI engine**: the worker program starts ComfyUI
+
+The machine card shows the current step, and so does a job that is waiting for its machine.
+
+Each start-up gets 10 minutes from a prepared image, or 25 minutes from the plain GPU image. That
+time is extended as long as the machine makes progress (a new step, or the download moving), up to
+40 minutes in total. The limits are the `boot_health_timeout_s`, `boot_health_timeout_base_s`,
+`boot_progress_grace_s` and `boot_health_max_s` settings.
+
+### Common failures
+
+| What the log says | Cause and fix |
+|---|---|
+| *This machine has an NVIDIA GPU but no GPU driver* | The machine was started from an image without GPU drivers. Leave `AIVO_DO_BASE_IMAGE` unset (default `gpu-h100x1-base`) or point it at a GPU image. Prepared images baked from a plain image have the same problem: delete them and bake again. |
+| *The GPU can't be used inside containers* | The NVIDIA container toolkit isn't working. The message includes Docker's error. |
+| *Could not download the worker software* | `AIVO_WORKER_IMAGE` is wrong or private, or the registry is unreachable. |
+| *The worker software keeps stopping* | The worker container crashes on start. Its last output is in the Start-up lines. |
+| *The AI engine could not start* | ComfyUI exited. The AI engine lines show its traceback. |
+| *The machine never answered* | Nothing on the machine answered on the worker port. Either the start-up script didn't run (cloud-init), or the firewall doesn't allow the backend's address (Settings → Security). |
+| *The cloud account is not set up correctly … (check AIVO_DO_BASE_IMAGE)* | DigitalOcean rejected the image name. |
+
+### Paused start-ups
+After 2 failed start-ups in a row, aivo stops starting new machines. Each retry would bill another
+GPU machine for the same problem. While start-ups are paused:
+- a banner on the Machines and Settings pages shows the reason;
+- new jobs fail right away with that reason;
+- machines that are already running keep working.
+
+Fix the cause, then press **Resume start-ups**. A machine that starts successfully also clears the
+pause. The number of failures is the `boot_failures_before_pause` setting; 0 turns the pause off.
+
+### Logging in to a machine (optional)
+Normally nobody can log in to the machines. To debug one by hand:
+1. Add your own SSH key in DigitalOcean.
+2. Set `AIVO_DO_SSH_KEY_IDS` to its id or fingerprint.
+3. Put your public IP in the `debug_ssh_cidrs` setting. This opens port 22 in the deployment's
+   firewall for that address only.
+4. Start a machine and `ssh root@<ip>`. The setup log is in `/var/log/aivo-bootstrap.log`, and the worker
+   runs in `docker logs aivo-worker`.
+
+Remove both settings again afterwards.
+
+### Testing the start-up script without a GPU
+```bash
+uv run python scripts/check_bootstrap.py
+```
+This runs `bootstrap.sh` and the status server in an Ubuntu 24.04 container (Docker required), with
+stubs for the GPU tools. It checks the four main cases: no GPU driver, GPU not usable in containers,
+a healthy start, and a crashing worker.
+
+### Privacy
+The log never contains prompts or tokens. aivo logs only ids, engine names and output sizes. The
+log travels only over the pinned connection between the backend and the machine. Only admins can
+see it, and it isn't stored, except the last 60 lines of a machine after it shuts down. One
+exception: when ComfyUI reports an error about a specific input, its message can quote part of the
+request.

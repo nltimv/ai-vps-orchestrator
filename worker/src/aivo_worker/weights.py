@@ -21,8 +21,11 @@ from pathlib import Path
 import httpx
 
 from aivo_protocol.worker_api import FileFetch, FileSource, FilesStatus, FileState, PhaseTiming
+from aivo_worker.logbuf import LogBuffer
 
 log = logging.getLogger(__name__)
+
+_SOURCE_NAMES = {"volume": "the model disk", "url": "the model copy", "hf": "Hugging Face"}
 
 RANGE_SIZE = 64 * 1024 * 1024
 PARALLEL_RANGES = 16
@@ -30,8 +33,16 @@ PARALLEL_FILES = 4
 
 
 class FileManager:
-    def __init__(self, models_dir: Path, *, simulate: bool = False, volume_mount: Path | None = None):
+    def __init__(
+        self,
+        models_dir: Path,
+        *,
+        simulate: bool = False,
+        volume_mount: Path | None = None,
+        logs: LogBuffer | None = None,
+    ):
         self.models_dir = models_dir
+        self.logs = logs or LogBuffer()
         self.volume_mount = volume_mount
         self.simulate = simulate
         self.states: dict[str, FileState] = {}
@@ -49,12 +60,17 @@ class FileManager:
         return FilesStatus(files=[self.states.get(d, FileState(dest=d)) for d in keys])
 
     def ensure(self, files: list[FileFetch]) -> FilesStatus:
+        new: list[FileFetch] = []
         for f in files:
             st = self.states.get(f.dest)
             if st and st.state in ("ready", "downloading", "pending"):
                 continue
             self.states[f.dest] = FileState(dest=f.dest, state="pending", bytes_total=f.bytes)
             self._tasks[f.dest] = asyncio.create_task(self._ensure_one(f), name=f"fetch:{f.dest}")
+            new.append(f)
+        if new:
+            total = sum(f.bytes or 0 for f in new) / 1e9
+            self.logs.emit("agent", f"model files requested: {len(new)} file(s), {total:.1f} GB")
         return self.status([f.dest for f in files])
 
     async def _ensure_one(self, f: FileFetch) -> None:
@@ -69,14 +85,19 @@ class FileManager:
                 dest = self._dest_path(f.dest)
                 if dest.exists() and (f.bytes is None or dest.stat().st_size == f.bytes):
                     st.state, st.source, st.bytes_done = "ready", "local", dest.stat().st_size
+                    self.logs.emit("agent", f"{f.dest}: already on this machine")
                     return
                 errors: list[str] = []
                 for src in f.sources:
                     try:
                         st.state, st.source = "downloading", src.kind
+                        self.logs.emit("agent", f"{f.dest}: fetching from {_SOURCE_NAMES.get(src.kind, src.kind)}")
                         await self._fetch(src, f, dest, st)
                         st.state = "ready"
                         st.seconds = time.monotonic() - t0
+                        mb = st.bytes_done / 1e6
+                        rate = f", {mb / st.seconds:.0f} MB/s" if st.seconds > 0.5 and src.kind != "volume" else ""
+                        self.logs.emit("agent", f"{f.dest}: ready ({mb:,.0f} MB in {st.seconds:.0f} s{rate})")
                         self.timings.append(
                             PhaseTiming(phase="file_fetch", seconds=st.seconds, source=src.kind, bytes=f.bytes)
                         )
@@ -86,11 +107,13 @@ class FileManager:
                             t.add_done_callback(self._bg.discard)
                         return
                     except Exception as e:  # try the next source
-                        log.warning("fetch %s via %s failed: %s", f.dest, src.kind, e)
+                        self.logs.emit("agent", f"{f.dest}: {src.kind} failed: {e}", "warning")
                         errors.append(f"{src.kind}: {e}")
                 st.state, st.error = "failed", "; ".join(errors) or "no sources"
+                self.logs.emit("agent", f"{f.dest}: could not be fetched: {st.error}", "error")
             except Exception as e:
                 st.state, st.error = "failed", str(e)
+                self.logs.emit("agent", f"{f.dest}: could not be fetched: {e}", "error")
 
     def _dest_path(self, rel: str) -> Path:
         p = (self.models_dir / rel).resolve()
@@ -120,7 +143,7 @@ class FileManager:
     async def _verify_later(self, path: Path, sha256: str, st: FileState) -> None:
         digest = await asyncio.to_thread(_sha256_file, path)
         if digest != sha256:
-            log.error("sha256 mismatch for %s; quarantining", path)
+            self.logs.emit("agent", f"{path.name}: checksum mismatch, file discarded", "error")
             path.rename(path.with_suffix(path.suffix + ".bad"))
             st.state, st.error = "failed", "checksum mismatch"
 

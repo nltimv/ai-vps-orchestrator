@@ -30,6 +30,10 @@ BAKE_SCRIPT = r"""#!/bin/bash
 set -euxo pipefail
 exec >>/var/log/aivo-bake.log 2>&1
 IMAGE="__IMAGE__"
+# a GPU machine without a driver would produce a prepared image that can never run the AI engine
+if ! command -v nvidia-smi >/dev/null 2>&1 && grep -qsx 0x10de /sys/bus/pci/devices/*/vendor; then
+  echo "[aivo] FAILED: NVIDIA GPU without a driver: set AIVO_DO_BASE_IMAGE to a GPU image"; exit 1
+fi
 if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh; fi
 if ! command -v nvidia-ctk >/dev/null 2>&1 && command -v nvidia-smi >/dev/null 2>&1; then
   curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg

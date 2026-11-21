@@ -19,6 +19,7 @@ from aivo.context import AppContext
 from aivo.controller.budget import admit, ensure_period, reservation_for
 from aivo.controller.common import build_context, get_offers, live_view, offer_from_instance, utcnow
 from aivo.controller.lifecycle import transition_instance, transition_job
+from aivo.controller.pause import get_pause
 from aivo.db.models import Asset, Instance, Job
 from aivo.placement.request import build_request
 from aivo.placement.scorer import Candidate, Context, LiveInstance, Request, rank
@@ -29,6 +30,10 @@ log = logging.getLogger(__name__)
 BILLING_STATES = ("pending", "creating", "provisioning", "booting", "ready", "busy", "draining")
 MAX_CANDIDATES = 8
 BUDGET_MESSAGE = "This month's spending limit has been reached. An admin can raise it in Settings."
+PAUSED_MESSAGE = (
+    "New machines are paused because the last ones failed to start ({reason}). "
+    "An admin can check the machine log and resume start-ups on the Machines page."
+)
 
 
 def friendly_from_job(app: AppContext, job: Job) -> FriendlyParams:
@@ -135,7 +140,10 @@ class Scheduler:
                 await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
             ).scalar_one()
             period = await ensure_period(s, rs, now, lock=False)
-            ctx = await build_context(app, s, rs, allow_new=live_count < rs.max_instances and not period.locked)
+            paused = await get_pause(s)  # repeated start-up failures: no new machines until resumed
+            ctx = await build_context(
+                app, s, rs, allow_new=live_count < rs.max_instances and not period.locked and not paused
+            )
             for job in jobs:
                 try:
                     _fp, _pl, req = job_request(app, job, rs)
@@ -146,6 +154,17 @@ class Scheduler:
                     continue
                 # reserved-but-busy machines: only the ones with spare queue capacity
                 cands = apply_manual(job, rank(req, offers, live, ctx))
+                if not cands and paused:
+                    await transition_job(
+                        s,
+                        job.id,
+                        job.state,
+                        "failed",
+                        error_code="paused",
+                        stage="failed",
+                        error_message=PAUSED_MESSAGE.format(reason=paused.get("reason") or "unknown"),
+                    )
+                    continue
                 if not cands:
                     fits_new = False
                     if live_count >= rs.max_instances and not period.locked:
