@@ -8,7 +8,7 @@ import type { RuntimeSettings } from "@/api/types";
 import { LicenseBadge } from "@/components/LicenseBadge";
 import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, ErrorNote, Field, Input, Label, PageHeader, Toggle } from "@/components/ui";
-import { ago, cn, money } from "@/lib/format";
+import { ago, cn, money, setupStepLabel } from "@/lib/format";
 
 export function SettingsPage() {
   const s = useSettings();
@@ -232,7 +232,20 @@ function CacheSection({ draft, set, spaces, regions }: {
                 <Badge tone={r.status === "ready" ? "good" : "neutral"}>{r.status}</Badge> · {money(r.monthly_cost_usd, 2)}/month</li>
             ))}
             {cache.data.runs.slice(0, 3).map((r) => (
-              <li key={r.id}>{r.kind} {r.state} ({r.step}) · {ago(r.started_at)}</li>
+              <li key={r.id}>
+                {r.kind === "bake" ? "Preparing the image" : r.kind} ·{" "}
+                <Badge tone={r.state === "succeeded" ? "good" : r.state === "failed" ? "bad" : "neutral"}>
+                  {r.state === "running" && r.stage ? setupStepLabel(r.stage) : r.state}
+                </Badge>{" "}
+                · {ago(r.started_at)}
+                {r.state === "failed" && r.error && <div className="mt-1 text-red-500">{r.error}</div>}
+                {r.log_tail && r.log_tail.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer">Last lines from the machine</summary>
+                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded panel-2 p-2 font-mono text-[11px]">{r.log_tail.join("\n")}</pre>
+                  </details>
+                )}
+              </li>
             ))}
           </ul>
         </div>

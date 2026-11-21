@@ -277,3 +277,17 @@ async def test_base_image_discovery():
     amd = await p.boot_image(next(x for x in o if x.vendor == "amd"), "auto")
     assert nv.ref == "gpu-h100x1-base" and amd.ref == "gpu-amd-base"
     await p.aclose()
+
+
+def test_bake_user_data_runs_the_self_test_with_python_and_forgets_its_key():
+    from aivo.providers.digitalocean.cloudinit import render_bake_user_data
+
+    sp = spec()
+    ud = render_bake_user_data(sp.bootstrap)
+    assert len(ud.encode()) < 32 * 1024
+    files = {f["path"]: f for f in yaml.safe_load(ud[len("#cloud-config\n") :])["write_files"]}
+    assert set(files) == {"/etc/aivo/bootstrap.json", "/opt/aivo/bake.sh", "/opt/aivo/boot_status.py"}
+    script = gzip.decompress(base64.b64decode(files["/opt/aivo/bake.sh"]["content"])).decode()
+    # the worker image's entrypoint is the agent: the GPU self-test must run python explicitly
+    assert "--entrypoint python" in script
+    assert "rm -rf /etc/aivo" in script and script.rstrip().endswith("poweroff")

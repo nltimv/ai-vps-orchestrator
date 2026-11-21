@@ -1,4 +1,4 @@
-"""Run the machine start-up script (bootstrap.sh + boot_status.py) in an Ubuntu 24.04 container.
+"""Run the machine scripts (bootstrap.sh, bake.sh + boot_status.py) in an Ubuntu 24.04 container.
 
 Checks what a real GPU machine would show in the dashboard, without a GPU or a cloud account:
 ``docker``, ``nvidia-smi`` and friends are stubbed; everything else is the real script.
@@ -28,13 +28,16 @@ TEMPLATES = ROOT / "backend/src/aivo/providers/digitalocean/templates"
 IMAGE = "aivo-bootstrap-check"
 
 DOCKER_STUB = r"""#!/bin/bash
-echo "docker $*" >> /tmp/docker-calls
+echo "docker $*" >> /check/docker-calls
 case "$1" in
   --version) echo "Docker version 27.0.0 (stub)" ;;
   pull) echo "latest: Pulling from aivo-worker"; echo "Status: Downloaded newer image" ;;
   image|rm|update) exit 0 ;;
   run)
     if [[ " $* " == *" --rm "* ]]; then
+      if [ "$STUB_MODE" = torch_fails ] && [[ " $* " == *" --entrypoint python "* ]]; then
+        echo "Traceback (most recent call last):"; echo "AssertionError: PyTorch cannot see the GPU"; exit 1
+      fi
       if [ "$STUB_MODE" = gpu_broken ]; then
         echo 'docker: Error response from daemon: could not select device driver "" with capabilities: [[gpu]].' >&2
         exit 125
@@ -56,7 +59,7 @@ esac
 """
 NOOP = "#!/bin/bash\nexit 0\n"
 IPTABLES_STUB = '#!/bin/bash\n[ "$1" = "-C" ] && exit 1\nexit 0\n'
-RECORD = '#!/bin/bash\necho "$(basename "$0") $*" >> /tmp/disk-calls\n'
+RECORD = '#!/bin/bash\necho "$(basename "$0") $*" >> /check/disk-calls\n'
 
 # Disk tools answer from /check/disks.json, so the check never looks at (or formats) a real disk.
 LSBLK_STUB = """#!/usr/bin/env python3
@@ -134,7 +137,9 @@ def run_case(
     wait_after_s: int = 2,
     disks: dict | None = None,
     read_only_models: bool = False,
+    script: str = "bootstrap.sh",
 ) -> dict:
+    log_path = "/var/log/aivo-bake.log" if script == "bake.sh" else "/var/log/aivo-bootstrap.log"
     iid = uuid.uuid4()
     creds = make_worker_credentials(iid)
     token = secrets.token_urlsafe(24)
@@ -167,6 +172,9 @@ def run_case(
             "mount": RECORD,
             "umount": RECORD,
             "mkfs.ext4": RECORD,
+            "poweroff": RECORD,
+            "cloud-init": NOOP,
+            "apt-get": NOOP,
         }
         if nvidia:
             files |= {"nvidia-smi": NVIDIA_SMI_STUB, "nvidia-ctk": NOOP}
@@ -178,8 +186,8 @@ def run_case(
             "-e", f"STUB_MODE={mode}",
             "-e", "PATH=/check/stubs:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "-v", f"{work}:/check",
-            "-v", f"{work}/etc:/etc/aivo:ro",
-            "-v", f"{TEMPLATES}/bootstrap.sh:/opt/aivo/bootstrap.sh:ro",
+            "-v", f"{work}/etc:/etc/aivo" + ("" if script == "bake.sh" else ":ro"),
+            "-v", f"{TEMPLATES}/{script}:/opt/aivo/{script}:ro",
             "-v", f"{TEMPLATES}/boot_status.py:/opt/aivo/boot_status.py:ro",
         ]  # fmt: skip
         if read_only_models:
@@ -191,21 +199,30 @@ def run_case(
             (dev / "vendor").write_text(pci_vendor + "\n")
             args += ["-v", f"{work}/pci:/sys/bus/pci/devices:ro"]
         script = textwrap.dedent(f"""
-            bash /opt/aivo/bootstrap.sh; echo "EXIT $?"
+            bash /opt/aivo/{script}; echo "EXIT $?"
             sleep {wait_after_s}
             python3 /check/probe.py {token} {creds.sni_name}
-            echo "DOCKER-CALLS"; cat /tmp/docker-calls 2>/dev/null
-            echo "DISK-CALLS"; cat /tmp/disk-calls 2>/dev/null
-            echo "SETUP-LOG"; cat /var/log/aivo-bootstrap.log
+            echo "DOCKER-CALLS"; cat /check/docker-calls 2>/dev/null
+            echo "DISK-CALLS"; cat /check/disk-calls 2>/dev/null
+            echo "ETC-AIVO $(ls -A /etc/aivo | tr '\\n' ' ')"
+            echo "SETUP-LOG"; cat {log_path}
         """)
         out = subprocess.run([*args, IMAGE, "bash", "-c", script], capture_output=True, text=True, timeout=300)
         text = out.stdout
         exit_code = int(text.split("EXIT ", 1)[1].split()[0])
         probe = json.loads(text.split("PROBE ", 1)[1].split("\n", 1)[0])
         calls = text.split("DOCKER-CALLS\n", 1)[1].split("DISK-CALLS\n", 1)[0]
-        disk_calls = text.split("DISK-CALLS\n", 1)[1].split("SETUP-LOG\n", 1)[0]
+        disk_calls = text.split("DISK-CALLS\n", 1)[1].split("ETC-AIVO", 1)[0]
         log = text.split("SETUP-LOG\n", 1)[1]
-        return {"exit": exit_code, "probe": probe, "calls": calls + disk_calls, "log": log, "stderr": out.stderr}
+        etc = text.split("ETC-AIVO ", 1)[1].split("\n", 1)[0].split() if "ETC-AIVO " in text else []
+        return {
+            "exit": exit_code,
+            "probe": probe,
+            "calls": calls + disk_calls,
+            "log": log,
+            "etc": etc,
+            "stderr": out.stderr,
+        }
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -274,6 +291,20 @@ def main() -> None:
     st = r["probe"]["health"][1]["bootstrap"]
     check(r["exit"] == 1 and st["failed"] and "read-only" in st["error"], "reported before downloading anything", r)
     check("pull" not in r["calls"], "nothing downloaded", r)
+
+    print("7) bake: prepares the image and powers off")
+    r = run_case("bake", engine="comfy", mode="ok", nvidia=True, pci_vendor="0x10de", script="bake.sh")
+    check(r["exit"] == 0 and "poweroff" in r["calls"], "script powers off at the end", r)
+    test = next((ln for ln in r["calls"].splitlines() if ln.startswith("docker run --rm")), "")
+    check("--entrypoint python" in test and "--gpus all" in test, "GPU self-test runs python, not the agent", r)
+    check(r["etc"] == [], "the machine's key and token hash are deleted before the snapshot", r)
+    check("== step: cleaning_up" in r["log"], "all steps logged", r)
+
+    print("8) bake: the GPU self-test fails")
+    r = run_case("bakefail", engine="comfy", mode="torch_fails", nvidia=True, pci_vendor="0x10de", script="bake.sh")
+    st = r["probe"]["health"][1]["bootstrap"]
+    check(r["exit"] == 1 and "poweroff" not in r["calls"], "stops without powering off", r)
+    check(st["failed"] and "PyTorch cannot see the GPU" in st["error"], "status server reports the reason", r)
     print("bootstrap check: OK")
 
 

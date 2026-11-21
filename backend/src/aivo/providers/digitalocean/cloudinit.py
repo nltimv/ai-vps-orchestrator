@@ -17,6 +17,7 @@ from aivo_protocol.worker_api import WorkerBootstrap
 TEMPLATES = Path(__file__).parent / "templates"
 BOOTSTRAP_SH = (TEMPLATES / "bootstrap.sh").read_text()
 BOOT_STATUS_PY = (TEMPLATES / "boot_status.py").read_text()
+BAKE_SH = (TEMPLATES / "bake.sh").read_text()
 MAX_USER_DATA = 64 * 1024
 
 
@@ -41,6 +42,26 @@ def render_user_data(boot: WorkerBootstrap) -> str:
             _file("/opt/aivo/boot_status.py", BOOT_STATUS_PY, "0755", gzip=True),
         ],
         "runcmd": [["bash", "/opt/aivo/bootstrap.sh"]],
+    }
+    out = "#cloud-config\n" + yaml.safe_dump(doc, sort_keys=False, width=1_000_000)
+    if len(out.encode()) > MAX_USER_DATA:
+        raise ValueError(f"user_data too large ({len(out)} bytes)")
+    return out
+
+
+def render_bake_user_data(boot: WorkerBootstrap) -> str:
+    """user_data for the temporary machine that prepares a machine image (see templates/bake.sh).
+
+    ``boot`` carries only what the start-up status server needs (certificate, token hash, port) and the
+    worker image; bake.sh deletes it before the snapshot.
+    """
+    doc = {
+        "write_files": [
+            _file("/etc/aivo/bootstrap.json", boot.model_dump_json(), "0600"),
+            _file("/opt/aivo/bake.sh", BAKE_SH, "0755", gzip=True),
+            _file("/opt/aivo/boot_status.py", BOOT_STATUS_PY, "0755", gzip=True),
+        ],
+        "runcmd": [["bash", "/opt/aivo/bake.sh"]],
     }
     out = "#cloud-config\n" + yaml.safe_dump(doc, sort_keys=False, width=1_000_000)
     if len(out.encode()) > MAX_USER_DATA:

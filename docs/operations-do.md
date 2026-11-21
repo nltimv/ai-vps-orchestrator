@@ -99,8 +99,11 @@ relying on that engine.
 | **Model disks** (block storage) | no download at all for the cached models | $0.10/GB-month (~$12 for 120 GB) |
 
 **Prepared machine image:** the cheapest available GPU machine gets Docker, the NVIDIA
-container toolkit and the worker image installed. It is then snapshotted and copied to the
-regions you pick.
+container toolkit and the worker image installed. A quick test checks that the worker software can
+use the GPU. The machine then deletes its own key and powers off. aivo snapshots it and copies
+the image to the regions you pick. Settings shows the current step. If a step fails, the machine
+is deleted right away, and Settings shows the reason and the machine's last log lines. The backend
+log has them too (search for `bake`).
 
 **Model copy (Spaces mirror):** the backend streams model files from Hugging Face into your
 private bucket. Machines receive short-lived download links and never see your keys.

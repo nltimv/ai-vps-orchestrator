@@ -276,7 +276,17 @@ export interface SettingsResponse {
 export interface CacheStatus {
   resources: { id: string; kind: string; region: string | null; status: string; size_gb: number | null; monthly_cost_usd: number; contents: number; in_use: boolean; created_at: string }[];
   mirror: { configured: boolean; stored_gb: number; monthly_cost_usd: number; models: Record<string, { status: string; gb: number }> };
-  runs: { id: string; kind: string; state: string; step: string | null; started_at: string; finished_at: string | null }[];
+  runs: {
+    id: string;
+    kind: string;
+    state: string;
+    step: string | null;
+    stage?: string | null;
+    error?: string | null;
+    log_tail?: string[] | null;
+    started_at: string;
+    finished_at: string | null;
+  }[];
   monthly_total_usd: number;
   bake_supported: boolean;
 }

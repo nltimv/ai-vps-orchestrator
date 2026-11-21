@@ -39,7 +39,7 @@ export function useServerEvents(enabled: boolean) {
     for (const t of ["instance.state", "instance.keep_warm", "instance.lost", "boot_stage", "provisioning_paused", "provisioning_resumed"])
       es.addEventListener(t, onInstance);
     es.addEventListener("budget.locked", () => qc.invalidateQueries({ queryKey: ["spending"] }));
-    for (const t of ["bake.started", "bake.succeeded", "bake.failed", "cache.volume_created"])
+    for (const t of ["bake.started", "bake.progress", "bake.succeeded", "bake.failed", "cache.volume_created"])
       es.addEventListener(t, () => qc.invalidateQueries({ queryKey: ["cache"] }));
     return () => {
       window.clearTimeout(refreshTimer);

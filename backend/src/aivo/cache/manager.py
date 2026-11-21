@@ -99,6 +99,9 @@ class CacheManager:
                     "kind": r.kind,
                     "state": r.state,
                     "step": r.step,
+                    "stage": (r.data or {}).get("stage"),  # what the bake machine is doing right now
+                    "error": (r.data or {}).get("error"),
+                    "log_tail": (r.data or {}).get("log_tail") if r.state == "failed" else None,
                     "started_at": r.started_at,
                     "finished_at": r.finished_at,
                 }

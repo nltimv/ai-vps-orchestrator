@@ -10,8 +10,9 @@ async def test_bake_creates_snapshot_and_new_machines_boot_from_it(env):
         b = Baker(h.ctx, poll_s=0.05)
         run_id = await b.start()
         await b.run(run_id)
-        rows = await h.sql("SELECT state, step FROM background_runs")
+        rows = await h.sql("SELECT state, step, data->>'stage' FROM background_runs")
         assert rows[0][0] == "succeeded", rows
+        assert rows[0][2] in ("checking_engine", "cleaning_up")  # steps were read from the machine
         snaps = await h.sql(
             "SELECT region, status, min_disk_gb FROM cache_resources WHERE kind='snapshot' ORDER BY region"
         )
@@ -45,6 +46,27 @@ async def test_slow_bake_is_not_mistaken_for_an_orphan(env):
         assert rows[0][0] == "succeeded", rows
         orphans = await h.sql("SELECT count(*) FROM events WHERE type = 'orphan.destroyed'")
         assert orphans[0][0] == 0
+
+
+async def test_bake_failure_on_the_machine_ends_the_bake_at_once(env):
+    """The bake machine reports a failed step: no waiting for a power-off that never comes."""
+    import time
+
+    async with Harness(env) as h:
+        await h.setup_admin()
+        h.provider.bake_seconds = 1
+        h.provider.bake_chaos = "engine_check_fails"
+        b = Baker(h.ctx, poll_s=0.1)
+        run_id = await b.start()
+        t0 = time.monotonic()
+        await b.run(run_id)
+        assert time.monotonic() - t0 < 10
+        state, data = (await h.sql("SELECT state, data FROM background_runs"))[0]
+        assert state == "failed" and "can't use the GPU" in data["error"]
+        assert any("PyTorch cannot see the GPU" in ln for ln in data["log_tail"])
+        assert not any(m.pi.name.startswith("aivo-bake") for m in h.provider.machines.values())  # destroyed
+        run = (await h.client.get("/api/v1/admin/cache")).json()["runs"][0]
+        assert run["state"] == "failed" and "can't use the GPU" in run["error"] and run["log_tail"]
 
 
 async def test_bake_machine_left_behind_is_still_cleaned_up(env):
