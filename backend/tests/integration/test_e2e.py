@@ -81,7 +81,7 @@ async def test_video_and_music_reuse_machine(env):
                     "kind": "video",
                     "prompt": "waves at sunset",
                     "quality": "standard",
-                    "model_id": "ltx25",
+                    "model_id": "ltx2",
                     "duration": "short",
                 },
             )

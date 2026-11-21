@@ -79,8 +79,13 @@ async def prompt(body: dict):
 
 async def run(pid, wf, ws):
     await asyncio.sleep(0.05)
+    # like current ComfyUI: execution_start, then per-node progress_state/executed messages besides "progress"
+    await ws.send_text(json.dumps({"type": "execution_start", "data": {"prompt_id": pid}}))
     for node in wf:
         await ws.send_text(json.dumps({"type": "executing", "data": {"node": node, "prompt_id": pid}}))
+        await ws.send_text(
+            json.dumps({"type": "progress_state", "data": {"prompt_id": pid, "nodes": {node: {"state": "running"}}}})
+        )
         if wf[node]["class_type"] == "KSampler":
             if wf[node]["inputs"].get("steps") == 999:
                 await ws.send_text(
@@ -101,10 +106,12 @@ async def run(pid, wf, ws):
                 sys.stderr.write(f"\r{(i + 1) * 33 + (i == 2)}%|{'#' * (i + 1)}{' ' * (2 - i)}| {i + 1}/3")
                 sys.stderr.flush()
                 await ws.send_text(
-                    json.dumps({"type": "progress", "data": {"value": i + 1, "max": 3, "prompt_id": pid}})
+                    json.dumps({"type": "progress", "data": {"value": i + 1, "max": 3, "prompt_id": pid, "node": node}})
                 )
+                await ws.send_text(json.dumps({"type": "progress_state", "data": {"prompt_id": pid, "nodes": {}}}))
             sys.stderr.write("\n")
             print("Prompt executed in 0.10 seconds", flush=True)
+        await ws.send_text(json.dumps({"type": "executed", "data": {"node": node, "prompt_id": pid, "output": None}}))
     outputs = {}
     for node, spec in wf.items():
         if spec["class_type"] == "SaveImage":

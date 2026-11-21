@@ -170,7 +170,7 @@ async def offers(
     rs = await app.runtime(s)
     fp = FriendlyParams(kind=kind, prompt="x", model_id=model_id, quality=quality)  # type: ignore[arg-type]
     pl = plan(app.catalog, fp, app.enabled_models(rs))
-    req = build_request(pl, preference or rs.preference_default)
+    req = build_request(pl, preference or rs.preference_default, hf_token=app.env.hf_token is not None)
     try:
         all_offers = await get_offers(app)
         error = app.offers.error
@@ -244,7 +244,7 @@ async def warmup(
     rs = await app.runtime(s)
     fp = FriendlyParams(kind=body.kind, prompt="warmup", model_id=body.model_id, quality=body.quality)
     pl = plan(app.catalog, fp, app.enabled_models(rs))
-    req = build_request(pl, body.preference or rs.preference_default)
+    req = build_request(pl, body.preference or rs.preference_default, hf_token=app.env.hf_token is not None)
     live_count = (
         await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
     ).scalar_one()

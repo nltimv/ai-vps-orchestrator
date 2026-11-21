@@ -119,7 +119,7 @@ async def estimate(
     except CatalogError as e:
         raise HTTPException(422, str(e)) from e
     pref = preference or rs.preference_default
-    req = build_request(pl, pref)
+    req = build_request(pl, pref, hf_token=app.env.hf_token is not None)
     try:
         offers = await get_offers(app)
     except Exception:

@@ -70,7 +70,8 @@ class FileManager:
             new.append(f)
         if new:
             total = sum(f.bytes or 0 for f in new) / 1e9
-            self.logs.emit("agent", f"model files requested: {len(new)} file(s), {total:.1f} GB")
+            size = f", {total:.1f} GB" if all(f.bytes for f in new) else ""
+            self.logs.emit("agent", f"model files requested: {len(new)} file(s){size}")
         return self.status([f.dest for f in files])
 
     async def _ensure_one(self, f: FileFetch) -> None:

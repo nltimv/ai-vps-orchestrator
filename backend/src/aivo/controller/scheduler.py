@@ -51,7 +51,7 @@ def friendly_from_job(app: AppContext, job: Job) -> FriendlyParams:
 def job_request(app: AppContext, job: Job, rs: RuntimeSettings) -> tuple[FriendlyParams, Plan, Request]:
     fp = friendly_from_job(app, job)
     pl = plan(app.catalog, fp, app.enabled_models(rs) | {job.model_id})
-    req = build_request(pl, job.preference, min_vram_override=job.min_vram_gb)
+    req = build_request(pl, job.preference, min_vram_override=job.min_vram_gb, hf_token=app.env.hf_token is not None)
     return fp, pl, req
 
 

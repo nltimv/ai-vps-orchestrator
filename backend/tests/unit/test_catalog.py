@@ -45,7 +45,7 @@ def test_files_referenced_by_workflows_are_in_manifest():
 
 def test_video_frame_rules():
     wan = CAT.get("wan22-a14b").manifest.video
-    ltx = CAT.get("ltx25").manifest.video
+    ltx = CAT.get("ltx2").manifest.video
     assert (wan.frames_for(5) - 1) % 4 == 0 and wan.frames_for(5) == 81
     assert (ltx.frames_for(5) - 1) % 8 == 0
     assert ltx.frames_for(100) <= ltx.max_seconds * ltx.fps + ltx.frame_multiple
@@ -79,3 +79,26 @@ def test_style_and_avoid_and_lyrics():
     pl = plan(CAT, fp, ALL)
     p = workflow_params(CAT, pl, fp, pl.model.manifest.variants[0], seed=1)
     assert p["lyrics"] == "[instrumental]" and p["tags"] == "jazz"
+
+
+def test_gated_variants_are_left_out_without_a_hugging_face_token():
+    from aivo.catalog.presets import FriendlyParams, plan
+    from aivo.placement.request import build_request
+
+    pl = plan(CAT, FriendlyParams(kind="image", prompt="x", model_id="flux2-dev", quality="best"), set(CAT.models))
+    with_token = {v.variant_id for v in build_request(pl, "balanced", hf_token=True).variants}
+    without = {v.variant_id for v in build_request(pl, "balanced", hf_token=False).variants}
+    assert with_token == {"fp8", "bf16"} and without == {"fp8"}  # bf16 comes from the gated BFL repo
+
+
+def test_download_errors_say_what_to_do():
+    from aivo.controller.dispatcher import download_error
+    from aivo_protocol.worker_api import FileState
+
+    files = CAT.get("flux2-dev").manifest.files
+    gated = FileState(dest="diffusion_models/flux2-dev.safetensors", state="failed", error="hf: HTTP 401")
+    assert "AIVO_HF_TOKEN" in download_error([gated], files)
+    moved = FileState(dest="vae/flux2-vae.safetensors", state="failed", error="hf: HTTP 401")
+    assert "refused" in download_error([moved], files) and "AIVO_HF_TOKEN" not in download_error([moved], files)
+    other = FileState(dest="vae/flux2-vae.safetensors", state="failed", error="size mismatch")
+    assert download_error([other], files).startswith("The AI model's files couldn't be downloaded")

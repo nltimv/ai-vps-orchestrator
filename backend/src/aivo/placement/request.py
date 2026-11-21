@@ -6,9 +6,19 @@ from aivo.catalog.presets import Plan
 from aivo.placement.scorer import Request, VariantNeed
 
 
-def build_request(plan: Plan, preference: str, *, k: int = 1, min_vram_override: float | None = None) -> Request:
+def build_request(
+    plan: Plan,
+    preference: str,
+    *,
+    k: int = 1,
+    min_vram_override: float | None = None,
+    hf_token: bool = True,
+) -> Request:
+    """``hf_token=False``: leave out variants whose files are gated on Hugging Face (they would fail to
+    download). If every variant is gated, keep them, so the job fails with a clear message instead."""
     mf = plan.model.manifest
     qf = mf.bench.quality_factor.get(plan.quality, 1.0)
+    usable = [v for v in mf.variants if hf_token or not any(f.gated for f in mf.files_for(v, plan.mode))]
     variants = tuple(
         VariantNeed(
             variant_id=v.id,
@@ -21,7 +31,7 @@ def build_request(plan: Plan, preference: str, *, k: int = 1, min_vram_override:
             weight_bytes=mf.weight_bytes(v, plan.mode),
             file_dests=frozenset(f.dest for f in mf.files_for(v, plan.mode)),
         )
-        for v in mf.variants
+        for v in usable or mf.variants
     )
     return Request(
         model_id=mf.id,

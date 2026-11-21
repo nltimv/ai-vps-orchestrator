@@ -247,7 +247,7 @@ class ComfyEngine:
                 shutil.copyfile(src, dst)
                 staged.append(dst)
         client_id = uuid.uuid4().hex
-        total_nodes = max(1, len(job.workflow))
+        tracker = _ProgressTracker(job.workflow, progress)
         try:
             async with websockets.connect(
                 f"ws://127.0.0.1:{self.port}/ws?clientId={client_id}", max_size=None, open_timeout=20
@@ -256,8 +256,7 @@ class ComfyEngine:
                 if r.status_code != 200:
                     raise EngineError(f"workflow rejected: {_short(r.text)}", code="bad_request")
                 prompt_id = r.json()["prompt_id"]
-                progress(0.0, "loading_model")
-                done_nodes: set[str] = set()
+                tracker.report(0.0, "loading_model")
                 while True:
                     raw = await ws.recv()
                     if isinstance(raw, bytes):
@@ -267,17 +266,13 @@ class ComfyEngine:
                     if data.get("prompt_id") not in (None, prompt_id):
                         continue
                     if t == "executing":
-                        node = data.get("node")
-                        if node is None:
+                        if data.get("node") is None:
                             break
-                        done_nodes.add(node)
+                        tracker.node_started(str(data["node"]))
                     elif t == "execution_cached":
-                        done_nodes.update(data.get("nodes") or [])
+                        tracker.nodes_cached([str(n) for n in data.get("nodes") or []])
                     elif t == "progress":
-                        frac = data.get("value", 0) / max(1, data.get("max", 1))
-                        overall = 0.15 + 0.8 * frac
-                        progress(min(0.95, overall), "generating")
-                        continue
+                        tracker.sampling(str(data.get("node") or "?"), data.get("value", 0), data.get("max", 1))
                     elif t == "execution_error":
                         text = f"{data.get('exception_type', '')}: {data.get('exception_message', '')}"
                         code = "oom" if any(h in text.lower() for h in OOM_HINTS) else "engine"
@@ -286,7 +281,7 @@ class ComfyEngine:
                         raise EngineError("cancelled", code="cancelled")
                     elif t == "execution_success":
                         break
-                    progress(min(0.15, 0.15 * len(done_nodes) / total_nodes), "loading_model")
+                    # anything else (status, execution_start, progress_state, executed, ...) changes nothing
             hist = (await self._http.get(f"/history/{prompt_id}")).json().get(prompt_id, {})
             files = _collect_outputs(hist.get("outputs", {}))
             if not files:
@@ -306,6 +301,54 @@ class ComfyEngine:
         finally:
             for p in staged:
                 p.unlink(missing_ok=True)
+
+
+SAMPLER_TYPES = {"KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"}
+
+
+class _ProgressTracker:
+    """Turns ComfyUI's websocket messages into one progress value that only moves forward.
+
+    0-15 %: loading the model (nodes before sampling); 15-95 %: the sampling steps of all samplers in
+    the workflow (e.g. Wan 2.2's high- and low-noise passes count as one run); then decoding/saving.
+    Once creating has started, the stage never goes back to loading the model, even if the workflow
+    loads a second model between samplers.
+    """
+
+    def __init__(self, workflow: dict[str, Any], progress: ProgressCb):
+        self._cb = progress
+        self._total_nodes = max(1, len(workflow))
+        self._samplers = {
+            str(nid)
+            for nid, node in workflow.items()
+            if isinstance(node, dict) and str(node.get("class_type", "")) in SAMPLER_TYPES
+        }
+        self._done: set[str] = set()
+        self._steps: dict[str, float] = {}
+        self._stage = "loading_model"
+        self._value = 0.0
+
+    def report(self, value: float, stage: str) -> None:
+        if stage == "loading_model" and self._stage != "loading_model":
+            return
+        value = max(self._value, min(0.95, value))
+        if value == self._value and stage == self._stage and value > 0:
+            return
+        self._value, self._stage = value, stage
+        self._cb(value, stage)
+
+    def node_started(self, node: str) -> None:
+        self._done.add(node)
+        self.report(0.15 * len(self._done) / self._total_nodes, "loading_model")
+
+    def nodes_cached(self, nodes: list[str]) -> None:
+        self._done.update(nodes)
+        self.report(0.15 * len(self._done) / self._total_nodes, "loading_model")
+
+    def sampling(self, node: str, value: float, maximum: float) -> None:
+        self._steps[node] = max(0.0, min(1.0, value / max(1, maximum)))
+        samplers = max(len(self._samplers | set(self._steps)), 1)
+        self.report(0.15 + 0.8 * sum(self._steps.values()) / samplers, "generating")
 
 
 def _collect_outputs(outputs: dict[str, Any]) -> list[tuple[str, str]]:
