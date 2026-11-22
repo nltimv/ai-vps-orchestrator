@@ -8,7 +8,7 @@ import { useActiveJobs, useCatalog, useEstimate, useRecentJobs } from "@/api/que
 import type { Asset, Aspect, CatalogModel, CreateRequest, Job, Kind, Preference, Quality } from "@/api/types";
 import { JobCard, KindIcon } from "@/components/JobCard";
 import { LicenseBadge } from "@/components/LicenseBadge";
-import { Button, Card, Chips, ErrorNote, Label, Modal, Textarea, Toggle } from "@/components/ui";
+import { Badge, Button, Card, Chips, ErrorNote, Label, Modal, Textarea, Toggle } from "@/components/ui";
 import { cn, duration, money, newIdempotencyKey } from "@/lib/format";
 
 const KIND_TABS: { id: Kind; label: string; placeholder: string }[] = [
@@ -76,8 +76,9 @@ export function CreatePage() {
   const maxCount = routed?.max_count ?? 1;
 
   useEffect(() => {
-    if (modelId !== "auto" && !usable.some((m) => m.id === modelId)) setModelId("auto");
-  }, [usable, modelId]);
+    // only once the engine list is there: a preselected engine (e.g. "Animate this") must survive loading
+    if (catalog.data && modelId !== "auto" && !usable.some((m) => m.id === modelId)) setModelId("auto");
+  }, [catalog.data, usable, modelId]);
   useEffect(() => setCount((c) => Math.min(c, maxCount)), [maxCount]);
 
   const fullPrompt = kind === "music" && genres.length ? `${genres.join(", ")}. ${prompt}` : prompt;
@@ -243,7 +244,8 @@ export function CreatePage() {
                   <EngineOption active={modelId === "auto"} onClick={() => setModelId("auto")} title="Auto" subtitle="Let aivo choose" />
                   {usable.map((m) => (
                     <EngineOption key={m.id} active={modelId === m.id} onClick={() => setModelId(m.id)} title={m.name}
-                      subtitle={m.tagline} badge={<LicenseBadge license={m.license} />} />
+                      subtitle={m.tagline}
+                      badge={<span className="flex items-center gap-1">{m.adult && <Badge tone="bad" title="For adults only">18+</Badge>}<LicenseBadge license={m.license} /></span>} />
                   ))}
                 </div>
               </div>
@@ -301,6 +303,8 @@ function EngineOption({ active, onClick, title, subtitle, badge }: { active: boo
 }
 
 function EstimateLine({ est, loading, error }: { est?: { est_cost_usd: number | null; est_wait_s: number | null; machine: { status: string; gpu: string; region_name: string } | null; message: string | null; model_name: string }; loading: boolean; error: unknown }) {
+  if (error instanceof ApiError && (error.status === 403 || error.status === 422))
+    return <div className="text-sm text-amber-500">{error.message}</div>;
   if (error) return <div className="text-sm text-muted">Couldn't estimate the cost right now.</div>;
   if (!est) return <div className="text-sm text-muted">{loading ? "Estimating…" : ""}</div>;
   if (!est.machine) return <div className="text-sm text-amber-500">{est.message}</div>;

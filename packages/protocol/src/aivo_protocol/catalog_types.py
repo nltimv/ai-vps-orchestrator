@@ -133,6 +133,10 @@ class ModelManifest(BaseModel):
     output_mb: float = 2.0  # rough per-output size estimate (for transfer time)
     tags: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
+    # 18+ engine: only for accounts with adult content switched on, text-made starting images only,
+    # prompts involving minors refused (see aivo/safety.py)
+    adult: bool = False
+    prompt_prefix: str = ""  # e.g. an add-on's trigger word, put in front of every prompt
     notes: str = ""  # maintainer notes (not shown to end users)
 
     @model_validator(mode="after")

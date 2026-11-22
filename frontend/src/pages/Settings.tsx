@@ -89,6 +89,17 @@ export function SettingsPage() {
         </div>
       </Section>
 
+      <Section title="Adult content (18+)" desc="Engines that make nudity and sexual content, for adults only.">
+        <Toggle checked={draft.adult_content_enabled} onChange={(v) => set("adult_content_enabled", v)}
+          label="Allow adult content for the people switched on below" />
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted">
+          <li>Only people with "18+" switched on under People see the adult engines and anything made with them. Admins too.</li>
+          <li>Everyone else never sees adult creations: not in the gallery, not in lists, not via a link.</li>
+          <li>Adult engines only start from pictures made here from a text description, never from uploaded photos.</li>
+          <li>Descriptions that could involve minors are always refused.</li>
+        </ul>
+      </Section>
+
       <Section title="Troubleshooting" desc="When machines don't start. The machine log (Machines → Show log) shows each start-up step.">
         <div className="grid gap-4 sm:grid-cols-2">
           <NumberField label="Pause new machines after this many failed start-ups in a row (0 = never)"
@@ -283,10 +294,22 @@ function Users() {
           <div key={u.id} className="flex items-center justify-between gap-2 py-2 text-sm">
             <span>{u.display_name} <span className="text-muted">· {u.email}</span> {u.role === "admin" && <Badge tone="brand">admin</Badge>}{" "}
               {u.sso && <Badge tone="neutral">single sign-on</Badge>}
-              {!u.is_active && <Badge tone="bad">disabled</Badge>}</span>
-            <Button size="sm" variant="ghost" onClick={async () => { await patch(`/admin/users/${u.id}`, { is_active: !u.is_active }); qc.invalidateQueries({ queryKey: ["users"] }); }}>
-              {u.is_active ? "Disable" : "Enable"}
-            </Button>
+              {!u.is_active && <Badge tone="bad">disabled</Badge>}
+              {u.adult_allowed && <Badge tone="bad" title="May see and make adult content (when allowed above)">18+</Badge>}</span>
+            <span className="flex gap-1">
+              <Button size="sm" variant="ghost" aria-label={`${u.adult_allowed ? "Switch off" : "Switch on"} 18+ for ${u.display_name}`}
+                onClick={async () => {
+                  await patch(`/admin/users/${u.id}`, { adult_allowed: !u.adult_allowed });
+                  qc.invalidateQueries({ queryKey: ["users"] });
+                  qc.invalidateQueries({ queryKey: ["me"] });
+                  qc.invalidateQueries({ queryKey: ["catalog"] });
+                }}>
+                {u.adult_allowed ? "18+ off" : "18+ on"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={async () => { await patch(`/admin/users/${u.id}`, { is_active: !u.is_active }); qc.invalidateQueries({ queryKey: ["users"] }); }}>
+                {u.is_active ? "Disable" : "Enable"}
+              </Button>
+            </span>
           </div>
         ))}
       </div>

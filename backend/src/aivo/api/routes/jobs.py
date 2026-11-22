@@ -12,6 +12,7 @@ from aivo.api.schemas import EstimateOut, JobCreateIn, JobOut, Page
 from aivo.context import AppContext
 from aivo.controller.lifecycle import transition_job
 from aivo.db.models import Asset, Job, User
+from aivo.safety import can_see, visible
 from aivo.services.jobs import create_job, estimate, job_out
 
 router = APIRouter(tags=["jobs"])
@@ -20,12 +21,12 @@ router = APIRouter(tags=["jobs"])
 @router.post("/estimate")
 async def post_estimate(
     body: JobCreateIn,
-    _: User = Depends(current_user),
+    user: User = Depends(current_user),
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> EstimateOut:
     key = body.placement.offer_key if body.placement.mode == "manual" else None
-    return await estimate(app, s, body, body.preference, manual_offer_key=key)
+    return await estimate(app, s, body, body.preference, manual_offer_key=key, user=user)
 
 
 @router.post("/jobs", status_code=201)
@@ -53,6 +54,7 @@ async def list_jobs(
     s: AsyncSession = Depends(get_session),
 ) -> list[JobOut]:
     q = select(Job, User.display_name).join(User, User.id == Job.user_id).where(Job.deleted_at.is_(None))
+    q = visible(q, user, await app.runtime(s))
     if active:
         q = q.where(Job.state.notin_(("succeeded", "failed", "cancelled")))
     if user.role != "admin":
@@ -75,7 +77,7 @@ async def get_job(
             .where(Job.id == job_id, Job.deleted_at.is_(None))
         )
     ).first()
-    if row is None:
+    if row is None or not can_see(row[0], user, await app.runtime(s)):
         raise HTTPException(404, "Not found")
     return await job_out(app, s, row[0], row[1])
 
@@ -107,7 +109,7 @@ async def retry_job(
     s: AsyncSession = Depends(get_session),
 ) -> JobOut:
     job = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
-    if job is None or (job.user_id != user.id and user.role != "admin"):
+    if job is None or (job.user_id != user.id and user.role != "admin") or not can_see(job, user, await app.runtime(s)):
         raise HTTPException(404, "Not found")
     if job.state != "failed":
         raise HTTPException(409, "Only failed creations can be retried")
@@ -171,6 +173,7 @@ async def gallery(
         .join(User, User.id == Job.user_id)
         .where(Job.state == "succeeded", Job.deleted_at.is_(None))
     )
+    q = visible(q, user, await app.runtime(s))
     if kind in ("image", "video", "music"):
         q = q.where(Job.kind == kind)
     if mine:

@@ -16,6 +16,8 @@ export interface User {
   email: string;
   display_name: string;
   role: "admin" | "member";
+  adult_allowed?: boolean;
+  adult_content?: boolean;
 }
 
 export interface License {
@@ -39,6 +41,7 @@ export interface CatalogModel {
   max_count: number;
   min_vram_gb: number;
   tags: string[];
+  adult?: boolean;
 }
 
 export interface Catalog {
@@ -139,6 +142,7 @@ export interface Job {
   error: string | null;
   machine: string | null;
   instance_id?: string | null;
+  adult?: boolean;
   seed: number | null;
   created_at: string;
   finished_at: string | null;
@@ -261,6 +265,7 @@ export interface RuntimeSettings {
   boot_failures_before_pause: number;
   boot_health_max_s: number;
   debug_ssh_cidrs: string[];
+  adult_content_enabled: boolean;
   [k: string]: unknown;
 }
 

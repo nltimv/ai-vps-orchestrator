@@ -16,6 +16,8 @@ class UserOut(BaseModel):
     email: str
     display_name: str
     role: Literal["admin", "member"]
+    adult_allowed: bool = False  # the admin switched adult content on for this account
+    adult_content: bool = False  # ... and adult content is switched on globally: 18+ engines are usable
 
 
 class LoginIn(BaseModel):
@@ -118,6 +120,7 @@ class JobOut(BaseModel):
     error: str | None
     machine: str | None = None
     instance_id: uuid.UUID | None = None
+    adult: bool = False
     seed: int | None = None
     created_at: datetime
     finished_at: datetime | None

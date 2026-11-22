@@ -30,6 +30,8 @@ type or datacenter.
 | **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** + Lightx2v 4-step | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
 | **Video · Budget** (Auto for Draft) | **Wan 2.2 TI2V-5B** | 720p on the cheapest GPU | Apache-2.0 |
 | **Music · Song** | **ACE-Step 1.5** (turbo) | Full songs with vocals/lyrics or instrumentals in seconds; tiny VRAM | MIT |
+| **Image · Unrestricted (18+)** | **Chroma1-HD** 8.9B (FLUX.1 [schnell] based) | Trained without content filtering; realistic and illustrated; fits 20 GB in fp8 | Apache-2.0 |
+| **Video · Animate (18+)** | **Wan 2.2 A14B** image-to-video + a community adult add-on | Animates a picture made here; the add-on is the most-used general one for Wan 2.2 | Wan: Apache-2.0; add-on: no license stated, personal use only |
 
 **Rule of thumb:**
 
@@ -50,6 +52,25 @@ with the right model loaded nearly always wins.
   - **Qwen-Image-2.1**: research license, currently the top open-weight leaderboard score.
   - **H3-Image**
   - **ACE-Step 1.5 XL-turbo**
+
+## Adult content (18+)
+
+Off by default. Two switches are both needed, admins included: **Settings → Adult content** and
+**18+** per person under **People**.
+
+- **Who sees what.** Only those people see the 18+ engines and anything made with them (or made
+  from such a picture with a normal engine). For everyone else, adult creations don't exist: they
+  are not in the gallery or lists, and their pages and files answer "not found". Switching adult
+  content off hides them from everyone.
+- **Never real people.** The 18+ engines only start from pictures made here from a text
+  description: never uploaded photos, nor edits of them.
+- **Never minors.** Descriptions for adult creations are checked for words and ages that point at
+  minors (English, Dutch and a few other languages) and refused. Every adult engine also adds
+  "child, minor, teen, childlike, young-looking" to what it avoids. The check is deliberately broad:
+  rewording a refused description is easy, a wrong creation can't be undone.
+- **Auto never picks** an 18+ engine; you choose it under *More options → Engine*. To animate a
+  picture, open it in the gallery and use *Animate this*: the 18+ animation engine is preselected
+  for 18+ pictures.
 
 ## Caveats
 

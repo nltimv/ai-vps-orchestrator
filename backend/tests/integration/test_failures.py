@@ -238,3 +238,12 @@ async def test_illegal_transition_raises(env):
         async with h.ctx.sessionmaker() as s:
             with pytest.raises(IllegalTransition):
                 await transition_instance(s, uuid.uuid4(), "destroyed", "ready")
+
+
+async def test_estimate_when_no_machine_fits_says_so(env):
+    """Regression: this path read a database row after rolling back and crashed with a 500."""
+    async with Harness(env, settings={"max_price_hourly": 0.01}) as h:
+        await h.setup_admin()
+        r = await h.client.post("/api/v1/estimate", json=IMG)
+        assert r.status_code == 200, r.text
+        assert r.json()["machine"] is None and "available" in r.json()["message"]

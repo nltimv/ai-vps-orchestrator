@@ -21,6 +21,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
@@ -55,6 +56,8 @@ class User(Base):
     password_hash: Mapped[str | None] = mapped_column(String(255))  # None for SSO-only accounts
     role: Mapped[str] = mapped_column(String(16), default="member")  # admin | member
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # may see and make adult content (also needs the global setting); see aivo/safety.py
+    adult_allowed: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     last_login_at: Mapped[datetime | None]
 
@@ -230,6 +233,8 @@ class Job(Base):
     avoid_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     lyrics_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     friendly_params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
+    # adult content: only visible to accounts allowed to see it (aivo/safety.py)
+    adult: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())
     resolved: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
     input_asset_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(UUID(as_uuid=True)), default=list)
     parent_job_id: Mapped[uuid.UUID | None]
