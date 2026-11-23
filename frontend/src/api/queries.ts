@@ -88,6 +88,8 @@ export function useSaveSettings() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["settings"] });
       qc.invalidateQueries({ queryKey: ["catalog"] });
+      // adult content on/off changes what this account may see
+      for (const key of ["me", "gallery", "jobs"]) qc.invalidateQueries({ queryKey: [key] });
     },
   });
 }

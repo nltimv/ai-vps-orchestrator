@@ -16,6 +16,8 @@ export interface User {
   email: string;
   display_name: string;
   role: "admin" | "member";
+  adult_allowed?: boolean;
+  adult_content?: boolean;
 }
 
 export interface License {
@@ -39,6 +41,7 @@ export interface CatalogModel {
   max_count: number;
   min_vram_gb: number;
   tags: string[];
+  adult?: boolean;
 }
 
 export interface Catalog {
@@ -139,6 +142,7 @@ export interface Job {
   error: string | null;
   machine: string | null;
   instance_id?: string | null;
+  adult?: boolean;
   seed: number | null;
   created_at: string;
   finished_at: string | null;
@@ -261,6 +265,7 @@ export interface RuntimeSettings {
   boot_failures_before_pause: number;
   boot_health_max_s: number;
   debug_ssh_cidrs: string[];
+  adult_content_enabled: boolean;
   [k: string]: unknown;
 }
 
@@ -276,7 +281,17 @@ export interface SettingsResponse {
 export interface CacheStatus {
   resources: { id: string; kind: string; region: string | null; status: string; size_gb: number | null; monthly_cost_usd: number; contents: number; in_use: boolean; created_at: string }[];
   mirror: { configured: boolean; stored_gb: number; monthly_cost_usd: number; models: Record<string, { status: string; gb: number }> };
-  runs: { id: string; kind: string; state: string; step: string | null; started_at: string; finished_at: string | null }[];
+  runs: {
+    id: string;
+    kind: string;
+    state: string;
+    step: string | null;
+    stage?: string | null;
+    error?: string | null;
+    log_tail?: string[] | null;
+    started_at: string;
+    finished_at: string | null;
+  }[];
   monthly_total_usd: number;
   bake_supported: boolean;
 }

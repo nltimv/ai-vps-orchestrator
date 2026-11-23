@@ -80,6 +80,11 @@ NetworkPolicies. See [`values.yaml`](deploy/helm/ai-vps-orchestrator/values.yaml
 | Video · Cinematic | Wan 2.2 A14B + 4-step speed-up | Apache-2.0 | 48 GB (H100 for speed) |
 | Video · Budget | Wan 2.2 TI2V-5B | Apache-2.0 | 20 GB |
 | Music · Song | ACE-Step 1.5 | MIT | 20 GB |
+| Image · Unrestricted (18+) | Chroma1-HD | Apache-2.0 | 20 GB |
+| Video · Animate (18+) | Wan 2.2 A14B + community adult add-on | add-on: no license stated | 48 GB |
+
+The two 18+ engines are off until an admin switches adult content on for specific people; see
+[docs/models.md](docs/models.md#adult-content-18) for the rules (never minors, never uploaded photos).
 
 [docs/models.md](docs/models.md) explains the choices, the hardware tiers, what was left out
 and how to add a model.

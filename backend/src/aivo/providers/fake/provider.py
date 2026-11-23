@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import importlib.util
+import json
 import shutil
 import socket
 import tempfile
@@ -100,6 +101,7 @@ class FakeProvider:
     job_seconds: float = 1.0
     slow_step_s: float = 2.0  # per start-up step with the boot_slow_progress chaos
     bake_seconds: float | None = None  # how long preparing a machine image takes (default: boot_seconds)
+    bake_chaos: str | None = None  # "engine_check_fails": the bake machine reports that check failing
     scratch_root: Path | None = None
     name: str = "fake"
     chaos: dict[str, list[str]] = field(default_factory=dict)
@@ -319,27 +321,59 @@ class FakeProvider:
     # -- prepared-image primitives (bake) ----------------------------------------------
 
     async def create_bake_instance(self, offer: GpuOffer, user_data: str, tags: list[str]) -> ProviderInstance:
+        """Like bake.sh: the real status server reports each step, then the machine powers off."""
+        import base64
+
         self._seq += 1
         pid = str(100000 + self._seq)
+        doc = yaml.safe_load(user_data.split("\n", 1)[1])
+        boot = json.loads(base64.b64decode(doc["write_files"][0]["content"]))
+        assert self.scratch_root is not None
+        root = self.scratch_root / f"bake-{pid}"
+        root.mkdir(parents=True, exist_ok=True)
+        status_file, setup_log = root / "status.json", root / "bake.log"
+        bs = boot_status_module()
+        bs.write_status(str(status_file), stage="starting", failed=False, error=None)
+        srv = bs.make_server(boot, host="127.0.0.1", port=0, status_path=str(status_file), log_path=str(setup_log))
+        th = threading.Thread(target=srv.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+        th.start()
         pi = ProviderInstance(
             provider_id=pid,
             name=f"aivo-bake-{pid}",
             status="active",
-            public_ipv4="127.0.0.2",
+            public_ipv4="127.0.0.1",
             tags=tags,
             created_at=datetime.now(UTC),
             size_slug=offer.size_slug,
             region=offer.region,
+            port=srv.server_address[1],
         )
-        self.machines[pid] = FakeMachine(pi=pi, spec=None)  # type: ignore[arg-type]
+        m = FakeMachine(pi=pi, spec=None, root=root, status_server=srv, status_thread=th)  # type: ignore[arg-type]
+        self.machines[pid] = m
+        total = self.bake_seconds if self.bake_seconds is not None else self.boot_seconds
+        chaos = self.bake_chaos
 
-        async def _finish() -> None:
-            await asyncio.sleep(self.bake_seconds if self.bake_seconds is not None else self.boot_seconds)
+        async def _work() -> None:
+            steps = ["checking_gpu", "installing_runtime", "downloading_software", "checking_engine"]
+            for name in steps:
+                with setup_log.open("a") as fh:
+                    fh.write(f"[aivo] == step: {name}\n")
+                bs.write_status(str(status_file), stage=name)
+                await asyncio.sleep(total / (len(steps) + 1))
+                if name == "checking_engine" and chaos == "engine_check_fails":
+                    reason = "The worker software can't use the GPU: AssertionError: PyTorch cannot see the GPU"
+                    with setup_log.open("a") as fh:
+                        fh.write(f"AssertionError: PyTorch cannot see the GPU\n[aivo] FAILED: {reason}\n")
+                    bs.write_status(str(status_file), failed=True, error=reason)
+                    return  # never powers off, like the real script
+            bs.write_status(str(status_file), stage="cleaning_up")
+            await asyncio.sleep(total / (len(steps) + 1))
+            await self._stop_status_server(m)
             pi.status = "off"
 
-        self._bg.add(t := asyncio.create_task(_finish()))
+        self._bg.add(t := asyncio.create_task(_work()))
         t.add_done_callback(self._bg.discard)
-        return pi
+        return ProviderInstance(**{**pi.__dict__, "tags": list(pi.tags)})
 
     async def snapshot(self, provider_id: str, name: str) -> int:
         self.snapshots[name] = {

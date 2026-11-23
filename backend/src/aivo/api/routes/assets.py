@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from aivo.api.deps import current_user, get_app, get_session
 from aivo.api.schemas import AssetOut
 from aivo.context import AppContext
-from aivo.db.models import Asset, User
+from aivo.db.models import Asset, Job, User
+from aivo.safety import can_see
 from aivo.services.jobs import asset_out
 
 router = APIRouter(tags=["assets"])
@@ -99,13 +100,17 @@ async def get_asset(
     asset_id: uuid.UUID,
     request: Request,
     download: bool = False,
-    _: User = Depends(current_user),
+    user: User = Depends(current_user),
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> Response:
     a = (await s.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
     if a is None:
         raise HTTPException(404, "Not found")
+    if a.job_id is not None:
+        job = (await s.execute(select(Job).where(Job.id == a.job_id))).scalar_one_or_none()
+        if job is not None and not can_see(job, user, await app.runtime(s)):
+            raise HTTPException(404, "Not found")
     size = a.plaintext_size
     headers = {"accept-ranges": "bytes", "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff"}
     if download:

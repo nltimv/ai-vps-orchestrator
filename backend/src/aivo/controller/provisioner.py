@@ -60,6 +60,9 @@ BOOT_STAGES = {
     "installing_runtime": "installing the container runtime",
     "downloading_software": "downloading the worker software",
     "starting_engine": "starting the AI engine",
+    # preparing a machine image (bake)
+    "checking_engine": "checking the worker software can use the GPU",
+    "cleaning_up": "cleaning up for the snapshot",
 }
 
 

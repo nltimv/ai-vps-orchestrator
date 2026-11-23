@@ -35,7 +35,10 @@ export function GalleryPage() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
         {items.map((j) => (
           <Link key={j.id} to={`/item/${j.id}`} className="group panel overflow-hidden rounded-xl transition-transform hover:-translate-y-0.5">
-            <Thumb job={j} />
+            <div className="relative">
+              <Thumb job={j} />
+              {j.adult && <span className="absolute left-2 top-2 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-semibold text-white">18+</span>}
+            </div>
             <div className="p-3">
               <div className="line-clamp-2 text-sm">{j.prompt}</div>
               <div className="mt-1 text-xs text-muted">{j.user_name} · {ago(j.created_at)}</div>

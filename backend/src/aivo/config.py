@@ -168,6 +168,8 @@ class RuntimeSettings(BaseModel):
     debug_ssh_cidrs: list[str] = Field(default_factory=list)  # opens SSH (port 22) to these addresses
     capacity_cooldown_s: int = 600
     per_job_confirm_usd: float = 1.0
+    # Adult (18+) engines and creations. Also needs the per-account switch (Settings -> People).
+    adult_content_enabled: bool = False
 
 
 @lru_cache

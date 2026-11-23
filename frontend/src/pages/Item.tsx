@@ -55,7 +55,7 @@ export function ItemPage() {
             </div>
           )}
           <dl className="grid grid-cols-2 gap-y-2 text-sm">
-            <dt className="text-muted">Engine</dt><dd>{j.model_name}</dd>
+            <dt className="text-muted">Engine</dt><dd className="flex items-center gap-1">{j.model_name}{j.adult && <Badge tone="bad" title="For adults only">18+</Badge>}</dd>
             <dt className="text-muted">Quality</dt><dd className="capitalize">{String(j.params.quality ?? "standard")}</dd>
             {out?.width && <><dt className="text-muted">Size</dt><dd>{out.width} × {out.height}</dd></>}
             {out?.duration_s && <><dt className="text-muted">Length</dt><dd>{duration(out.duration_s)}</dd></>}
@@ -76,7 +76,8 @@ export function ItemPage() {
             {j.seed !== null && <Button size="sm" onClick={() => remix({ seed: j.seed })}><Copy className="size-4" /> Keep this look</Button>}
             {out && j.kind === "image" && (
               <>
-                <Button size="sm" onClick={() => nav("/", { state: { kind: "video", prompt: "", reference: out } satisfies CreatePrefill })}>
+                <Button size="sm" onClick={() => nav("/", { state: { kind: "video", prompt: "", reference: out,
+                  ...(j.adult && j.mode === "t2i" ? { model_id: "wan22-i2v-adult" } : {}) } satisfies CreatePrefill })}>
                   <Clapperboard className="size-4" /> Animate this
                 </Button>
                 <Button size="sm" onClick={() => nav("/", { state: { kind: "image", prompt: "", reference: out } satisfies CreatePrefill })}>

@@ -13,6 +13,7 @@ from aivo.auth.passwords import hash_password, needs_rehash, verify_password
 from aivo.context import AppContext
 from aivo.db.models import AuditLog, Invite, User, UserIdentity
 from aivo.db.models import Session as DbSession
+from aivo.safety import adult_ok
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 admin_router = APIRouter(prefix="/admin/users", tags=["admin"])
@@ -20,8 +21,15 @@ admin_router = APIRouter(prefix="/admin/users", tags=["admin"])
 _DUMMY_HASH = hash_password("timing-equaliser-not-a-real-password")
 
 
-def _user_out(u: User) -> UserOut:
-    return UserOut(id=u.id, email=u.email, display_name=u.display_name, role=u.role)  # type: ignore[arg-type]
+def _user_out(u: User, adult_content: bool = False) -> UserOut:
+    return UserOut(
+        id=u.id,
+        email=u.email,
+        display_name=u.display_name,
+        role=u.role,  # type: ignore[arg-type]
+        adult_allowed=bool(u.adult_allowed),
+        adult_content=adult_content,
+    )
 
 
 async def _start_session(app: AppContext, s: AsyncSession, user: User, request: Request, response: Response) -> None:
@@ -125,8 +133,8 @@ async def logout(request: Request, response: Response, s: AsyncSession = Depends
 
 
 @router.get("/me")
-async def me(user: User = Depends(current_user)) -> UserOut:
-    return _user_out(user)
+async def me(user: User = Depends(current_user), app: AppContext = Depends(get_app)) -> UserOut:
+    return _user_out(user, adult_ok(user, await app.runtime()))
 
 
 @router.post("/invites")
@@ -211,6 +219,8 @@ async def update_user(
         u.is_active = bool(body["is_active"])
     if body.get("role") in ("admin", "member"):
         u.role = body["role"]
+    if "adult_allowed" in body:
+        u.adult_allowed = bool(body["adult_allowed"])
     s.add(AuditLog(user_id=admin.id, action="user.update", target=str(u.id), detail=body))
     await s.commit()
     return {"ok": True}

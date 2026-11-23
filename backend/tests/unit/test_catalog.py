@@ -102,3 +102,40 @@ def test_download_errors_say_what_to_do():
     assert "refused" in download_error([moved], files) and "AIVO_HF_TOKEN" not in download_error([moved], files)
     other = FileState(dest="vae/flux2-vae.safetensors", state="failed", error="size mismatch")
     assert download_error([other], files).startswith("The AI model's files couldn't be downloaded")
+
+
+def test_minor_words_and_ages_are_caught_without_flagging_adults():
+    from aivo.safety import minors_mentioned
+
+    for text in (
+        "a teenager",
+        "Teen girl",
+        "a 17 year old",
+        "17yo",
+        "aged 15",
+        "schoolgirl uniform",
+        "little girl",
+        "een meisje",
+        "minderjarige",
+        "loli",
+        "a 16-year-old",
+    ):
+        assert minors_mentioned(text), text
+    for text in (
+        "a kind woman in her thirties",
+        "a 25 year old woman",
+        "18 years old",
+        "babydoll lingerie",
+        "a teacher in a classroom",
+        "adult couple",
+        "steenbok in the desert",
+        "kitten",
+    ):
+        assert minors_mentioned(text) is None, text
+
+
+def test_adult_engines_are_never_picked_automatically():
+    for kind, modes in CAT.routing.items():
+        for qualities in modes.values():
+            for ids in qualities.values():
+                assert not any(CAT.get(i).manifest.adult for i in ids), (kind, ids)

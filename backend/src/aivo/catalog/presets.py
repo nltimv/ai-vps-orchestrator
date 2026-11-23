@@ -147,6 +147,8 @@ def workflow_params(
     mf = pl.model.manifest
     q = mf.quality[pl.quality]
     prompt = p.prompt.strip()
+    if mf.prompt_prefix:
+        prompt = f"{mf.prompt_prefix}, {prompt}"
     if p.style and p.style in catalog.styles:
         suffix = catalog.styles[p.style].suffix_for(mf.family)
         if suffix:

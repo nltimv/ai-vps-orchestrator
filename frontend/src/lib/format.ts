@@ -60,6 +60,18 @@ const MACHINE_STATES: Record<string, string> = {
 };
 export const machineStateLabel = (s: string) => MACHINE_STATES[s] ?? s;
 
+const SETUP_STEPS: Record<string, string> = {
+  starting: "starting up",
+  preparing_disks: "preparing disks",
+  checking_gpu: "checking the GPU",
+  installing_runtime: "installing the container runtime",
+  downloading_software: "downloading the worker software",
+  checking_engine: "checking the worker software can use the GPU",
+  cleaning_up: "cleaning up",
+  starting_engine: "starting the AI engine",
+};
+export const setupStepLabel = (s: string) => SETUP_STEPS[s] ?? s.replace(/_/g, " ");
+
 export const isActive = (state: string) => !["succeeded", "failed", "cancelled"].includes(state);
 
 export function newIdempotencyKey(): string {

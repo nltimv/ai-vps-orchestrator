@@ -8,7 +8,7 @@ import type { RuntimeSettings } from "@/api/types";
 import { LicenseBadge } from "@/components/LicenseBadge";
 import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, ErrorNote, Field, Input, Label, PageHeader, Toggle } from "@/components/ui";
-import { ago, cn, money } from "@/lib/format";
+import { ago, cn, money, setupStepLabel } from "@/lib/format";
 
 export function SettingsPage() {
   const s = useSettings();
@@ -87,6 +87,17 @@ export function SettingsPage() {
             <p className="mt-2 text-xs text-amber-500">Needs AIVO_DO_WATCHDOG_TOKEN (a token that may only delete machines; use a dedicated cloud team).</p>
           )}
         </div>
+      </Section>
+
+      <Section title="Adult content (18+)" desc="Engines that make nudity and sexual content, for adults only.">
+        <Toggle checked={draft.adult_content_enabled} onChange={(v) => set("adult_content_enabled", v)}
+          label="Allow adult content for the people switched on below" />
+        <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-muted">
+          <li>Only people with "18+" switched on under People see the adult engines and anything made with them. Admins too.</li>
+          <li>Everyone else never sees adult creations: not in the gallery, not in lists, not via a link.</li>
+          <li>Adult engines only start from pictures made here from a text description, never from uploaded photos.</li>
+          <li>Descriptions that could involve minors are always refused.</li>
+        </ul>
       </Section>
 
       <Section title="Troubleshooting" desc="When machines don't start. The machine log (Machines → Show log) shows each start-up step.">
@@ -232,7 +243,20 @@ function CacheSection({ draft, set, spaces, regions }: {
                 <Badge tone={r.status === "ready" ? "good" : "neutral"}>{r.status}</Badge> · {money(r.monthly_cost_usd, 2)}/month</li>
             ))}
             {cache.data.runs.slice(0, 3).map((r) => (
-              <li key={r.id}>{r.kind} {r.state} ({r.step}) · {ago(r.started_at)}</li>
+              <li key={r.id}>
+                {r.kind === "bake" ? "Preparing the image" : r.kind} ·{" "}
+                <Badge tone={r.state === "succeeded" ? "good" : r.state === "failed" ? "bad" : "neutral"}>
+                  {r.state === "running" && r.stage ? setupStepLabel(r.stage) : r.state}
+                </Badge>{" "}
+                · {ago(r.started_at)}
+                {r.state === "failed" && r.error && <div className="mt-1 text-red-500">{r.error}</div>}
+                {r.log_tail && r.log_tail.length > 0 && (
+                  <details className="mt-1">
+                    <summary className="cursor-pointer">Last lines from the machine</summary>
+                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded panel-2 p-2 font-mono text-[11px]">{r.log_tail.join("\n")}</pre>
+                  </details>
+                )}
+              </li>
             ))}
           </ul>
         </div>
@@ -270,10 +294,22 @@ function Users() {
           <div key={u.id} className="flex items-center justify-between gap-2 py-2 text-sm">
             <span>{u.display_name} <span className="text-muted">· {u.email}</span> {u.role === "admin" && <Badge tone="brand">admin</Badge>}{" "}
               {u.sso && <Badge tone="neutral">single sign-on</Badge>}
-              {!u.is_active && <Badge tone="bad">disabled</Badge>}</span>
-            <Button size="sm" variant="ghost" onClick={async () => { await patch(`/admin/users/${u.id}`, { is_active: !u.is_active }); qc.invalidateQueries({ queryKey: ["users"] }); }}>
-              {u.is_active ? "Disable" : "Enable"}
-            </Button>
+              {!u.is_active && <Badge tone="bad">disabled</Badge>}
+              {u.adult_allowed && <Badge tone="bad" title="May see and make adult content (when allowed above)">18+</Badge>}</span>
+            <span className="flex gap-1">
+              <Button size="sm" variant="ghost" aria-label={`${u.adult_allowed ? "Switch off" : "Switch on"} 18+ for ${u.display_name}`}
+                onClick={async () => {
+                  await patch(`/admin/users/${u.id}`, { adult_allowed: !u.adult_allowed });
+                  qc.invalidateQueries({ queryKey: ["users"] });
+                  qc.invalidateQueries({ queryKey: ["me"] });
+                  qc.invalidateQueries({ queryKey: ["catalog"] });
+                }}>
+                {u.adult_allowed ? "18+ off" : "18+ on"}
+              </Button>
+              <Button size="sm" variant="ghost" onClick={async () => { await patch(`/admin/users/${u.id}`, { is_active: !u.is_active }); qc.invalidateQueries({ queryKey: ["users"] }); }}>
+                {u.is_active ? "Disable" : "Enable"}
+              </Button>
+            </span>
           </div>
         ))}
       </div>

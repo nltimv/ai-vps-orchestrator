@@ -24,6 +24,7 @@ from aivo.events.bus import emit
 from aivo.placement.request import build_request
 from aivo.placement.scorer import Candidate, rank
 from aivo.providers.regions import region_meta
+from aivo.safety import adult_rules
 
 
 def asset_out(a: Asset, thumb: Asset | None = None) -> AssetOut:
@@ -97,6 +98,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         error=job.error_message,
         machine=machine,
         instance_id=job.instance_id,
+        adult=bool(job.adult),
         seed=(job.resolved or {}).get("seed"),
         created_at=job.created_at,
         finished_at=job.finished_at,
@@ -112,12 +114,24 @@ async def estimate(
     preference: str | None,
     *,
     manual_offer_key: str | None = None,
+    user: User | None = None,
 ) -> EstimateOut:
     rs = await app.runtime(s)
     try:
         pl = plan(app.catalog, fp, app.enabled_models(rs))
     except CatalogError as e:
         raise HTTPException(422, str(e)) from e
+    if user is not None:  # same adult-content rules as creating, so the form says no right away
+        await adult_rules(
+            s,
+            user,
+            rs,
+            adult_engine=pl.model.manifest.adult,
+            prompt=fp.prompt,
+            reference_asset_id=fp.reference_asset_id,
+        )
+    elif pl.model.manifest.adult:
+        raise HTTPException(403, "Adult content isn't switched on for your account.")
     pref = preference or rs.preference_default
     req = build_request(pl, pref, hf_token=app.env.hf_token is not None)
     try:
@@ -138,6 +152,7 @@ async def estimate(
     reserved = await open_reservations(s)
     left = float(Decimal(str(rs.hard_cap_usd)) - spent - reserved)
     over_soft = float(spent + reserved) >= rs.soft_cap_usd
+    locked = period.locked  # read before the rollback, which expires loaded rows
     await s.rollback()  # ensure_period may have inserted a row; estimates are read-only
     model_name = pl.model.manifest.display_name
     if not cands:
@@ -146,7 +161,7 @@ async def estimate(
             if live_count >= rs.max_instances
             else "No suitable GPU machine is available right now."
         )
-        if period.locked:
+        if locked:
             msg = "This month's spending limit has been reached."
         return EstimateOut(
             model_id=pl.model.id,
@@ -184,6 +199,14 @@ async def create_job(
         pl = plan(app.catalog, body, app.enabled_models(rs))
     except CatalogError as e:
         raise HTTPException(422, str(e)) from e
+    adult = await adult_rules(
+        s,
+        user,
+        rs,
+        adult_engine=pl.model.manifest.adult,
+        prompt=body.prompt,
+        reference_asset_id=body.reference_asset_id,
+    )
     if body.reference_asset_id:
         ref = (
             await s.execute(select(Asset).where(Asset.id == body.reference_asset_id, Asset.deleted_at.is_(None)))
@@ -224,6 +247,7 @@ async def create_job(
         lyrics_enc=kr.seal(body.lyrics, jid.bytes),
         friendly_params=friendly,
         input_asset_ids=[body.reference_asset_id] if body.reference_asset_id else [],
+        adult=adult,
         preference=body.preference or rs.preference_default,
         placement_mode=body.placement.mode,
         manual_offer_key=body.placement.offer_key,

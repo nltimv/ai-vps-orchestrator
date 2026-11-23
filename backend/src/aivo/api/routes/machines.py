@@ -28,6 +28,7 @@ from aivo.placement.request import build_request
 from aivo.placement.scorer import rank
 from aivo.providers.base import instance_name
 from aivo.providers.regions import region_meta
+from aivo.safety import adult_ok
 from aivo.services import machine_log
 from aivo.services.jobs import machine_choice
 
@@ -244,6 +245,8 @@ async def warmup(
     rs = await app.runtime(s)
     fp = FriendlyParams(kind=body.kind, prompt="warmup", model_id=body.model_id, quality=body.quality)
     pl = plan(app.catalog, fp, app.enabled_models(rs))
+    if pl.model.manifest.adult and not adult_ok(user, rs):
+        raise HTTPException(403, "Adult content isn't switched on for your account.")
     req = build_request(pl, body.preference or rs.preference_default, hf_token=app.env.hf_token is not None)
     live_count = (
         await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))

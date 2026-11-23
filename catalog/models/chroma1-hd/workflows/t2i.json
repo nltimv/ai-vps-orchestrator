@@ -1,0 +1,19 @@
+{
+  "_comment": "Chroma1-HD text-to-image, as in the model author's ComfyUI workflow.",
+  "1": {"class_type": "UNETLoader", "inputs": {"unet_name": "$unet", "weight_dtype": "default"}},
+  "2": {"class_type": "CLIPLoader", "inputs": {"clip_name": "$te", "type": "chroma", "device": "default"}},
+  "3": {"class_type": "T5TokenizerOptions", "inputs": {"clip": ["2", 0], "min_padding": 0, "min_length": 0}},
+  "4": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 0], "text": "$prompt"}},
+  "5": {"class_type": "CLIPTextEncode", "inputs": {"clip": ["3", 0], "text": "$negative"}},
+  "6": {"class_type": "ModelSamplingAuraFlow", "inputs": {"model": ["1", 0], "shift": 1.0}},
+  "7": {"class_type": "BetaSamplingScheduler", "inputs": {"model": ["6", 0], "steps": "$steps", "alpha": 0.45, "beta": 0.45}},
+  "8": {"class_type": "CFGGuider", "inputs": {"model": ["6", 0], "positive": ["4", 0], "negative": ["5", 0], "cfg": "$cfg"}},
+  "9": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+  "10": {"class_type": "RandomNoise", "inputs": {"noise_seed": "$seed"}},
+  "11": {"class_type": "EmptySD3LatentImage", "inputs": {"width": "$width", "height": "$height", "batch_size": "$batch"}},
+  "12": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["10", 0], "guider": ["8", 0], "sampler": ["9", 0],
+         "sigmas": ["7", 0], "latent_image": ["11", 0]}},
+  "13": {"class_type": "VAELoader", "inputs": {"vae_name": "ae.safetensors"}},
+  "14": {"class_type": "VAEDecode", "inputs": {"samples": ["12", 0], "vae": ["13", 0]}},
+  "15": {"class_type": "SaveImage", "inputs": {"images": ["14", 0], "filename_prefix": "$prefix"}}
+}

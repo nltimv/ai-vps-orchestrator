@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from aivo.api.deps import current_user, get_app
 from aivo.context import AppContext
 from aivo.db.models import User
+from aivo.safety import adult_ok
 
 router = APIRouter(tags=["catalog"])
 
@@ -32,12 +33,14 @@ DURATION_LABELS = {
 
 
 @router.get("/catalog")
-async def catalog(_: User = Depends(current_user), app: AppContext = Depends(get_app)) -> dict[str, Any]:
+async def catalog(user: User = Depends(current_user), app: AppContext = Depends(get_app)) -> dict[str, Any]:
     rs = await app.runtime()
     enabled = app.enabled_models(rs)
     models = []
     for m in app.catalog.models.values():
         mf = m.manifest
+        if mf.adult and not adult_ok(user, rs):
+            continue  # never shown to accounts without adult content
         durations: dict[str, float] = {}
         if mf.video:
             durations = mf.video.durations
@@ -60,6 +63,7 @@ async def catalog(_: User = Depends(current_user), app: AppContext = Depends(get
                 "max_count": mf.max_count,
                 "min_vram_gb": min(v.min_vram_gb for v in mf.variants),
                 "tags": mf.tags,
+                "adult": mf.adult,
             }
         )
     return {

@@ -1,0 +1,99 @@
+id: wan22-i2v-adult
+kind: video
+adult: true
+display_name: "Video · Animate (18+)"
+tagline: "Brings a picture you made here to life, without content filtering"
+description: >
+  Wan 2.2 A14B image-to-video with a community add-on trained on adult content. It starts from a
+  picture made in aivo from a text description, never from an uploaded photo. Only shown to
+  accounts with adult content switched on.
+family: cinematic
+license:
+  name: "Apache-2.0 (Wan 2.2); adult add-on: no license stated"
+  url: https://huggingface.co/lopi999/Wan2.2-I2V_General-NSFW-LoRA
+  commercial: false
+  summary: The adult add-on is a community model without a stated license, so personal use only.
+supports: {avoid: true, seed: true, sound: false}
+modes:
+  - {mode: i2v, workflow: workflows/i2v.json}
+variants:
+  - id: fp8
+    precision: fp8
+    min_vram_gb: 40
+    recommended_vram_gb: 48
+    min_ram_gb: 64
+    quality_rank: 2
+    files: [i2v_high_fp8, i2v_low_fp8, i2v_lora_high, i2v_lora_low, adult_high, adult_low, te, vae]
+    params:
+      i2v_high: wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors
+      i2v_low: wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors
+  - id: fp16
+    precision: fp16
+    min_vram_gb: 70
+    recommended_vram_gb: 80
+    min_ram_gb: 128
+    quality_rank: 3
+    files: [i2v_high_fp16, i2v_low_fp16, i2v_lora_high, i2v_lora_low, adult_high, adult_low, te, vae]
+    params:
+      i2v_high: wan2.2_i2v_high_noise_14B_fp16.safetensors
+      i2v_low: wan2.2_i2v_low_noise_14B_fp16.safetensors
+files:
+  # the same Wan 2.2 files as "Video · Cinematic" (shared on the machine), plus the adult add-on
+  - {id: i2v_high_fp8, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors,
+     dest: diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors, bytes: 14300000000}
+  - {id: i2v_low_fp8, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors,
+     dest: diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors, bytes: 14300000000}
+  - {id: i2v_high_fp16, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors,
+     dest: diffusion_models/wan2.2_i2v_high_noise_14B_fp16.safetensors, bytes: 28600000000}
+  - {id: i2v_low_fp16, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors,
+     dest: diffusion_models/wan2.2_i2v_low_noise_14B_fp16.safetensors, bytes: 28600000000}
+  - {id: i2v_lora_high, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors,
+     dest: loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors, bytes: 1230000000}
+  - {id: i2v_lora_low, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors,
+     dest: loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors, bytes: 1230000000}
+  - {id: adult_high, repo: lopi999/Wan2.2-I2V_General-NSFW-LoRA, path: NSFW-22-H-e8.safetensors,
+     dest: loras/wan2.2_i2v_general_nsfw_high_e8.safetensors, bytes: 613516752}
+  - {id: adult_low, repo: lopi999/Wan2.2-I2V_General-NSFW-LoRA, path: NSFW-22-L-e8.safetensors,
+     dest: loras/wan2.2_i2v_general_nsfw_low_e8.safetensors, bytes: 613516752}
+  - {id: te, repo: Comfy-Org/Wan_2.1_ComfyUI_repackaged, path: split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors,
+     dest: text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors, bytes: 6740000000}
+  - {id: vae, repo: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, path: split_files/vae/wan_2.1_vae.safetensors,
+     dest: vae/wan_2.1_vae.safetensors, bytes: 254000000}
+quality:
+  draft:
+    label: Draft
+    params: {steps: 4, split_step: 2, cfg: 1.0, lora_strength: 1.0, adult_strength: 1.0}
+    sizes: {square: [640, 640], portrait: [480, 832], landscape: [832, 480], wide: [832, 480]}
+  standard:
+    label: Standard
+    params: {steps: 4, split_step: 2, cfg: 1.0, lora_strength: 1.0, adult_strength: 1.0}
+    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+  best:
+    label: Best
+    params: {steps: 20, split_step: 10, cfg: 3.5, lora_strength: 0.0, adult_strength: 1.0}
+    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+video:
+  fps: 16
+  frame_multiple: 4
+  frame_offset: 1
+  durations: {short: 5, medium: 8}
+  max_seconds: 8
+bench:
+  unit: video_second
+  seconds: {l40s: 22, rtx6000ada: 22, h100: 9, h200: 8.5}
+  quality_factor: {draft: 0.35, standard: 1.0, best: 5.0}
+  model_init_s: 60
+# the add-on's trigger word
+prompt_prefix: nsfwsks
+defaults:
+  shift: 5.0
+  negative: >-
+    blurry, low quality, static, distorted, jpeg artifacts, watermark, text, ugly,
+    child, minor, teen, childlike, young-looking
+max_count: 1
+output_mb: 8
+tags: [video, adult]
+notes: >
+  "Video · Cinematic" (wan22-a14b) image-to-video graph with the adult add-on (HF mirror of
+  civitai.com/models/1307155, trigger word nsfwsks) chained after the Lightx2v speed-up add-on on
+  both the high- and low-noise expert.

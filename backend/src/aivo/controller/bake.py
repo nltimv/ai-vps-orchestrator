@@ -6,64 +6,47 @@ container runtime, pre-pulls the worker image, cleans machine identity, powers
 off, snapshots, transfers the snapshot to the GPU regions in the cache policy,
 and destroys the bake machine. Persisted step by step in ``background_runs`` so
 it resumes after a restart. Contains no model weights and no user content.
+
+While the machine works, the start-up status server (templates/boot_status.py) reports its step
+and log over pinned TLS, so a failure ends the bake at once with the machine's own reason.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
+import secrets
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from aivo.context import AppContext
 from aivo.controller.common import get_offers, utcnow
 from aivo.db.models import BackgroundRun, CacheResource
 from aivo.events.bus import emit
 from aivo.providers.base import deployment_tag
+from aivo.worker_client.client import WorkerClient
+from aivo.worker_client.tls import make_worker_credentials
+from aivo_protocol.worker_api import BootStatus, WorkerBootstrap
 
 log = logging.getLogger(__name__)
 
-BAKE_SCRIPT = r"""#!/bin/bash
-set -euxo pipefail
-exec >>/var/log/aivo-bake.log 2>&1
-IMAGE="__IMAGE__"
-# a GPU machine without a driver would produce a prepared image that can never run the AI engine
-if ! command -v nvidia-smi >/dev/null 2>&1 && grep -qsx 0x10de /sys/bus/pci/devices/*/vendor; then
-  echo "[aivo] FAILED: NVIDIA GPU without a driver: set AIVO_DO_BASE_IMAGE to a GPU image"; exit 1
-fi
-if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sh; fi
-if ! command -v nvidia-ctk >/dev/null 2>&1 && command -v nvidia-smi >/dev/null 2>&1; then
-  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
-  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
-    | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
-    > /etc/apt/sources.list.d/nvidia-container-toolkit.list
-  apt-get update -q && DEBIAN_FRONTEND=noninteractive apt-get install -y -q nvidia-container-toolkit
-  nvidia-ctk runtime configure --runtime=docker
-fi
-systemctl enable docker
-systemctl restart docker
-docker pull "$IMAGE"
-# self-test on GPU bakes
-if command -v nvidia-smi >/dev/null 2>&1; then docker run --rm --gpus all "$IMAGE" python -c "import torch; assert torch.cuda.is_available()"; fi
-apt-get clean; rm -rf /var/lib/apt/lists/* /var/log/*.gz /tmp/*
-cloud-init clean --logs --machine-id
-rm -f /etc/ssh/ssh_host_* /root/.ssh/authorized_keys
-sync
-poweroff
-"""
+WATCH_TIMEOUT_S = 10  # per status probe of the bake machine
+LOG_TAIL_LINES = 40
 
 
-def bake_user_data(image: str) -> str:
-    import base64
+def bake_user_data(boot: WorkerBootstrap) -> str:
+    from aivo.providers.digitalocean.cloudinit import render_bake_user_data
 
-    script = BAKE_SCRIPT.replace("__IMAGE__", image)
-    return (
-        "#cloud-config\nwrite_files:\n- path: /opt/aivo/bake.sh\n  permissions: '0755'\n  encoding: b64\n"
-        f"  content: {base64.b64encode(script.encode()).decode()}\nruncmd:\n- [bash, /opt/aivo/bake.sh]\n"
-    )
+    return render_bake_user_data(boot)
+
+
+class BakeFailed(RuntimeError):
+    """The bake machine reported a failure."""
 
 
 class Baker:
@@ -107,11 +90,10 @@ class Baker:
 
     async def _finish(self, run_id: uuid.UUID, state: str, error: str | None = None) -> None:
         async with self.app.sessionmaker() as s, s.begin():
-            await s.execute(
-                update(BackgroundRun)
-                .where(BackgroundRun.id == run_id)
-                .values(state=state, finished_at=utcnow(), step=error or state)
-            )
+            run = (await s.execute(select(BackgroundRun).where(BackgroundRun.id == run_id))).scalar_one()
+            run.state, run.finished_at, run.step = state, utcnow(), state
+            if error:
+                run.data = {**run.data, "error": error[:1000]}
             await emit(s, scope="system", type=f"bake.{state}", ref_id=run_id, payload={"error": error})
 
     async def run(self, run_id: uuid.UUID) -> None:
@@ -120,9 +102,12 @@ class Baker:
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            log.exception("bake %s failed", run_id)
+            if isinstance(e, BakeFailed):
+                log.warning("bake %s failed: %s", run_id, e)
+            else:
+                log.exception("bake %s failed", run_id)
             await self._cleanup(run_id)
-            await self._finish(run_id, "failed", str(e)[:300])
+            await self._finish(run_id, "failed", str(e))
 
     async def _run(self, run_id: uuid.UUID) -> None:
         if not self.supported():
@@ -144,11 +129,29 @@ class Baker:
                 raise RuntimeError("no GPU machine available to prepare the image on")
             # smallest disk first (snapshot min_disk_size), then cheapest
             offers.sort(key=lambda o: (o.disk_gb, o.price_hourly))
+            await self._ensure_firewall(rs)
+            # the machine's own certificate and token: its status server answers only us
+            creds = make_worker_credentials(run_id)
+            token = secrets.token_urlsafe(32)
+            boot = WorkerBootstrap(
+                instance_id=str(run_id),
+                deployment_id=str(self.app.deployment_id),
+                token_sha256=hashlib.sha256(token.encode()).hexdigest(),
+                tls_cert_pem=creds.cert_pem,
+                tls_key_pem=creds.key_pem,
+                listen_port=self.app.env.worker_port,
+                worker_image=image,
+            )
+            watch = {
+                "ca_pem": creds.ca_pem,
+                "sni": creds.sni_name,
+                "token_enc": base64.b64encode(self.app.keyring.seal(token, run_id.bytes)).decode(),
+            }
             last_err = None
             for offer in offers[:6]:
                 try:
                     pi = await p.create_bake_instance(
-                        offer, bake_user_data(image), ["aivo", deployment_tag(self.app.deployment_id), "aivo-bake"]
+                        offer, bake_user_data(boot), ["aivo", deployment_tag(self.app.deployment_id), "aivo-bake"]
                     )
                     data = {
                         "droplet_id": pi.provider_id,
@@ -156,7 +159,9 @@ class Baker:
                         "disk_gb": offer.disk_gb,
                         "offer": offer.key,
                         "started": utcnow().isoformat(),
+                        **watch,
                     }
+                    log.info("bake %s: preparing the image on %s in %s", run_id, offer.size_slug, offer.region)
                     break
                 except Exception as e:
                     last_err = e
@@ -178,6 +183,8 @@ class Baker:
                     break
                 else:
                     missing = 0
+                    if pi.public_ipv4:
+                        await self._watch(run_id, data, pi.public_ipv4, pi.port or self.app.env.worker_port)
                 await asyncio.sleep(self.poll_s)
             else:
                 raise TimeoutError("bake machine did not finish in an hour")
@@ -245,6 +252,50 @@ class Baker:
         if run.step == "gc":
             await self.gc_snapshots()
         await self._finish(run_id, "succeeded")
+
+    async def _watch(self, run_id: uuid.UUID, data: dict[str, Any], ip: str, port: int) -> None:
+        """Read the bake machine's step; raise with its reason (and keep its last log lines) if it failed."""
+        if "token_enc" not in data:  # a bake started by an older version
+            return
+        token = self.app.keyring.open(base64.b64decode(data["token_enc"]), run_id.bytes)
+        if token is None:
+            return
+        try:
+            async with WorkerClient(ip, port, data["ca_pem"], data["sni"], token, timeout=WATCH_TIMEOUT_S) as c:
+                st = await c.probe()
+                if not isinstance(st, BootStatus):
+                    return
+                if st.stage != data.get("stage"):
+                    from aivo.controller.provisioner import stage_label
+
+                    data["stage"] = st.stage
+                    log.info("bake %s: %s", run_id, stage_label(st.stage))
+                    await self._note(run_id, stage=st.stage)
+                if st.failed:
+                    tail = [ln.text for ln in (await c.logs(tail=LOG_TAIL_LINES)).lines]
+                    for line in tail[-15:]:
+                        log.warning("bake %s machine log: %s", run_id, line)
+                    await self._note(run_id, log_tail=tail)
+                    raise BakeFailed(st.error or "the machine reported a problem")
+        except BakeFailed:
+            raise
+        except Exception as e:  # not answering (yet), or already powering off
+            log.debug("bake %s: status not available: %s", run_id, e)
+
+    async def _note(self, run_id: uuid.UUID, **data: Any) -> None:
+        async with self.app.sessionmaker() as s, s.begin():
+            run = (await s.execute(select(BackgroundRun).where(BackgroundRun.id == run_id))).scalar_one()
+            run.data = {**run.data, **data}
+            await emit(s, scope="system", type="bake.progress", ref_id=run_id, payload={"stage": data.get("stage")})
+
+    async def _ensure_firewall(self, rs: Any) -> None:
+        """The bake machine carries the deployment tag: make sure the deployment's firewall exists."""
+        try:
+            from aivo.controller.provisioner import Provisioner
+
+            await Provisioner(self.app)._ensure_access(rs)
+        except Exception as e:  # never block the bake on the firewall; TLS + token still protect it
+            log.warning("could not update firewall before baking: %s", e)
 
     async def _cleanup(self, run_id: uuid.UUID) -> None:
         async with self.app.sessionmaker() as s:
