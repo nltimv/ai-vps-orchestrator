@@ -103,3 +103,11 @@ jobs:
           helm template t deploy/helm/ai-vps-orchestrator --set secrets.mediaKeks=k1:AAAA --set topology=split \
             --set postgresql.enabled=false --set externalDatabase.url=postgresql+asyncpg://x@y/z > split.yaml
           ./kubeconform -strict -summary -ignore-missing-schemas combined.yaml split.yaml
+      - name: a released chart runs its own version everywhere
+        run: |
+          helm package deploy/helm/ai-vps-orchestrator --version 9.9.9 --app-version 9.9.9 -d rel
+          helm template t rel/ai-vps-orchestrator-9.9.9.tgz --set secrets.mediaKeks=k1:AAAA > rel.yaml
+          grep -q 'image: ghcr.io/nltimv/aivo-backend:9.9.9' rel.yaml
+          grep -q 'image: ghcr.io/nltimv/aivo-frontend:9.9.9' rel.yaml
+          grep -q '"ghcr.io/nltimv/aivo-worker:9.9.9"' rel.yaml
+          ! grep -E 'image: ghcr.io/nltimv/aivo-' rel.yaml | grep -v ':9.9.9$'

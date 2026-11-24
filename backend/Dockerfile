@@ -19,6 +19,10 @@ COPY --from=build /app /app
 COPY catalog /app/catalog
 ENV PATH=/app/.venv/bin:$PATH PYTHONUNBUFFERED=1 \
     AIVO_CATALOG_DIR=/app/catalog AIVO_MEDIA_DIR=/var/lib/aivo/media AIVO_SCRATCH_DIR=/dev/shm/aivo
+# Release version (<VERSION>.<build number>), set by the release workflow. GPU machines get the worker
+# image with this same tag.
+ARG AIVO_VERSION=dev
+ENV AIVO_VERSION=$AIVO_VERSION
 USER aivo
 EXPOSE 8000
 ENTRYPOINT ["tini", "--"]

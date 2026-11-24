@@ -61,12 +61,19 @@ what's different.
 
 ## Production (Kubernetes)
 
+Every merge to `main` is a release, versioned `<VERSION>.<build number>` (e.g. `0.2.57`). Its
+images and its chart get that same version. Install a specific release from the published chart:
+
 ```bash
-helm install aivo deploy/helm/ai-vps-orchestrator \
+helm install aivo oci://ghcr.io/nltimv/charts/ai-vps-orchestrator --version 0.2.57 \
   --set secrets.mediaKeks="$(uv run aivo generate-key)" \
   --set secrets.doToken=dop_v1_... \
   --set ingress.enabled=true --set ingress.host=aivo.example.com
 ```
+
+Upgrade by naming the new version. Dashboard, controller and the worker software on new GPU
+machines all move to that release, and database migrations run before the new backend starts.
+See [docs/releases.md](docs/releases.md).
 
 The default topology runs API and controller in one pod, so it works with a ReadWriteOnce
 media volume. It also includes a bundled PostgreSQL (official image), a janitor CronJob and

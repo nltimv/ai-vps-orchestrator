@@ -25,6 +25,9 @@ spec:
           containers:
             - name: janitor
               image: {{ include "aivo.backendImage" . }}
+              {{- with .Values.image.backend.pullPolicy }}
+              imagePullPolicy: {{ . }}
+              {{- end }}
               # destroy-only pass; does nothing while the controller is healthy
               command: ["aivo", "janitor"]
               env: {{- include "aivo.backendEnv" . | nindent 16 }}

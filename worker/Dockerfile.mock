@@ -5,4 +5,6 @@ COPY packages/protocol /src/protocol
 COPY worker /src/worker
 RUN pip install --no-cache-dir /src/protocol /src/worker
 ENV AIVO_WORKER_BOOTSTRAP=/etc/aivo/bootstrap.json
+ARG AIVO_VERSION=dev
+ENV AIVO_VERSION=$AIVO_VERSION
 ENTRYPOINT ["aivo-worker"]

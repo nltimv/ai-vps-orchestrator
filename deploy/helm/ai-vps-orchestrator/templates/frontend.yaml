@@ -22,7 +22,9 @@ spec:
       containers:
         - name: frontend
           image: {{ include "aivo.frontendImage" . }}
-          imagePullPolicy: {{ .Values.image.frontend.pullPolicy }}
+          {{- with .Values.image.frontend.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
           env:
             - name: AIVO_BACKEND_UPSTREAM
               value: http://{{ include "aivo.fullname" . }}-backend:8000

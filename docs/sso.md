@@ -41,7 +41,8 @@ Create an **OpenID Connect client** (also called an "application" or "relying pa
 Helm example:
 
 ```bash
-helm upgrade --install aivo deploy/helm/ai-vps-orchestrator --reuse-values \
+helm upgrade --install aivo oci://ghcr.io/nltimv/charts/ai-vps-orchestrator --version <your version> \
+  --reset-then-reuse-values \
   --set sso.enabled=true \
   --set sso.issuer=https://sso.example.com/realms/home \
   --set sso.clientId=aivo --set sso.clientSecret=... \
