@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +17,7 @@ from aivo.catalog.presets import FriendlyParams, plan
 from aivo.config import RuntimeSettings
 from aivo.context import AppContext
 from aivo.controller.budget import ensure_period, month_compute_spend, open_reservations
-from aivo.controller.common import build_context, get_offers, live_view
-from aivo.controller.scheduler import BILLING_STATES
+from aivo.controller.common import build_context, get_offers
 from aivo.db.models import Asset, Instance, Job, User
 from aivo.events.bus import emit
 from aivo.placement.request import build_request
@@ -55,7 +54,7 @@ def machine_choice(c: Candidate) -> MachineChoice:
         est_cost_usd=round(c.cost_usd, 4),
         suitability=c.suitability,
         reasons=c.reasons,
-        status="running" if "running" in c.flags else "starting" if "starting" in c.flags else "new",
+        status="running" if ("running" in c.flags or "warm" in c.flags) else "new",
         engine_version="full" if c.variant.precision in ("bf16", "fp16") else "light",
     )
 
@@ -138,14 +137,10 @@ async def estimate(
         offers = await get_offers(app)
     except Exception:
         offers = []
-    _, live = await live_view(s, app)
-    live_count = (
-        await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
-    ).scalar_one()
     now = datetime.now(UTC)
     period = await ensure_period(s, rs, now, lock=False)
-    ctx = await build_context(app, s, rs, allow_new=live_count < rs.max_instances and not period.locked)
-    cands = rank(req, offers, live, ctx)
+    ctx = await build_context(app, s, rs)
+    cands = [] if period.locked else rank(req, offers, [], ctx)
     if manual_offer_key:
         cands = [c for c in cands if c.key == manual_offer_key] + [c for c in cands if c.key != manual_offer_key]
     spent = await month_compute_spend(s, period.period)
@@ -156,11 +151,7 @@ async def estimate(
     await s.rollback()  # ensure_period may have inserted a row; estimates are read-only
     model_name = pl.model.manifest.display_name
     if not cands:
-        msg = (
-            "All machines are busy — your request will wait in line."
-            if live_count >= rs.max_instances
-            else "No suitable GPU machine is available right now."
-        )
+        msg = "No suitable GPU is available right now."
         if locked:
             msg = "This month's spending limit has been reached."
         return EstimateOut(

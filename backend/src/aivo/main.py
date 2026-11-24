@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 
 from aivo import __version__
-from aivo.api.routes import admin, assets, auth, catalog, events, health, jobs, machines, oidc, settings, spending
+from aivo.api.routes import assets, auth, catalog, events, health, jobs, machines, oidc, settings, spending, worker
 from aivo.auth.passwords import hash_password
 from aivo.catalog.loader import Catalog
 from aivo.config import EnvSettings, get_env
@@ -22,8 +22,7 @@ from aivo.context import AppContext
 from aivo.db.models import User
 from aivo.db.session import make_engine, make_sessionmaker
 from aivo.events.bus import EventBus
-from aivo.providers.base import CloudProvider
-from aivo.providers.registry import make_provider
+from aivo.providers.runpod.api import HttpRunPod, RunPodAPI
 from aivo.storage.keyring import Keyring
 from aivo.storage.media_store import FilesystemStore
 
@@ -32,7 +31,21 @@ log = logging.getLogger("aivo")
 UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
 
 
-def build_context(env: EnvSettings, provider: CloudProvider | None = None) -> AppContext:
+def make_runpod(env: EnvSettings) -> RunPodAPI:
+    if env.provider == "fake":
+        from aivo.providers.runpod.fake import FakeRunPod
+
+        return FakeRunPod(
+            boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds, chaos=list(env.fake_chaos)
+        )
+    if env.runpod_api_key is None:
+        raise ValueError("AIVO_RUNPOD_API_KEY is required (or AIVO_PROVIDER=fake for a simulated RunPod)")
+    return HttpRunPod(
+        env.runpod_api_key.get_secret_value(), api_base=env.runpod_api_base, queue_base=env.runpod_queue_base
+    )
+
+
+def build_context(env: EnvSettings, runpod: RunPodAPI | None = None) -> AppContext:
     engine = make_engine(env.database_url)
     keyring = Keyring.parse(env.media_keks.get_secret_value(), env.media_active_key_id or None)
     env.scratch_dir.mkdir(parents=True, exist_ok=True)
@@ -43,7 +56,7 @@ def build_context(env: EnvSettings, provider: CloudProvider | None = None) -> Ap
         keyring=keyring,
         store=FilesystemStore(env.media_dir, keyring),
         catalog=Catalog.load(env.catalog_dir),
-        provider=provider or make_provider(env),
+        runpod=runpod or make_runpod(env),
         bus=EventBus(env.database_url),
     )
 
@@ -80,6 +93,10 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         c = ctx or build_context(env)
         app.state.ctx = c
+        if hasattr(c.runpod, "attach"):  # the simulated RunPod's workers call this app in-process
+            import httpx
+
+            c.runpod.attach(httpx.ASGITransport(app=app))
         await c.load_deployment_id()
         await bootstrap_admin(c)
         await c.bus.start()
@@ -99,7 +116,7 @@ def create_app(
 
             wake_task = asyncio.create_task(wake_on_events())
         log.info(
-            "aivo %s started (role=%s, provider=%s, deployment=%s)", __version__, role, c.provider.name, c.deployment_id
+            "aivo %s started (role=%s, provider=%s, deployment=%s)", __version__, role, c.runpod.name, c.deployment_id
         )
         try:
             yield
@@ -110,7 +127,7 @@ def create_app(
                 await controller.stop()
             await c.bus.stop()
             with contextlib.suppress(Exception):
-                await c.provider.aclose()
+                await c.runpod.aclose()
             await c.engine.dispose()
 
     app = FastAPI(
@@ -156,7 +173,7 @@ def create_app(
         settings.router,
         events.router,
         health.router,
-        admin.router,
+        worker.router,
     ):
         app.include_router(r, prefix="/api/v1")
     return app

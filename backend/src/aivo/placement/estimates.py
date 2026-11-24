@@ -1,7 +1,7 @@
 """Time estimates: priors, replaced by measured EWMAs (``estimates`` table) over time.
 
-Keys are hierarchical so that sparse data still helps, e.g. for boot time:
-``create:snapshot:gpu-l40sx1-48gb:tor1`` -> ``create:snapshot:gpu-l40sx1-48gb`` -> ``create:snapshot`` -> prior.
+Keys are hierarchical so that sparse data still helps, e.g. for the wait until a worker has the job:
+``create:snapshot:NVIDIA L40S:eu`` -> ``create:snapshot:NVIDIA L40S`` -> ``create:snapshot`` -> prior.
 """
 
 from __future__ import annotations
@@ -9,10 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 PRIORS = {
-    "create:snapshot": 150.0,  # API create -> machine active
-    "create:base": 120.0,
-    "boot:snapshot": 40.0,  # active -> worker agent healthy
-    "boot:base": 300.0,
+    # RunPod: from submitting a job until a worker has it (queue wait + the worker's cold start)
+    "create:snapshot": 90.0,
+    "create:base": 90.0,
+    "boot:snapshot": 0.0,
+    "boot:base": 0.0,
 }
 THROUGHPUT_GBPS = {"local": 2.0, "volume": 0.25, "bucket": 0.35, "hf": 0.30}
 EWMA_ALPHA = 0.3

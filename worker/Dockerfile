@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
-# GPU worker image: CUDA + PyTorch + ComfyUI (pinned) + aivo worker agent.
-# Layers are ordered from least to most frequently changing, so a slightly stale
-# prepared machine image only has to pull the small top layers at boot.
+# GPU worker image for RunPod Serverless: CUDA + PyTorch + ComfyUI (pinned) + the aivo worker.
+# Layers are ordered from least to most frequently changing, so RunPod hosts that already have an
+# older release only pull the small top layers.
 # Build from the repository root:  docker build -f worker/Dockerfile -t aivo-worker .
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -25,15 +25,19 @@ RUN git clone --filter=blob:none "$COMFYUI_REPO" /opt/ComfyUI \
     && pip install -r /opt/ComfyUI/requirements.txt \
     && rm -rf /opt/ComfyUI/.git /opt/ComfyUI/models
 
-# 3) aivo agent (changes most often)
+# 3) RunPod's worker SDK (pulls jobs from the endpoint's queue)
+ARG RUNPOD_SDK_VERSION=2.2.1
+RUN pip install "runpod==${RUNPOD_SDK_VERSION}"
+
+# 4) aivo worker (changes most often)
 COPY packages/protocol /src/protocol
 COPY worker /src/worker
 RUN pip install /src/protocol /src/worker
 
-ENV AIVO_COMFY_DIR=/opt/ComfyUI AIVO_WORKER_BOOTSTRAP=/etc/aivo/bootstrap.json
+ENV AIVO_COMFY_DIR=/opt/ComfyUI
 # Release version, set by the release workflow (last, so a new version doesn't invalidate the big layers)
 ARG AIVO_VERSION=dev
 ENV AIVO_VERSION=$AIVO_VERSION
-EXPOSE 443
-# The agent binds the privileged TLS port inside the container; it runs ComfyUI on 127.0.0.1 only.
+# Runs as a RunPod Serverless worker: takes jobs from the queue, runs ComfyUI on 127.0.0.1 only and
+# delivers results straight to aivo. Nothing listens on a public port.
 ENTRYPOINT ["aivo-worker"]

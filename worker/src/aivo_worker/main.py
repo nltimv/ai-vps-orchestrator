@@ -1,9 +1,11 @@
-"""Entry point on a real GPU machine: ``aivo-worker`` (systemd / docker / RunPod Serverless)."""
+"""Entry point of the worker image on RunPod Serverless: ``aivo-worker``.
+
+RunPod starts this container on demand for the GPU type's queue endpoint and hands it jobs one at a time.
+The endpoint's environment holds no secrets: each job brings its own one-time ticket.
+"""
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 import os
 import shutil
@@ -11,14 +13,13 @@ import sys
 import time
 from pathlib import Path
 
-from aivo_protocol.worker_api import BOOTSTRAP_ENV, LogLine, WorkerBootstrap, decode_bootstrap_env
+from aivo_protocol.worker_api import LogLine
 from aivo_worker.logbuf import BufferHandler, LogBuffer
-from aivo_worker.server import WorkerServer, build_state
-from aivo_worker.watchdog import Watchdog
+from aivo_worker.runtime import WorkerRuntime
 
-BOOTSTRAP_PATH = Path(os.environ.get("AIVO_WORKER_BOOTSTRAP", "/etc/aivo/bootstrap.json"))
-# The machine's start-up log, mounted read-only into the container by bootstrap.sh.
-SETUP_LOG = Path(os.environ.get("AIVO_SETUP_LOG", "/var/log/aivo-bootstrap.log"))
+# A RAM-backed job directory must hold a job's inputs and outputs (a few hundred MB at most).
+MIN_RAM_JOB_DIR_BYTES = 2 * 1024**3
+NETWORK_VOLUME = Path("/runpod-volume")
 
 
 def _echo(line: LogLine) -> None:
@@ -26,22 +27,6 @@ def _echo(line: LogLine) -> None:
         return
     stamp = time.strftime("%H:%M:%S", time.localtime(line.ts))
     print(f"{stamp} [{line.source}] {line.text}", file=sys.stdout, flush=True)
-
-
-# A RAM-backed job directory must hold a job's inputs and outputs (a few hundred MB at most).
-MIN_RAM_JOB_DIR_BYTES = 2 * 1024**3
-
-
-def load_bootstrap(path: Path = BOOTSTRAP_PATH, environ: dict[str, str] | None = None) -> WorkerBootstrap:
-    """From ``/etc/aivo/bootstrap.json`` (cloud machines) or ``AIVO_BOOTSTRAP_B64`` (RunPod Serverless,
-    where the endpoint's environment is the only way in). ``PORT`` is RunPod's port for the agent."""
-    env = os.environ if environ is None else environ
-    if env.get(BOOTSTRAP_ENV):
-        boot = decode_bootstrap_env(env[BOOTSTRAP_ENV])
-        if env.get("PORT", "").isdigit():
-            boot = boot.model_copy(update={"listen_port": int(env["PORT"])})
-        return boot.model_copy(update={"job_dir": pick_job_dir(boot.job_dir)})
-    return WorkerBootstrap.model_validate(json.loads(path.read_text()))
 
 
 def pick_job_dir(preferred: str, fallback: str = "/tmp/aivo/jobs") -> str:
@@ -57,37 +42,38 @@ def pick_job_dir(preferred: str, fallback: str = "/tmp/aivo/jobs") -> str:
     return fallback
 
 
-async def amain() -> None:
+def default_models_dir() -> str:
+    """Model files outlive the worker on a network volume; otherwise they sit on the container disk."""
+    if NETWORK_VOLUME.is_dir():
+        return str(NETWORK_VOLUME / "aivo" / "models")
+    return "/var/lib/aivo/models"
+
+
+def build_runtime(logs: LogBuffer) -> WorkerRuntime:
+    models_dir = Path(os.environ.get("AIVO_MODELS_DIR") or default_models_dir())
+    job_dir = Path(pick_job_dir(os.environ.get("AIVO_JOB_DIR") or "/dev/shm/aivo/jobs"))
+    if os.environ.get("AIVO_ENGINE", "comfy") == "mock":
+        from aivo_worker.engines.mock import MockEngine
+
+        engine = MockEngine(float(os.environ.get("AIVO_MOCK_JOB_SECONDS", "2")))
+        return WorkerRuntime(engine, models_dir=models_dir, job_dir=job_dir, logs=logs, simulate_files=True)
+    from aivo_worker.engines.comfy import ComfyEngine
+
+    engine = ComfyEngine.from_env(models_dir, job_dir)
+    return WorkerRuntime(engine, models_dir=models_dir, job_dir=job_dir, logs=logs)
+
+
+def main() -> None:
     logging.basicConfig(level=os.environ.get("AIVO_LOG_LEVEL", "INFO"))
     logs = LogBuffer(echo=_echo)
     handler = BufferHandler(logs)
     handler.setLevel(logging.INFO)
     logging.getLogger("aivo_worker").addHandler(handler)
-    boot = load_bootstrap()
-    if boot.engine == "comfy":
-        from aivo_worker.engines.comfy import ComfyEngine
+    runtime = build_runtime(logs)
 
-        engine = ComfyEngine.from_env(boot)
-    else:
-        from aivo_worker.engines.mock import MockEngine
+    import runpod  # only in the worker image (see worker/Dockerfile)
 
-        engine = MockEngine(float(os.environ.get("AIVO_MOCK_JOB_SECONDS", "2")))
-    state = build_state(
-        boot,
-        engine,
-        simulate_files=boot.engine == "mock",
-        logs=logs,
-        setup_log=SETUP_LOG if SETUP_LOG.is_file() else None,
-    )
-    server = WorkerServer(state, host=boot.listen_host, port=boot.listen_port)
-    tasks = [asyncio.create_task(server.serve_forever())]
-    if boot.watchdog.enabled:
-        tasks.append(asyncio.create_task(Watchdog(boot.watchdog, state.auth).run()))
-    await asyncio.gather(*tasks)
-
-
-def main() -> None:
-    asyncio.run(amain())
+    runpod.serverless.start({"handler": runtime.handle})
 
 
 if __name__ == "__main__":

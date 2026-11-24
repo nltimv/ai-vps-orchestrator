@@ -14,7 +14,6 @@ from aivo.controller.budget import (
     month_compute_spend,
     open_reservations,
     period_of,
-    storage_monthly_estimate,
 )
 from aivo.db.models import CostAccrual, Instance, Job, User
 from aivo.providers.regions import region_meta
@@ -31,18 +30,11 @@ async def spending(
     period = await ensure_period(s, rs, now, lock=False)
     compute = await month_compute_spend(s, period.period)
     reserved = await open_reservations(s)
-    storage = await storage_monthly_estimate(s)
+    storage = 0.0
     running = (
-        await s.execute(
-            select(func.count())
-            .select_from(Instance)
-            .where(Instance.state.in_(("provisioning", "booting", "ready", "busy", "draining", "destroying")))
-        )
+        await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(("ready", "busy"))))
     ).scalar_one()
-    try:
-        provider_mtd = await app.provider.account_month_to_date_usd()
-    except Exception:
-        provider_mtd = None
+    provider_mtd = None
     by_machine_rows = (
         await s.execute(
             select(Instance, CostAccrual.usd, CostAccrual.billed_seconds)

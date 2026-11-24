@@ -1,4 +1,4 @@
-"""Spin up the full app (API + controller) against a fresh DB with the fake provider."""
+"""Spin up the full app (API + controller) against a fresh DB with the simulated RunPod."""
 
 from __future__ import annotations
 
@@ -10,27 +10,28 @@ from typing import Any
 import httpx
 from sqlalchemy import text
 
-from aivo.controller.dispatcher import JobRunner
-from aivo.controller.provisioner import Provisioner
-from aivo.controller.reconciler import Reconciler
+from aivo.controller.housekeeping import Housekeeping
+from aivo.controller.runner import JobRunner
 from aivo.main import build_context, create_app
-from aivo.providers.fake.provider import FakeProvider
+from aivo.providers.runpod.fake import FakeRunPod
 
 HEADERS = {"X-Requested-With": "aivo"}
 
 
 class Harness:
-    def __init__(self, env, *, settings: dict[str, Any] | None = None, role: str = "all", provider: Any = None):
+    def __init__(self, env, *, settings: dict[str, Any] | None = None, role: str = "all", runpod: Any = None):
         self.env = env
-        self.settings = {"min_billing_s": 0, "idle_timeout_s": 3600, **(settings or {})}
+        self.settings = {"keep_warm_s": 5, **(settings or {})}
         self.role = role
-        self.provider = provider or FakeProvider(boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds)
+        self.runpod = runpod or FakeRunPod(
+            boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds, chaos=list(env.fake_chaos)
+        )
 
     async def __aenter__(self) -> Harness:
         from tests.conftest import reset_db
 
         await reset_db(self.env.database_url)
-        self.ctx = build_context(self.env, provider=self.provider)
+        self.ctx = build_context(self.env, runpod=self.runpod)
         async with self.ctx.sessionmaker() as s, s.begin():
             for k, v in self.settings.items():
                 await s.execute(
@@ -41,16 +42,13 @@ class Harness:
             scheduler_interval_s=0.2,
             reconcile_interval_s=0.3,
             lease_ttl_s=6,
-            provisioner=Provisioner(self.ctx, pause_s=0.05, poll_s=0.1),
-            runner=JobRunner(self.ctx, poll_s=0.1, long_poll_s=1),
+            runner=JobRunner(self.ctx, poll_s=0.1),
+            housekeeping=Housekeeping(self.ctx, endpoint_sync_every=3),
         )
         self.app = create_app(self.env, ctx=self.ctx, role=self.role, controller_kwargs=kwargs)
         self._lifespan = self.app.router.lifespan_context(self.app)
         await self._lifespan.__aenter__()
         if self.ctx.controller:
-            self.ctx.controller.reconciler = Reconciler(
-                self.ctx, fence=self.ctx.controller.lease.still_valid, orphan_min_age_s=1, vanish_grace_s=0.5
-            )
             await asyncio.wait_for(self.ctx.controller.is_leader.wait(), 10)
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app), base_url="http://test", headers=HEADERS, timeout=30
@@ -61,7 +59,7 @@ class Harness:
         await self.client.aclose()
         with contextlib.suppress(Exception):
             await self._lifespan.__aexit__(None, None, None)
-        await self.provider.aclose()
+        await self.runpod.aclose()
 
     async def setup_admin(self) -> dict[str, Any]:
         r = await self.client.post(

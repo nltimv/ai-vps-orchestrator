@@ -163,13 +163,11 @@ class Instance(Base):
     state_version: Mapped[int] = mapped_column(Integer, default=0)
     public_ipv4: Mapped[str | None] = mapped_column(String(45))
     port: Mapped[int] = mapped_column(Integer, default=443)
-    # RunPod Serverless: the gateway URL in front of the worker, and the worker every request is pinned to
-    endpoint_url: Mapped[str | None] = mapped_column(Text)
-    worker_ref: Mapped[str | None] = mapped_column(String(128))
     cert_ca_pem: Mapped[str | None] = mapped_column(Text)
     sni_name: Mapped[str | None] = mapped_column(String(128))
     token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    volume_resource_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("cache_resources.id", ondelete="SET NULL"))
+    # RunPod: the endpoint (GPU type) this worker belongs to
+    endpoint_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("gpu_endpoints.id", ondelete="SET NULL"))
     requested_by_job_id: Mapped[uuid.UUID | None]
     manual: Mapped[bool] = mapped_column(Boolean, default=False)
     reserved_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0)
@@ -199,7 +197,14 @@ class Instance(Base):
 
     __table_args__ = (
         Index("ix_instances_live", "state", postgresql_where="state <> 'destroyed'"),
-        UniqueConstraint("provider", "provider_instance_id", name="uq_instances_provider_id"),
+        # a RunPod worker id can come back after it scaled down: unique only among live workers
+        Index(
+            "uq_instances_live_worker",
+            "provider",
+            "provider_instance_id",
+            unique=True,
+            postgresql_where="state <> 'destroyed'",
+        ),
     )
 
 
@@ -250,6 +255,17 @@ class Job(Base):
     attempt: Mapped[int] = mapped_column(Integer, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, default=2)
     instance_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("instances.id", ondelete="SET NULL"))
+    # RunPod: the GPU type's endpoint, the queued RunPod job and the worker's one-time ticket (hash)
+    endpoint_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("gpu_endpoints.id", ondelete="SET NULL"))
+    gpu_type: Mapped[str | None] = mapped_column(String(64))
+    runpod_job_id: Mapped[str | None] = mapped_column(String(80))
+    endpoint_runpod_id: Mapped[str | None] = mapped_column(String(64))  # the endpoint that has the RunPod job
+    ticket_hash: Mapped[str | None] = mapped_column(String(64))
+    candidates: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # GPU types to try, best first
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(10, 4), default=0)
+    log: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # the worker's last log lines (admins)
+    submitted_at: Mapped[datetime | None]
+    worker_contact_at: Mapped[datetime | None]
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     stage: Mapped[str] = mapped_column(String(32), default="queued")
     eta_s: Mapped[float | None] = mapped_column(Float)
@@ -327,45 +343,28 @@ class CostAccrual(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
 
 
-# ------------------------------------------------------------------ cache resources
+# ------------------------------------------------------------------ RunPod endpoints
 
 
-class CacheResource(Base):
-    __tablename__ = "cache_resources"
+class GpuEndpoint(Base):
+    """One RunPod queue-based endpoint per GPU type. Created on first use and kept: an idle endpoint is free,
+    and RunPod keeps a worker ready on a host for it."""
+
+    __tablename__ = "gpu_endpoints"
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_uuid)
-    provider: Mapped[str] = mapped_column(String(32))
-    kind: Mapped[str] = mapped_column(String(16))  # snapshot | volume | bucket
-    region: Mapped[str | None] = mapped_column(String(32))
-    provider_resource_id: Mapped[str | None] = mapped_column(String(128))
-    name: Mapped[str | None] = mapped_column(String(128))
-    vendor: Mapped[str] = mapped_column(String(16), default="nvidia")
-    worker_image: Mapped[str | None] = mapped_column(String(256))
-    size_gb: Mapped[float | None] = mapped_column(Float)
-    min_disk_gb: Mapped[float | None] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(16), default="pending")
-    attached_instance_id: Mapped[uuid.UUID | None]
-    boot_failures: Mapped[int] = mapped_column(Integer, default=0)
-    monthly_cost_est: Mapped[float] = mapped_column(Float, default=0)
-    contents: Mapped[list[Any]] = mapped_column(JSONB, default=list)  # model files present (volume)
+    gpu_type: Mapped[str] = mapped_column(String(64), unique=True)  # RunPod GPU type id
+    gpu_name: Mapped[str] = mapped_column(String(64))
+    gpu_class: Mapped[str | None] = mapped_column(String(32))
+    vram_gb: Mapped[float] = mapped_column(Float, default=0)
+    price_hourly: Mapped[Decimal] = mapped_column(Numeric(10, 5), default=0)
+    runpod_id: Mapped[str | None] = mapped_column(String(64), unique=True)
+    config_hash: Mapped[str | None] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(16), default="creating")  # creating | ready | error
+    error: Mapped[str | None] = mapped_column(Text)
+    keep_warm_until: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
-    verified_at: Mapped[datetime | None]
+    updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
     last_used_at: Mapped[datetime | None]
-
-
-class BackgroundRun(Base):
-    """Persisted, resumable state machine for long-running admin tasks (bake, mirror, volume fill)."""
-
-    __tablename__ = "background_runs"
-    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_uuid)
-    kind: Mapped[str] = mapped_column(String(16))  # bake | mirror | fill
-    state: Mapped[str] = mapped_column(String(24), default="pending")
-    step: Mapped[str | None] = mapped_column(String(48))
-    params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
-    data: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)
-    log: Mapped[list[Any]] = mapped_column(JSONB, default=list)
-    cost_usd: Mapped[float] = mapped_column(Float, default=0)
-    started_at: Mapped[datetime] = mapped_column(server_default=_now())
-    finished_at: Mapped[datetime | None]
 
 
 # ------------------------------------------------------------------ telemetry

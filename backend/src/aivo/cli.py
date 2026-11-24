@@ -107,9 +107,12 @@ def rewrap_keys() -> None:
 
 @app.command()
 def janitor(stale_after_s: int = 120) -> None:
-    """Backstop (e.g. a Kubernetes CronJob): if the controller is gone, destroy expired/idle machines."""
+    """Backstop (e.g. a Kubernetes CronJob): if the controller is gone, keep the books.
+
+    RunPod stops idle workers by itself; this closes their billing records and keeps the budget current.
+    """
+    from aivo.controller.housekeeping import Housekeeping
     from aivo.controller.lease import lease_status
-    from aivo.controller.reconciler import Reconciler
     from aivo.main import build_context
 
     logging.basicConfig(level="INFO")
@@ -121,20 +124,10 @@ def janitor(stale_after_s: int = 120) -> None:
             st = await lease_status(s)
         if st and st["alive"] and st["last_tick_age_s"] < stale_after_s:
             typer.echo("controller is alive; nothing to do")
-            await ctx.engine.dispose()
-            return
-        typer.echo("controller looks dead: running a destroy-only reconcile pass")
-        r = Reconciler(ctx)
-        rs = await ctx.runtime(fresh=True)
-        remote = await ctx.provider.list_instances(
-            __import__("aivo.providers.base", fromlist=["x"]).deployment_tag(ctx.deployment_id)
-        )
-        await r._sync(remote)
-        await r._idle_and_lifetime(rs)
-        await r._drain()
-        await r._destroy()
-        await r._budget(rs)
-        await ctx.provider.aclose()
+        else:
+            typer.echo("controller looks dead: closing finished workers and updating the budget")
+            await Housekeeping(ctx, endpoint_sync_every=10**9).tick()
+        await ctx.runpod.aclose()
         await ctx.engine.dispose()
 
     asyncio.run(go())
@@ -142,28 +135,21 @@ def janitor(stale_after_s: int = 120) -> None:
 
 @app.command()
 def inventory() -> None:
-    """List every cloud resource tagged for this deployment (and what it costs)."""
+    """List this deployment's RunPod endpoints (one per GPU type) with their queue and workers."""
     from aivo.main import build_context
-    from aivo.providers.base import deployment_tag
 
     async def go() -> None:
         ctx = build_context(get_env())
         await ctx.load_deployment_id()
-        machines = await ctx.provider.list_instances(deployment_tag(ctx.deployment_id))
-        offers = {o.size_slug: o.price_hourly for o in await ctx.provider.list_offers()}
-        out = [
-            {
-                "id": m.provider_id,
-                "name": m.name,
-                "status": m.status,
-                "size": m.size_slug,
-                "region": m.region,
-                "usd_per_hour": offers.get(m.size_slug or ""),
-            }
-            for m in machines
-        ]
-        typer.echo(json.dumps({"deployment": str(ctx.deployment_id), "machines": out}, indent=2))
-        await ctx.provider.aclose()
+        dep = str(ctx.deployment_id)
+        out = []
+        for ep in await ctx.runpod.list_endpoints():
+            if (ep.get("env") or {}).get("AIVO_DEPLOYMENT_ID") != dep:
+                continue
+            health = await ctx.runpod.health(str(ep["id"]))
+            out.append({"id": ep["id"], "name": ep.get("name"), "workers": ep.get("workers"), "health": health})
+        typer.echo(json.dumps({"deployment": dep, "endpoints": out}, indent=2))
+        await ctx.runpod.aclose()
         await ctx.engine.dispose()
 
     asyncio.run(go())
@@ -207,7 +193,7 @@ def catalog_check(
 def _check_files_online(cat) -> list[str]:  # type: ignore[no-untyped-def]
     import httpx
 
-    from aivo.cache.spaces import hf_url
+    from aivo.controller.jobspec import hf_url
 
     token = get_env().hf_token
     seen: dict[str, object] = {}

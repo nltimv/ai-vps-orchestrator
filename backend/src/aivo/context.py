@@ -14,12 +14,14 @@ from aivo.catalog.loader import Catalog
 from aivo.config import EnvSettings, RuntimeSettings
 from aivo.db.models import Setting, SystemRow
 from aivo.events.bus import EventBus
-from aivo.providers.base import CloudProvider, GpuOffer
+from aivo.providers.base import GpuOffer
+from aivo.providers.runpod.api import RunPodAPI
 from aivo.storage.keyring import Keyring
 from aivo.storage.media_store import FilesystemStore
 
 if TYPE_CHECKING:
     from aivo.controller.controller import Controller
+    from aivo.providers.runpod.catalog import GpuCatalog
 
 
 @dataclass
@@ -37,13 +39,33 @@ class AppContext:
     keyring: Keyring
     store: FilesystemStore
     catalog: Catalog
-    provider: CloudProvider
+    runpod: RunPodAPI  # RunPod Serverless (or the simulated one, AIVO_PROVIDER=fake)
     bus: EventBus
     deployment_id: uuid.UUID = field(default_factory=uuid.uuid4)
     offers: OffersCache = field(default_factory=OffersCache)
     controller: Controller | None = None
     oidc: Any = None  # lazily created OIDCClient (caches discovery + signing keys)
     _rs_cache: tuple[float, RuntimeSettings] | None = None
+    _gpus: GpuCatalog | None = None
+
+    @property
+    def gpus(self) -> GpuCatalog:
+        """RunPod's GPU types (offers) and what creating an endpoint for one needs."""
+        if self._gpus is None:
+            from aivo.providers.runpod.catalog import GpuCatalog
+
+            self._gpus = GpuCatalog(self.runpod, self.env)
+        return self._gpus
+
+    @property
+    def worker_api_url(self) -> str:
+        """Where RunPod workers reach aivo (only /api/v1/worker/ with a per-job ticket)."""
+        url = self.env.worker_api_url or self.env.public_url
+        if not url:
+            if self.env.provider == "fake":
+                return "http://aivo.internal"
+            raise RuntimeError("Set AIVO_PUBLIC_URL (or AIVO_WORKER_API_URL): RunPod workers deliver results there")
+        return url.rstrip("/")
 
     async def load_deployment_id(self) -> uuid.UUID:
         async with self.sessionmaker() as s, s.begin():

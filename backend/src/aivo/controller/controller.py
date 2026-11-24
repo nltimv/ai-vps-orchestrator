@@ -1,5 +1,5 @@
-"""Controller supervisor: holds the lease and runs scheduler/reconciler loops plus
-one task per provisioning machine and per running job."""
+"""Controller supervisor: holds the lease and runs the scheduler and housekeeping loops, plus one task per job
+that is with RunPod."""
 
 from __future__ import annotations
 
@@ -13,13 +13,12 @@ from sqlalchemy import select
 
 from aivo.context import AppContext
 from aivo.controller.common import get_offers
-from aivo.controller.dispatcher import JobRunner
+from aivo.controller.housekeeping import Housekeeping
 from aivo.controller.lease import LeaseManager
-from aivo.controller.lifecycle import ACTIVE_JOB_STATES, STARTING_STATES
-from aivo.controller.provisioner import Provisioner
-from aivo.controller.reconciler import Reconciler
+from aivo.controller.lifecycle import ACTIVE_JOB_STATES
+from aivo.controller.runner import JobRunner
 from aivo.controller.scheduler import Scheduler
-from aivo.db.models import Instance, Job
+from aivo.db.models import Job
 
 log = logging.getLogger(__name__)
 
@@ -32,20 +31,17 @@ class Controller:
         scheduler_interval_s: float = 3.0,
         reconcile_interval_s: float = 10.0,
         lease_ttl_s: int = 30,
-        provisioner: Provisioner | None = None,
         runner: JobRunner | None = None,
-        reconciler: Reconciler | None = None,
+        housekeeping: Housekeeping | None = None,
     ):
         self.app = app
         self.scheduler_interval_s = scheduler_interval_s
         self.reconcile_interval_s = reconcile_interval_s
         self.lease = LeaseManager(app.sessionmaker, ttl_s=lease_ttl_s)
         self.scheduler = Scheduler(app)
-        self.provisioner = provisioner or Provisioner(app)
         self.runner = runner or JobRunner(app)
-        self.reconciler = reconciler or Reconciler(app, fence=self.lease.still_valid)
+        self.housekeeping = housekeeping or Housekeeping(app, fence=self.lease.still_valid)
         self._wake = asyncio.Event()
-        self._provisioning: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._jobs: dict[uuid.UUID, asyncio.Task[None]] = {}
         self._loops: list[asyncio.Task[None]] = []
         self._main: asyncio.Task[None] | None = None
@@ -57,10 +53,6 @@ class Controller:
 
     def wake(self) -> None:
         self._wake.set()
-
-    def has_provisioner(self, instance_id: uuid.UUID) -> bool:
-        t = self._provisioning.get(instance_id)
-        return t is not None and not t.done()
 
     async def start(self) -> None:
         self._main = asyncio.create_task(self._supervise(), name="controller")
@@ -87,9 +79,10 @@ class Controller:
                         asyncio.create_task(
                             self._loop("scheduler", self._schedule_once, self.scheduler_interval_s, wake=True)
                         ),
-                        asyncio.create_task(self._loop("reconciler", self._reconcile_once, self.reconcile_interval_s)),
+                        asyncio.create_task(
+                            self._loop("housekeeping", self._reconcile_once, self.reconcile_interval_s)
+                        ),
                         asyncio.create_task(self._loop("offers", self._refresh_offers, 60)),
-                        asyncio.create_task(self._loop("latency", self._probe_latency, 6 * 3600)),
                     ]
                     await self._resume()
                     while not self._stopping:
@@ -110,13 +103,13 @@ class Controller:
                 await asyncio.sleep(5)
 
     async def _stop_loops(self) -> None:
-        tasks = [*self._loops, *self._provisioning.values(), *self._jobs.values()]
+        tasks = [*self._loops, *self._jobs.values()]
         for t in tasks:
             t.cancel()
         for t in tasks:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await t
-        self._loops, self._provisioning, self._jobs = [], {}, {}
+        self._loops, self._jobs = [], {}
 
     async def _loop(self, name: str, fn: Callable[[], Awaitable[None]], interval: float, wake: bool = False) -> None:
         while True:
@@ -134,41 +127,22 @@ class Controller:
                 await asyncio.sleep(interval)
 
     async def _schedule_once(self) -> None:
-        to_provision, to_run = await self.scheduler.plan_once()
-        for iid in to_provision:
-            self.spawn_provisioner(iid)
-        for jid in to_run:
+        for jid in await self.scheduler.plan_once():
             self.spawn_job(jid)
 
     async def _reconcile_once(self) -> None:
-        await self.reconciler.tick()
+        await self.housekeeping.tick()
         await self._resume()
 
     async def _refresh_offers(self) -> None:
         await get_offers(self.app, force=True)
 
-    async def _probe_latency(self) -> None:
-        from aivo.placement.latency import probe_regions
-
-        if self.app.provider.name == "fake":
-            return
-        offers = await get_offers(self.app)
-        await probe_regions(self.app, {o.region for o in offers})
-
     async def _resume(self) -> None:
-        """(Re)start tasks for work that is in flight according to the database."""
+        """(Re)start a runner for every job that is with RunPod according to the database."""
         async with self.app.sessionmaker() as s:
-            starting = (await s.execute(select(Instance.id).where(Instance.state.in_(STARTING_STATES)))).scalars().all()
             active = (await s.execute(select(Job.id).where(Job.state.in_(ACTIVE_JOB_STATES)))).scalars().all()
-        for iid in starting:
-            self.spawn_provisioner(iid)
         for jid in active:
             self.spawn_job(jid)
-
-    def spawn_provisioner(self, iid: uuid.UUID) -> None:
-        if self.has_provisioner(iid):
-            return
-        self._provisioning[iid] = asyncio.create_task(self._wrap(self.provisioner.run(iid)), name=f"provision:{iid}")
 
     def spawn_job(self, jid: uuid.UUID) -> None:
         t = self._jobs.get(jid)

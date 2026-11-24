@@ -1,69 +1,21 @@
-"""RunPod Serverless pieces: worker start-up from the environment, the gateway token header, error mapping."""
+"""RunPod pieces: the HTTP client (paths, errors), the endpoint aivo creates per GPU type, worker start-up."""
 
 from __future__ import annotations
 
-import hashlib
-import secrets
+import collections
+import json
+import uuid
 
 import httpx
 import pytest
 
-from aivo.providers.base import AuthError, ConfigError, QuotaError, RateLimited, UnknownOutcome, traits_for
+from aivo.config import EnvSettings, RuntimeSettings
+from aivo.controller.endpoints import EndpointManager
+from aivo.providers.base import AuthError, ConfigError, QuotaError, RateLimited, UnknownOutcome
+from aivo.providers.runpod.api import HttpRunPod
+from aivo.providers.runpod.catalog import GpuCatalog, gpu_class_of, gpu_slug
 from aivo.providers.runpod.client import classify
-from aivo.providers.runpod.provider import gpu_class_of
-from aivo_protocol.worker_api import BOOTSTRAP_ENV, WorkerBootstrap, decode_bootstrap_env, encode_bootstrap_env
-from aivo_worker.engines.mock import MockEngine
-from aivo_worker.main import load_bootstrap, pick_job_dir
-from aivo_worker.server import WorkerServer, build_state
-
-
-def _boot(tmp_path, token: str) -> WorkerBootstrap:
-    return WorkerBootstrap(
-        instance_id="i-1",
-        deployment_id="d-1",
-        token_sha256=hashlib.sha256(token.encode()).hexdigest(),
-        engine="mock",
-        models_dir=str(tmp_path / "models"),
-        job_dir=str(tmp_path / "jobs"),
-    )
-
-
-def test_bootstrap_travels_in_one_environment_variable(tmp_path):
-    boot = _boot(tmp_path, "t")
-    value = encode_bootstrap_env(boot)
-    assert decode_bootstrap_env(value) == boot
-    loaded = load_bootstrap(tmp_path / "missing.json", environ={BOOTSTRAP_ENV: value, "PORT": "8000"})
-    assert loaded.listen_port == 8000 and loaded.tls_cert_pem == ""
-
-
-def test_small_ram_disks_are_not_used_for_jobs(tmp_path, monkeypatch):
-    import collections
-
-    import aivo_worker.main as wm
-
-    usage = collections.namedtuple("usage", "total used free")
-    monkeypatch.setattr(wm.shutil, "disk_usage", lambda p: usage(64 * 1024**2, 0, 64 * 1024**2))
-    assert pick_job_dir(str(tmp_path / "shm" / "jobs"), fallback="/fallback") == "/fallback"  # Docker's 64 MB
-    monkeypatch.setattr(wm.shutil, "disk_usage", lambda p: usage(32 * 1024**3, 0, 32 * 1024**3))
-    assert pick_job_dir(str(tmp_path / "shm" / "jobs"), fallback="/fallback") == str(tmp_path / "shm" / "jobs")
-
-
-async def test_plain_http_worker_takes_the_token_from_its_own_header(tmp_path):
-    token = secrets.token_urlsafe(16)
-    state = build_state(_boot(tmp_path, token), MockEngine(0.1), simulate_files=True)
-    srv = WorkerServer(state, host="127.0.0.1", port=0)
-    await srv.start()
-    try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{srv.port}", trust_env=False) as c:
-            assert (await c.get("/ping")).status_code == 200  # the load balancer's check needs no token
-            assert (await c.get("/v1/health")).status_code == 401
-            # behind RunPod, Authorization carries the RunPod key; X-Aivo-Token wins
-            r = await c.get("/v1/health", headers={"Authorization": "Bearer rp-key", "X-Aivo-Token": token})
-            assert r.status_code == 200
-            assert (await c.get("/v1/health", headers={"X-Aivo-Token": "wrong"})).status_code == 401
-            assert (await c.get("/v1/health", headers={"Authorization": f"Bearer {token}"})).status_code == 200
-    finally:
-        await srv.stop()
+from aivo.providers.runpod.fake import FakeRunPod
 
 
 @pytest.mark.parametrize(
@@ -100,17 +52,112 @@ def test_gpu_names_map_to_catalog_classes(name, cls):
     assert gpu_class_of(name) == cls
 
 
-def test_runpod_bills_from_start_without_minimum():
-    t = traits_for("runpod")
-    assert t.bills_from_boot and t.min_billing_s == 0 and not t.pinned_tls
-    assert traits_for("digitalocean").bills_from_boot is False
-
-
 def test_every_runpod_gpu_class_exists_in_the_catalog():
     from aivo.catalog.loader import Catalog
     from aivo.config import REPO_ROOT
-    from aivo.providers.runpod.provider import _GPU_CLASSES
+    from aivo.providers.runpod.catalog import _GPU_CLASSES
 
     cat = Catalog.load(REPO_ROOT / "catalog")
-    missing = {cls for _, cls in _GPU_CLASSES} - set(cat.gpu_classes)
-    assert not missing
+    assert not {cls for _, cls in _GPU_CLASSES} - set(cat.gpu_classes)
+
+
+async def test_queue_calls_go_to_the_job_api_and_endpoints_to_the_rest_api():
+    seen: list[tuple[str, str, str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        seen.append((request.method, request.url.host, request.url.path, body))
+        assert request.headers["authorization"] == "Bearer rp-key"
+        path = request.url.path
+        if path.endswith("/run"):
+            return httpx.Response(200, json={"id": "job-1", "status": "IN_QUEUE"})
+        if "/status/" in path:
+            return httpx.Response(200, json={"id": "job-1", "status": "COMPLETED", "executionTime": 1200})
+        if path.endswith("/health"):
+            return httpx.Response(200, json={"jobs": {"inQueue": 0}, "workers": {"idle": 1, "running": 0}})
+        if "/cancel/" in path:
+            return httpx.Response(200, json={"id": "job-1", "status": "CANCELLED"})
+        if path == "/v2/serverless" and request.method == "POST":
+            return httpx.Response(201, json={"id": "ep1", **body})
+        if path == "/v2/serverless/ep1" and request.method == "PATCH":
+            return httpx.Response(200, json={"id": "ep1", **body})
+        return httpx.Response(404, json={"title": "Not Found", "status": 404, "detail": "nope"})
+
+    api = HttpRunPod(
+        "rp-key",
+        api_base="https://api.runpod.io",
+        queue_base="https://api.runpod.ai",
+        transport=httpx.MockTransport(handler),
+    )
+    assert await api.run("ep1", {"job_id": "x"}, {"ttl": 1000}) == "job-1"
+    assert (await api.status("ep1", "job-1"))["status"] == "COMPLETED"
+    assert (await api.health("ep1"))["workers"]["idle"] == 1
+    await api.cancel("ep1", "job-1")
+    assert (await api.create_endpoint({"name": "n"}))["id"] == "ep1"
+    await api.update_endpoint("ep1", {"workers": {"max": 2}})
+    assert await api.get_endpoint("missing") is None
+    await api.aclose()
+    assert seen[0] == ("POST", "api.runpod.ai", "/v2/ep1/run", {"input": {"job_id": "x"}, "policy": {"ttl": 1000}})
+    assert [(m, h, p) for m, h, p, _ in seen[1:4]] == [
+        ("GET", "api.runpod.ai", "/v2/ep1/status/job-1"),
+        ("GET", "api.runpod.ai", "/v2/ep1/health"),
+        ("POST", "api.runpod.ai", "/v2/ep1/cancel/job-1"),
+    ]
+    assert {h for _, h, p, _ in seen if p.startswith("/v2/serverless")} == {"api.runpod.io"}
+
+
+class _App:
+    """Just enough of AppContext for EndpointManager.desired()."""
+
+    def __init__(self, env: EnvSettings, gpus: GpuCatalog):
+        self.env = env
+        self.gpus = gpus
+        self.deployment_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+
+
+async def test_one_queue_endpoint_per_gpu_type_without_secrets():
+    env = EnvSettings(_env_file=None, worker_image="ghcr.io/x/aivo-worker:0.2.57", runpod_network_volume_id="vol1")
+    gpus = GpuCatalog(FakeRunPod(), env)
+    await gpus.offers()
+    em = EndpointManager(_App(env, gpus))  # type: ignore[arg-type]
+    rs = RuntimeSettings(max_workers_per_gpu=3, keep_warm_s=45, job_timeout_s=1800)
+    body = em.desired("NVIDIA L40S", rs, warm=False)
+    assert body["name"] == "aivo-12345678-l40s"
+    assert body["type"] == "QUEUE" and body["image"] == "ghcr.io/x/aivo-worker:0.2.57"
+    assert body["gpu"] == {"pools": ["ADA_48_PRO"], "count": 1, "excludedTypes": ["NVIDIA RTX 6000 Ada Generation"]}
+    assert body["workers"] == {"min": 0, "max": 3, "idleTimeout": 45, "initTimeout": 1800}
+    assert body["scaling"]["type"] == "QUEUE_DELAY"  # idle timeout isn't allowed with request-count scaling
+    assert body["mounts"] == {"network": [{"volumeId": "vol1"}]} and body["dataCenterIds"] == ["EU-NL-1"]
+    assert set(body["env"]) == {"AIVO_DEPLOYMENT_ID", "AIVO_GPU_TYPE"}  # no tokens or keys
+    assert em.desired("NVIDIA L40S", rs, warm=True)["workers"]["min"] == 1
+    assert em.config_hash(body) != em.config_hash(em.desired("NVIDIA L40S", rs, warm=True))
+    assert gpu_slug("NVIDIA GeForce RTX 4090") == "rtx-4090"
+
+
+def test_worker_keeps_jobs_in_ram_only_when_it_is_big_enough(tmp_path, monkeypatch):
+    import aivo_worker.main as wm
+
+    usage = collections.namedtuple("usage", "total used free")
+    monkeypatch.setattr(wm.shutil, "disk_usage", lambda p: usage(64 * 1024**2, 0, 64 * 1024**2))
+    assert wm.pick_job_dir(str(tmp_path / "shm" / "jobs"), fallback="/fallback") == "/fallback"  # Docker's 64 MB
+    monkeypatch.setattr(wm.shutil, "disk_usage", lambda p: usage(32 * 1024**3, 0, 32 * 1024**3))
+    assert wm.pick_job_dir(str(tmp_path / "shm" / "jobs"), fallback="/fallback") == str(tmp_path / "shm" / "jobs")
+
+
+def test_worker_keeps_models_on_the_network_volume(tmp_path, monkeypatch):
+    import aivo_worker.main as wm
+
+    monkeypatch.setattr(wm, "NETWORK_VOLUME", tmp_path / "missing")
+    assert wm.default_models_dir() == "/var/lib/aivo/models"
+    monkeypatch.setattr(wm, "NETWORK_VOLUME", tmp_path)
+    assert wm.default_models_dir() == str(tmp_path / "aivo" / "models")
+
+
+async def test_worker_refuses_input_that_is_not_a_ticket(tmp_path):
+    from aivo_worker.engines.mock import MockEngine
+    from aivo_worker.runtime import WorkerRuntime
+
+    rt = WorkerRuntime(MockEngine(0.1), models_dir=tmp_path / "m", job_dir=tmp_path / "j", simulate_files=True)
+    assert "not an aivo ticket" in (await rt.handle({"input": {"prompt": "hi"}}))["error"]
+    old = {"aivo_url": "http://x", "job_id": "j", "token": "t", "protocol": "1.0"}
+    assert "protocol" in (await rt.handle({"input": old}))["error"]

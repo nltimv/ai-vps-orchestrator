@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 import websockets
 
-from aivo_protocol.worker_api import GpuInfo, JobIn, WorkerBootstrap
+from aivo_protocol.worker_api import GpuInfo, JobIn
 from aivo_worker.engines.base import EngineError, ProgressCb
 from aivo_worker.logbuf import LogBuffer
 
@@ -79,11 +79,11 @@ class ComfyEngine:
         self._last_progress = 0.0
 
     @classmethod
-    def from_env(cls, boot: WorkerBootstrap) -> ComfyEngine:
+    def from_env(cls, models_dir: Path, job_dir: Path) -> ComfyEngine:
         return cls(
             comfy_dir=Path(os.environ.get("AIVO_COMFY_DIR", "/opt/ComfyUI")),
-            models_dir=Path(boot.models_dir),
-            work_dir=Path(boot.job_dir) / "comfy",
+            models_dir=models_dir,
+            work_dir=job_dir / "comfy",
             extra_args=os.environ.get("AIVO_COMFY_ARGS", "").split(),
         )
 

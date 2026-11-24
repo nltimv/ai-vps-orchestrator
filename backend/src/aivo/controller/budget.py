@@ -1,11 +1,11 @@
 """Spend tracking and budget admission.
 
-* Accrual: every machine is billed from "create accepted" to "destroy confirmed"
-  (or now), with the provider's minimum billing applied, split per calendar month.
-* Admission: inside the transaction that creates a machine, the month's row in
-  ``spend_periods`` is locked ``FOR UPDATE``; a machine is admitted only if
-  ``accrued + open reservations + its own reservation <= hard cap``. Two
-  concurrent requests therefore cannot both slip under the cap.
+* Accrual: every RunPod worker (an ``instances`` row) is billed from its start until it scaled down
+  (``destroy_confirmed_at``, or now while it runs), split per calendar month. Older rows are DigitalOcean
+  machines, billed the same way.
+* Admission: inside the transaction that submits a job, the month's row in ``spend_periods`` is locked
+  ``FOR UPDATE``; a job is admitted only if ``accrued + open reservations + its own reservation <= hard cap``.
+  Two concurrent requests therefore cannot both slip under the cap.
 """
 
 from __future__ import annotations
@@ -19,8 +19,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aivo.config import RuntimeSettings
-from aivo.db.models import CacheResource, CostAccrual, Instance, SpendPeriod
-from aivo.providers.base import traits_for
+from aivo.db.models import CostAccrual, Instance, Job, SpendPeriod
 
 D = Decimal
 
@@ -46,23 +45,12 @@ def split_by_month(start: datetime, end: datetime) -> dict[date, float]:
     return out
 
 
-def billed_window(inst: Instance, now: datetime, min_billing_s: float) -> tuple[datetime, datetime] | None:
-    traits = traits_for(inst.provider)
-    if traits.min_billing_s is not None:
-        min_billing_s = traits.min_billing_s
+def billed_window(inst: Instance, now: datetime) -> tuple[datetime, datetime] | None:
     if inst.create_accepted_at is None:
         return None
     start = inst.create_accepted_at
-    if traits.bills_from_boot:  # RunPod Serverless: preparing the host is free; the worker's run is billed
-        if inst.ip_at is None:
-            return None
-        start = inst.ip_at
     end = inst.destroy_confirmed_at or now
-    if end < start:
-        end = start
-    if (end - start).total_seconds() < min_billing_s and inst.destroy_confirmed_at is not None:
-        end = start + timedelta(seconds=min_billing_s)
-    return start, end
+    return start, max(start, end)
 
 
 async def ensure_period(session: AsyncSession, rs: RuntimeSettings, when: datetime, *, lock: bool) -> SpendPeriod:
@@ -97,7 +85,7 @@ async def accrue(session: AsyncSession, rs: RuntimeSettings, now: datetime) -> N
         .all()
     )
     for inst in insts:
-        win = billed_window(inst, now, rs.min_billing_s)
+        win = billed_window(inst, now)
         if win is None:
             continue
         price = float(inst.price_hourly)
@@ -121,26 +109,15 @@ async def month_compute_spend(session: AsyncSession, period: date) -> Decimal:
 
 
 async def open_reservations(session: AsyncSession) -> Decimal:
-    rows = (
-        await session.execute(
-            select(Instance.id, Instance.reserved_usd, func.coalesce(func.sum(CostAccrual.usd), 0))
-            .outerjoin(CostAccrual, CostAccrual.instance_id == Instance.id)
-            .where(Instance.state != "destroyed")
-            .group_by(Instance.id, Instance.reserved_usd)
-        )
-    ).all()
-    return sum((max(D(0), D(r[1]) - D(r[2])) for r in rows), D(0))
-
-
-async def storage_monthly_estimate(session: AsyncSession) -> float:
+    """Money set aside for jobs that haven't finished (released when they finish)."""
     v = (
         await session.execute(
-            select(func.coalesce(func.sum(CacheResource.monthly_cost_est), 0)).where(
-                CacheResource.status.notin_(("deleted", "failed"))
+            select(func.coalesce(func.sum(Job.reserved_usd), 0)).where(
+                Job.state.notin_(("succeeded", "failed", "cancelled"))
             )
         )
     ).scalar_one()
-    return float(v)
+    return D(v)
 
 
 @dataclass
@@ -171,11 +148,7 @@ async def admit(session: AsyncSession, rs: RuntimeSettings, now: datetime, amoun
     return Admission(True, None, spent, reserved, hard, soft)
 
 
-def reservation_for(
-    price_hourly: float, expected_billable_s: float, rs: RuntimeSettings, provider: str | None = None
-) -> Decimal:
-    traits = traits_for(provider)
-    min_billing = rs.min_billing_s if traits.min_billing_s is None else traits.min_billing_s
-    idle = rs.idle_timeout_s if traits.max_idle_s is None else min(rs.idle_timeout_s, traits.max_idle_s)
-    secs = max(expected_billable_s, min_billing) + idle + 300
+def reservation_for(price_hourly: float, expected_billable_s: float, rs: RuntimeSettings) -> Decimal:
+    """What a job may cost: its expected worker time plus the wait for a next job, with a margin."""
+    secs = expected_billable_s * 1.5 + rs.keep_warm_s + 120
     return D(str(round(price_hourly * secs / 3600, 4)))

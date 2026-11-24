@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aivo.api.deps import current_user, get_app, get_session
+from aivo.api.deps import current_user, get_app, get_session, require_admin
 from aivo.api.schemas import EstimateOut, JobCreateIn, JobOut, Page
 from aivo.context import AppContext
 from aivo.controller.lifecycle import transition_job
@@ -93,10 +93,13 @@ async def cancel_job(
     if job is None or (job.user_id != user.id and user.role != "admin"):
         raise HTTPException(404, "Not found")
     if job.state in ("queued", "waiting_capacity", "provisioning"):
-        await transition_job(s, job.id, job.state, "cancelled", stage="cancelled", instance_id=None)
-    elif job.state in ("assigned", "preparing", "running"):
+        await transition_job(s, job.id, job.state, "cancelled", stage="cancelled", instance_id=None, reserved_usd=0)
+    elif job.state in ("assigned", "preparing", "running", "fetching"):
+        # the job runner cancels it at RunPod; a worker that has it stops at its next progress report
         await s.execute(update(Job).where(Job.id == job.id).values(cancel_requested=True))
     await s.commit()
+    if app.controller:
+        app.controller.wake()
     await s.refresh(job)
     return await job_out(app, s, job)
 
@@ -127,12 +130,41 @@ async def retry_job(
         next_attempt_at=None,
         finished_at=None,
         progress=0.0,
+        min_vram_gb=None,
+        runpod_job_id=None,
+        endpoint_runpod_id=None,
+        endpoint_id=None,
+        ticket_hash=None,
+        cancel_requested=False,
+        log=[],
     )
     await s.commit()
     if app.controller:
         app.controller.wake()
     await s.refresh(job)
     return await job_out(app, s, job)
+
+
+@router.get("/jobs/{job_id}/log")
+async def job_log(
+    job_id: uuid.UUID,
+    since: int = Query(0, ge=0),
+    _: User = Depends(require_admin),
+    s: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """The worker's log lines for this creation (admins; for troubleshooting). Poll with ``since``."""
+    job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Not found")
+    lines = job.log or []
+    return {
+        "state": job.state,
+        "stage": job.stage,
+        "gpu_type": job.gpu_type,
+        "total": len(lines),
+        "lines": lines[since:] if since <= len(lines) else lines,
+        "error": job.error_message,
+    }
 
 
 @router.delete("/jobs/{job_id}")
