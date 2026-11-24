@@ -10,37 +10,35 @@ image:
     repository: ghcr.io/nltimv/aivo-frontend
     tag: ""
     pullPolicy: ""
-  # the image GPU machines run (not a pod in this cluster)
+  # the image RunPod runs on the GPUs (not a pod in this cluster)
   worker:
     repository: ghcr.io/nltimv/aivo-worker
     tag: ""          # defaults to the chart appVersion
 imagePullSecrets: []
 
-# -- Cloud provider: digitalocean | runpod (RunPod Serverless, experimental) | fake
-provider: digitalocean
-# -- RunPod Serverless settings (provider: runpod). The API key goes in secrets.runpodApiKey.
+# -- runpod = RunPod Serverless; fake = a simulated RunPod inside the backend (demos, no GPUs)
+provider: runpod
+# -- RunPod Serverless. The API key goes in secrets.runpodApiKey. Workers deliver results to publicUrl
+#    (or workerApiUrl), so the dashboard must be reachable from the internet (only /api/v1/worker/ is used,
+#    with a one-time ticket per job).
 runpod:
   countries: []              # ISO codes where workers may run; empty = the built-in European list
   dataCenters: []            # or exact data centers, e.g. [EU-NL-1, EU-RO-1] (overrides countries)
   networkVolumeId: ""        # keeps model files between workers (pins workers to its data center)
   gpuTypes: []               # only these GPU types (RunPod names); empty = all
-  keepWarmSeconds: 120       # keep an idle worker (billed) this long for follow-up creations
-  region: eu                 # name shown in aivo for RunPod machines
-# -- Pin the worker image GPU machines run (full reference). Empty = image.worker at the release's version.
+  diskGb: 150                # container disk for model files without a network volume
+  region: eu                 # name shown in aivo for RunPod GPUs
+  workerApiUrl: ""           # where workers reach aivo; empty = publicUrl
+# -- Pin the worker image RunPod runs (full reference). Empty = image.worker at the release's version.
 workerImage: ""
 
 # -- Secrets. Either let the chart create one from these values, or point at an existing Secret
-#    with keys: AIVO_MEDIA_KEKS, AIVO_DO_TOKEN or AIVO_RUNPOD_API_KEY, [AIVO_DO_WATCHDOG_TOKEN, AIVO_SPACES_KEY, AIVO_SPACES_SECRET,
-#    AIVO_HF_TOKEN, AIVO_ADMIN_PASSWORD, AIVO_DATABASE_URL]
+#    with keys: AIVO_MEDIA_KEKS, AIVO_RUNPOD_API_KEY, [AIVO_HF_TOKEN, AIVO_ADMIN_PASSWORD, AIVO_DATABASE_URL]
 secrets:
   existingSecret: ""
   mediaKeks: ""            # `aivo generate-key` -> "k1:<base64>"; back it up, it decrypts the gallery
   mediaActiveKeyId: ""
-  doToken: ""
-  doWatchdogToken: ""
-  runpodApiKey: ""         # provider: runpod
-  spacesKey: ""
-  spacesSecret: ""
+  runpodApiKey: ""         # RunPod console -> Settings -> API keys (Serverless read/write)
   hfToken: ""
   adminEmail: ""
   adminPassword: ""
@@ -65,11 +63,6 @@ sso:
   allowedGroups: []          # e.g. [aivo-users]
   adminGroups: []            # e.g. [aivo-admins]; admin role then follows group membership
   groupsClaim: groups
-
-spaces:
-  region: ""
-  bucket: ""
-  endpoint: ""
 
 # -- combined: one pod runs API + controller (works with a ReadWriteOnce media volume; recommended)
 #    split: separate API and controller pods (both mount the media volume -> needs ReadWriteMany)
@@ -134,6 +127,9 @@ ingress:
   className: ""
   annotations: {}
   # cert-manager.io/cluster-issuer: letsencrypt
+  # RunPod workers upload finished videos through the ingress: allow large bodies, e.g. for ingress-nginx
+  # nginx.ingress.kubernetes.io/proxy-body-size: "4g"
+  # nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
   host: aivo.example.com
   tls:
     enabled: true

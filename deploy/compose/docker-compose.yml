@@ -1,7 +1,6 @@
 # Local development: everything runs on your machine; GPU machines are simulated
-# by default (AIVO_PROVIDER=fake). Set AIVO_PROVIDER=digitalocean + AIVO_DO_TOKEN
-# in .env to use real GPU Droplets, or AIVO_PROVIDER=runpod + AIVO_RUNPOD_API_KEY for
-# RunPod Serverless (experimental).
+# by default (AIVO_PROVIDER=fake: a simulated RunPod). Set AIVO_PROVIDER=runpod, AIVO_RUNPOD_API_KEY and
+# AIVO_PUBLIC_URL (an address RunPod's workers can reach) in .env to use real GPUs.
 #
 #   cp deploy/compose/.env.example deploy/compose/.env
 #   docker compose -f deploy/compose/docker-compose.yml up --build
@@ -62,20 +61,7 @@ services:
     ports: ["5173:5173"]
     depends_on: [backend]
 
-  # Optional S3-compatible stand-in for DigitalOcean Spaces (model mirror) in dev:
-  #   docker compose --profile minio up
-  minio:
-    profiles: ["minio"]
-    image: minio/minio:latest
-    command: server /data --console-address :9001
-    environment:
-      MINIO_ROOT_USER: aivo
-      MINIO_ROOT_PASSWORD: aivo-dev-secret
-    ports: ["9000:9000", "9001:9001"]
-    volumes: [minio:/data]
-
 volumes:
   pgdata:
   media:
-  minio:
   frontend_node_modules:

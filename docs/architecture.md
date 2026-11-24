@@ -5,80 +5,92 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
                                                              roles: api | controller | all
                                                              ├─ Postgres: state, queue, lease, budget, telemetry
                                                              ├─ encrypted media volume (PVC / bind mount)
-                                                             └─ HTTPS, per-machine pinned CA + SNI + bearer token
+                                                             └─ RunPod API: one queue endpoint per GPU type
+                                                                   │  job input = ticket
                                                                    ▼
-                                                         GPU droplet: worker agent (:443) → ComfyUI (127.0.0.1)
-                                                         job files on tmpfs; model weights on local NVMe
-                                                         weights from: cache volume → Spaces mirror → Hugging Face
+             /api/v1/worker/ (HTTPS, ticket) ◄───────────── RunPod worker → ComfyUI (127.0.0.1)
+             fetch job · progress + log · upload results    job files in RAM; model files on disk
+                                                             or a network volume; weights from Hugging Face
 ```
 
 ## Components
 | Component | Where | Responsibility |
 |---|---|---|
-| **API** | `backend/src/aivo/api` | Auth, catalog, estimates, jobs, gallery and media (HTTP Range over encrypted files), machines, spending, settings, live events (SSE) |
-| **Controller** | `backend/src/aivo/controller` | Holds the lease; scheduler, provisioner, job runner, reconciler, budget |
-| **Placement** | `backend/src/aivo/placement` | Pure suitability scorer, estimates (priors → measured EWMAs), latency probes |
-| **Providers** | `backend/src/aivo/providers` | `CloudProvider` interface; DigitalOcean; fake (local simulated machines) |
+| **API** | `backend/src/aivo/api` | Auth, catalog, estimates, jobs, gallery and media (HTTP Range over encrypted files), GPUs, spending, settings, live events (SSE) |
+| **Worker API** | `backend/src/aivo/api/routes/worker.py` | What RunPod workers call with a job's ticket: the job, its starting picture, progress and log lines, results, done/failed |
+| **Controller** | `backend/src/aivo/controller` | Holds the lease; scheduler, job runner, endpoints per GPU type, worker billing records, housekeeping, budget |
+| **Placement** | `backend/src/aivo/placement` | Pure suitability scorer, estimates (priors → measured EWMAs) |
+| **RunPod** | `backend/src/aivo/providers/runpod` | REST + queue API client, GPU catalog, a simulated RunPod for development and CI |
 | **Storage** | `backend/src/aivo/storage` | Chunked AES-256-GCM envelope encryption, filesystem store, thumbnails |
-| **Worker** | `worker/` | TLS agent, weight fetching, ComfyUI engine, output post-processing, watchdog |
-| **Protocol** | `packages/protocol` | Pydantic contracts shared by backend and worker, catalog schema |
+| **Worker** | `worker/` | RunPod Serverless handler: fetches the job from aivo, model files, ComfyUI engine, output post-processing, delivers results |
+| **Protocol** | `packages/protocol` | Pydantic contracts shared by backend and worker (ticket, spec, progress, results), catalog schema |
 
 ## Flow of one creation
 1. **Create.** `POST /jobs` seals the prompt (field encryption) and queues a job. An event
    wakes the controller.
-2. **Place.** The scheduler ranks running machines and live offers (`placement/scorer.py`):
-   - An idle machine that fits gets the job right away.
-   - If a fitting machine is starting or busy, the job waits for it.
-   - Otherwise it reserves budget, creates an `instances` row (`pending`) with a ranked
-     candidate list, and starts a provisioner.
-3. **Provision.** The provisioner mints a throwaway CA and leaf certificate plus a 256-bit
-   token, then calls `create_instance` with the per-deployment tags and a cloud-init bootstrap.
-   - Capacity errors move to the next candidate.
-   - An unknown outcome (a timeout) leads to a lookup by tag and adoption of any machine found.
-     It never creates a duplicate.
-   - The provisioner waits for an IP and then for the agent to report healthy over pinned TLS.
-   - It rotates the token, because the copy in user_data becomes useless at that point.
-   - The machine is then `ready`.
-4. **Run.** The job runner:
-   - asks the worker to fetch model files (volume → presigned Spaces URL → Hugging Face);
-   - uploads the starting image, if any;
-   - submits the rendered ComfyUI workflow and long-polls progress, relaying it as SSE.
-5. **Store.** Outputs are downloaded into RAM scratch and checked against the worker's
-   sha256. They are then encrypted onto the media volume, and thumbnails are made (also
-   encrypted). Only after that does the worker delete its copies.
-6. **Idle.** The idle clock starts only now. After `idle_timeout` (never before the provider's
-   minimum billing time), the reconciler drains the machine and destroys it.
+2. **Place.** The scheduler ranks RunPod's GPU types for the job (`placement/scorer.py`). It reserves
+   budget, fixes the job's parameters (seed included) and hands the job to a job runner.
+3. **Submit.** The job runner makes sure the GPU type's queue endpoint exists
+   (`controller/endpoints.py`: created on first use, kept in step with settings and releases). It mints
+   a one-time ticket, stores its hash, and submits a RunPod job whose input is only the ticket.
+4. **Work.** RunPod starts a worker, or reuses one waiting on that endpoint. The worker:
+   - fetches the job from aivo with the ticket (`/spec`): workflow, model files with download links,
+     output shape;
+   - downloads model files from Hugging Face (kept on its disk or the network volume);
+   - fetches the starting picture, if any;
+   - runs ComfyUI, reporting progress and log lines (`/progress`, relayed to browsers as SSE);
+   - uploads each result (`PUT /outputs/<name>`, checked against its SHA-256);
+   - says it's done (`/complete`).
+5. **Store.** Each upload is encrypted onto the media volume as it arrives, and thumbnails are made
+   (also encrypted). On `/complete` the job succeeds, the ticket is cleared, and the worker deletes its
+   copies.
+6. **Bill.** Each RunPod worker is an `instances` row: billed from its start until it stopped, which is
+   `keep_warm_s` after its last job. Each job also gets its share: the worker's time since its
+   previous job (or its start).
+
+## When things go wrong
+- **No worker takes the job** within `gpu_fallback_after_s`: the runner cancels it at RunPod and moves
+  the job to the next GPU type on its list, with a new ticket. When the list is used up, the job waits
+  and is placed again, until `capacity_wait_max_s`.
+- **A worker dies mid-job:** RunPod retries the job on another worker. That worker fetches the job
+  again (`/spec`), and anything the first one delivered is discarded.
+- **Out of GPU memory:** the job goes back into aivo's queue with a higher memory floor, so it lands on
+  a bigger GPU type.
+- **The worker fails** (engine error, model files missing): the job fails with a plain message; the
+  worker's log is kept with it for admins.
+- **RunPod reports the job failed or timed out** without the worker telling aivo: the runner fails the
+  job.
+- **Cancel:** a job still waiting is cancelled at RunPod; a worker that has it learns at its next
+  progress report and stops.
 
 ## Correctness
-- **Compare-and-set state machines.** Every instance and job transition is
-  `UPDATE … WHERE id=? AND state IN (…)`, and it proceeds only if exactly one row changed
-  (`controller/lifecycle.py`).
-- **Leadership vs. correctness.** A lease row with a fencing epoch elects one controller. It
-  only avoids duplicate work; correctness does not depend on it. Destructive calls re-check
-  the epoch.
-- **Idempotent create.** The DB row is committed before the API call. Droplets are named and
-  tagged with the instance UUID. On an unknown outcome the provisioner looks up by tag and
-  adopts, rather than retrying.
-- **Reconciler.** It only ever touches resources tagged with *this* deployment's id, so a
-  laptop dev setup can't destroy production machines. It handles:
-  - provider sync, plus orphan sweeps scoped by deployment tag;
-  - idle, lifetime and stuck-start timeouts;
-  - drain → destroy, cost accrual and budget enforcement.
+- **Compare-and-set state machines.** Every job transition is `UPDATE … WHERE id=? AND state IN (…)`,
+  and it proceeds only if exactly one row changed (`controller/lifecycle.py`).
+- **Leadership vs. correctness.** A lease row with a fencing epoch elects one controller. It only
+  avoids duplicate work; correctness does not depend on it.
+- **Tickets.** The ticket is valid before RunPod gets the job, and stops working when the job ends,
+  moves to another GPU type or is cancelled. A late worker on an old ticket is turned away.
+- **Housekeeping.** It only ever touches endpoints marked with *this* deployment's id (endpoint
+  environment `AIVO_DEPLOYMENT_ID`), so a laptop dev setup can't delete production endpoints. It:
+  - closes billing records of workers RunPod has stopped;
+  - accrues costs and enforces the budget;
+  - keeps endpoints in step with the settings and the release;
+  - raises max workers again if RunPod lowered them for an endpoint unused for days;
+  - deletes endpoints aivo no longer knows.
 - **Budget.** The month's `spend_periods` row is locked `FOR UPDATE` inside the placement
   transaction, so concurrent requests can't overshoot the cap.
-- **Restart-safe.** Every in-flight job and machine is resumed from the database. Worker job
-  ids are idempotent.
+- **Restart-safe.** Every job with RunPod is resumed from the database; the worker keeps working and
+  delivers to the API meanwhile.
 
 ## Data residency
 Generated content (outputs, thumbnails, uploaded starting images, prompts and lyrics) is
 **persisted only on the backend's encrypted media volume**.
-- **Cloud provider storage** (snapshots, the Spaces bucket, cache volumes) holds only public
-  model weights and the worker software image.
-- **On the GPU machine**, job input and output directories are tmpfs (RAM). The backend
-  deletes them as soon as it has stored the files, and the machine is destroyed after use.
-- **user_data** carries only the machine bootstrap (TLS key, token hash, image reference),
-  never prompts. ComfyUI runs with `--disable-metadata`, and outputs are stripped again
-  before transfer.
-
-## Extending to another cloud
-See [providers.md](providers.md).
+- **RunPod's job system** only sees the ticket and file names: the worker fetches the prompt and
+  picture from aivo and uploads results to aivo.
+- **The endpoint settings** hold the worker image, aivo's deployment id and the GPU type. They hold no
+  secrets.
+- **On the worker**, job input and output directories are in RAM (`/dev/shm`) when it is big enough,
+  otherwise on the worker's temporary disk. They are deleted right after delivery, and the worker
+  itself stops after a short wait.
+- **A network volume**, if configured, holds only public model files. ComfyUI runs with
+  `--disable-metadata`, and outputs are stripped again before delivery.

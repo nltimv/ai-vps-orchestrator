@@ -31,10 +31,10 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.getByText(/ready in/).waitFor({ timeout: 20000 });
   await shot("create");
   await page.getByRole("button", { name: "Create", exact: true }).click();
-  await page.getByText(/Starting a machine|Loading the AI model|Creating/).first().waitFor({ timeout: 20000 });
+  await page.getByText(/Starting a GPU|Loading the AI model|Creating/).first().waitFor({ timeout: 20000 });
   await shot("progress");
 
-  // video + music queue onto the same machine
+  // video + music each go to their GPU type's queue
   await page.getByRole("tab", { name: "Video" }).click();
   await page.getByLabel("Description").fill("Waves crashing on black volcanic rocks, drone shot");
   await page.getByRole("button", { name: "Create", exact: true }).click();

@@ -36,8 +36,8 @@ export function until(iso: string | null | undefined): string {
 const STAGES: Record<string, string> = {
   queued: "Waiting to start",
   waiting_in_line: "Waiting in line",
-  waiting_for_gpu: "Waiting for a free GPU",
-  starting_machine: "Starting a machine",
+  waiting_for_gpu: "Starting a GPU",
+  starting_machine: "Starting a GPU",
   loading_model: "Loading the AI model",
   generating: "Creating",
   saving: "Saving",
@@ -47,44 +47,22 @@ const STAGES: Record<string, string> = {
 };
 export const stageLabel = (stage: string) => STAGES[stage] ?? stage.replace(/_/g, " ");
 
-const MACHINE_STATES: Record<string, string> = {
-  pending: "Getting ready",
-  creating: "Requesting a machine",
-  provisioning: "Machine is starting",
-  booting: "Setting up software",
-  ready: "Ready",
-  busy: "Working",
-  draining: "Finishing up",
-  destroying: "Shutting down",
-  destroyed: "Shut down",
+const WORKER_STATES: Record<string, string> = {
+  working: "Working",
+  waiting: "Waiting for work",
+  stopped: "Stopped",
 };
-export const machineStateLabel = (s: string) => MACHINE_STATES[s] ?? s;
+export const workerStateLabel = (s: string) => WORKER_STATES[s] ?? s;
 
-const SETUP_STEPS: Record<string, string> = {
-  starting: "starting up",
-  preparing_disks: "preparing disks",
-  checking_gpu: "checking the GPU",
-  installing_runtime: "installing the container runtime",
-  downloading_software: "downloading the worker software",
-  checking_engine: "checking the worker software can use the GPU",
-  cleaning_up: "cleaning up",
-  starting_engine: "starting the AI engine",
-  // RunPod Serverless, before the worker runs (not billed yet)
-  preparing_host: "RunPod is preparing a GPU",
-  waiting_for_gpu: "waiting for a free GPU",
-  starting_worker: "starting the worker",
-};
-
-const PROVIDERS: Record<string, string> = {
-  fake: "simulated (no real machines)",
-  digitalocean: "DigitalOcean",
-  runpod: "RunPod Serverless (experimental)",
-};
-export const providerLabel = (p: string) => PROVIDERS[p] ?? p;
-export const setupStepLabel = (s: string) => SETUP_STEPS[s] ?? s.replace(/_/g, " ");
 
 export const isActive = (state: string) => !["succeeded", "failed", "cancelled"].includes(state);
 
 export function newIdempotencyKey(): string {
   return crypto.randomUUID();
 }
+
+const PROVIDERS: Record<string, string> = {
+  fake: "simulated RunPod (no real GPUs)",
+  runpod: "RunPod Serverless",
+};
+export const providerLabel = (p: string) => PROVIDERS[p] ?? p;

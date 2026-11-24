@@ -1,52 +1,66 @@
-# Running on RunPod Serverless (experimental)
+# Running on RunPod Serverless
 
-With `AIVO_PROVIDER=runpod`, aivo runs its GPU machines on RunPod Serverless instead of
-DigitalOcean. Nothing changes for the people using aivo. What changes is billing: **you pay only
-while a worker runs**, per second, with no minimum. Getting a GPU ready and downloading the worker
-software is free.
-
-This mode is new and has only been tested against a local stand-in for RunPod's API, not yet
-against RunPod itself. Try it with a low spending limit first (Settings → Spending limits).
+aivo runs every creation on RunPod Serverless. You pay per second while a GPU works on a creation
+(plus a short wait for a next one), and nothing while nobody creates anything.
 
 ## How it works
 
-Each aivo machine is its own RunPod **load-balancing endpoint** with at most one worker. The
-worker runs aivo's normal worker image (`AIVO_WORKER_IMAGE`). It's the same agent and ComfyUI as
-on DigitalOcean.
+**One queue endpoint per GPU type.** The first time a creation needs a GPU type (say an L40S), aivo
+creates a *queue-based* RunPod endpoint for it, named `aivo-<deployment>-l40s`. It keeps that
+endpoint afterwards: an endpoint without running workers costs nothing, and RunPod keeps a worker
+prepared on a host for it, so later starts are quicker.
+
+**RunPod manages the workers.**
+- A creation goes into its GPU type's queue as a RunPod job.
+- RunPod starts a worker when a job waits, up to *GPUs of one type at the same time* (Settings → GPUs).
+  Each worker takes one job at a time.
+- After a job, the worker waits *Keep a GPU waiting for a next creation* for another job. Then it stops.
+- If a worker crashes, RunPod retries the job on another one.
+
+**The job is only a ticket; everything else goes straight between the worker and aivo:**
 
 | Step | What happens | Billed |
 |---|---|---|
-| Start | aivo creates the endpoint (`aivo-<id>`) for one GPU type, limited to the allowed data centers. RunPod picks a host and pulls the worker image. The machine card shows "RunPod is preparing a GPU". | No |
-| Boot | aivo's first request through RunPod's gateway (`https://<endpoint>.api.runpod.ai`) starts the worker. The agent comes up and starts ComfyUI. | Yes, from here |
-| Work | The backend talks to the agent as on any other machine: it sends model downloads, the job and the starting picture, follows progress and fetches the results. Results are fetched in pieces of 16 MB because RunPod allows 30 MB per request. They go straight to aivo's encrypted volume. | Yes |
-| Idle | aivo keeps the worker for follow-up creations for `AIVO_RUNPOD_KEEP_WARM_S` (2 min by default, or the general idle timeout if that's shorter). | Yes |
-| Stop | aivo deletes the endpoint, which ends the worker at once. | Stops |
+| Queue | aivo submits a job whose whole input is a ticket: aivo's address, the job id and a one-time token. | No |
+| Start | RunPod starts a worker on a host that already has the worker image. It's the same image as aivo's own release. | Yes, from here |
+| Fetch | The worker asks aivo for the job with the ticket. It gets the engine, the model files and where to get them, and the starting picture. | Yes |
+| Models | The worker downloads the model files from Hugging Face. They stay on the worker's disk for its next job, or on your network volume. | Yes |
+| Create | ComfyUI makes the creation. The worker reports progress and log lines to aivo. | Yes |
+| Deliver | The worker uploads each result to aivo over HTTPS. aivo encrypts it onto the media volume right away, and the worker deletes its copy. | Yes |
+| Done | The worker tells aivo it's done; the ticket stops working. RunPod's record of the job holds only file names. | Yes, while it waits for a next job |
 
-There are two safety nets:
+**Nothing personal is stored at RunPod.**
+- RunPod's job system never sees a prompt, a picture or a result, so there's no size limit on results either.
+- The endpoint settings hold no secrets, only aivo's deployment id and the GPU type.
 
-- **If aivo goes silent**, RunPod stops the worker by itself after `AIVO_RUNPOD_IDLE_TIMEOUT_S`
-  (90 s) without requests. Endpoints left behind cost nothing. aivo deletes its own leftover
-  endpoints (named `aivo-…` and marked with its deployment id) when it comes back.
-- **If a worker disappears mid-job** (RunPod moved or restarted it), every request is pinned to
-  the worker that started the job (`X-Runpod-Worker-Id: strict …`). aivo notices at the next
-  request and runs the job on a new worker.
+**When no GPU is free.** RunPod's stock changes all the time. If no worker took the job within *Try
+another GPU type if none is free after* (default 5 min), aivo takes it out of that queue and puts it
+in the next-best GPU type's queue. Waiting in a queue costs nothing.
+
+**What it costs.** Each worker is billed from its start until it stops: its start-up, its jobs, the
+waits between jobs, and the wait after the last one.
+- **Spending** counts each worker that way.
+- **Each creation** shows its share: the time since the worker's previous job ended (or since it started).
 
 ## Setup
 
 1. **Create an API key** in the RunPod console (Settings → API keys) with read/write access to
-   Serverless. The key can manage everything in your RunPod account, so keep it as secret as a
-   cloud token.
-2. **Add credit.** RunPod is prepaid. With $0 balance, workers stop.
-3. **Configure aivo.**
-   - Compose: set these in `deploy/compose/.env`:
-     ```
-     AIVO_PROVIDER=runpod
-     AIVO_RUNPOD_API_KEY=<the key>
-     ```
-   - Helm: set `provider: runpod` and `secrets.runpodApiKey`, or put `AIVO_RUNPOD_API_KEY` in
-     your existing Secret. See the `runpod:` block in `values.yaml`.
-4. Open Settings. The subtitle shows "Cloud: RunPod Serverless (experimental)", and the
-   machine options list RunPod GPUs with their Serverless prices.
+   Serverless. It can manage everything in your RunPod account, so keep it as secret as any cloud token.
+2. **Add credit.** RunPod is prepaid; with $0 balance, workers stop.
+3. **Make aivo reachable for the workers.** They call `https://<your aivo>/api/v1/worker/...`.
+   - Set `AIVO_PUBLIC_URL`, or `AIVO_WORKER_API_URL` if workers should use another address. It must be
+     HTTPS with a public certificate.
+   - Allow large request bodies on that path: up to the size of your longest video. With Helm and
+     ingress-nginx, set `nginx.ingress.kubernetes.io/proxy-body-size: "4g"` (see `values.yaml`).
+     The bundled frontend proxy already allows 4 GB there.
+   - Only that path is used, and every call needs the job's ticket.
+4. **Configure aivo.**
+   - **Compose:** in `deploy/compose/.env`, set `AIVO_PROVIDER=runpod`, `AIVO_RUNPOD_API_KEY` and
+     `AIVO_PUBLIC_URL`.
+   - **Helm:** set `secrets.runpodApiKey` (or `AIVO_RUNPOD_API_KEY` in your existing Secret),
+     `ingress.enabled` and `ingress.host`, or `publicUrl`. `provider: runpod` is the default.
+5. Open **GPUs** in the dashboard. The options list RunPod's GPU types with their Serverless prices. The
+   first creation creates the first endpoint.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -54,79 +68,80 @@ There are two safety nets:
 | `AIVO_RUNPOD_DATA_CENTERS` | – | Exact data centers, e.g. `EU-NL-1,EU-RO-1`. Overrides the countries |
 | `AIVO_RUNPOD_GPU_TYPES` | all | Only these GPU types, e.g. `NVIDIA L40S,NVIDIA RTX A5000` |
 | `AIVO_RUNPOD_NETWORK_VOLUME_ID` | – | Keeps model files between workers (see below) |
-| `AIVO_RUNPOD_KEEP_WARM_S` | 120 | Keep an idle worker this long for follow-up creations (billed) |
-| `AIVO_RUNPOD_IDLE_TIMEOUT_S` | 90 | RunPod stops a worker this long after the last request. Keep it above 30 s: aivo checks on idle workers every 30 s |
-| `AIVO_RUNPOD_PREPARE_TIMEOUT_S` | 1200 | How long to wait for RunPod to prepare a GPU (free) before trying another GPU type |
 | `AIVO_RUNPOD_DISK_GB` | 150 | Container disk for model files without a network volume |
-| `AIVO_RUNPOD_REGION` | `eu` | Region name shown in aivo |
+| `AIVO_WORKER_API_URL` | `AIVO_PUBLIC_URL` | Where workers reach aivo |
+| `AIVO_WORKER_IMAGE` | the release's `aivo-worker:<version>` | Pin another worker image |
 
-The account limit on workers across all endpoints starts at 5 at RunPod. Each aivo machine uses
-one, so "Machines at the same time" (Settings) should stay at 5 or below. If the limit is hit,
-the job waits with "Your cloud account's GPU limit is reached". You can raise the limit in the
-RunPod console once your balance qualifies.
+In **Settings → GPUs**:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| GPUs of one type at the same time | 2 | The endpoint's max workers |
+| Keep a GPU waiting for a next creation | 60 s | The endpoint's idle timeout: billed, but the next creation starts without a cold start |
+| Try another GPU type if none is free after | 5 min | Moves a waiting job to the next GPU type |
+| Give up waiting for a free GPU after | 30 min | Then the creation fails with "No GPU became available" |
+| Longest a single creation may take | 60 min | RunPod's execution timeout gets an extra 20 min for model downloads |
+| Never use these GPU types | – | RunPod GPU type names |
+
+**GPUs → Keep one ready 30 min** sets that GPU type's minimum workers to 1 for half an hour. One
+worker then stays on, and is billed the whole time, so creations start without a cold start.
+
+RunPod's account limit on workers counts the *max workers* of all endpoints together, and starts at 5.
+With 2 per GPU type, two GPU types use 4. aivo deletes endpoints only when they're not its own
+anymore, so lower *GPUs of one type at the same time* if you hit the limit. Creations then wait with
+"Your RunPod account's worker limit is reached". You can raise the limit in the RunPod console once
+your balance qualifies.
 
 ## Model files: download each time, or a network volume
 
-Without a network volume, every new worker downloads its model files from Hugging Face again:
-about 1–3 billed minutes for a 20–50 GB video model. That's fine for occasional use.
+Without a network volume, a new worker downloads its model files from Hugging Face: about 1–3 billed
+minutes for a 20–50 GB video model. A worker that stays on between creations keeps them. For
+occasional use that's usually fine.
 
-With a network volume, files are downloaded once and reused by later workers:
+With a network volume, files are downloaded once and reused by every later worker:
 
-1. Create a network volume in the RunPod console, in the data center you want (e.g. EU-NL-1).
-   Size it for the engines you use, e.g. 200 GB at $0.07/GB-month ≈ $14/month.
-2. Set `AIVO_RUNPOD_NETWORK_VOLUME_ID=<volume id>`.
+1. Create a network volume in the RunPod console, in the data center you want (e.g. EU-NL-1). Size it
+   for the engines you use, e.g. 200 GB at $0.07/GB-month ≈ $14/month.
+2. Set `AIVO_RUNPOD_NETWORK_VOLUME_ID=<volume id>`. aivo updates its endpoints to mount it.
 
-All workers then start in that one data center, which means fewer GPUs to choose from. Only
-model files are stored on the volume, never creations.
+All workers then run in that one data center, so there are fewer GPUs to choose from. Only model
+files are stored on the volume, never creations.
 
-## Privacy
+## Privacy and security
 
-- **Creations are never stored at RunPod.** They stay in the worker's memory (`/dev/shm`) where
-  that is big enough; otherwise they go on the worker's temporary disk, which is wiped when the
-  worker stops. Results are streamed to aivo's encrypted volume and deleted from the worker right
-  away.
-- **Traffic is encrypted, but RunPod's gateway decrypts it.** On DigitalOcean aivo pins each
-  machine's own certificate. On Serverless, RunPod's gateway terminates HTTPS, so prompts,
-  starting pictures and results pass through RunPod's gateway unencrypted, without being stored
-  there. RunPod runs the GPU too, so this trusts the same party.
-- **What RunPod stores.** The endpoint's settings (visible in the RunPod console) hold the
-  worker's settings: machine ids and a hash of the worker's first token, which is replaced as
-  soon as the worker is up. They never hold a secret or anything users made.
-- **Who can call the worker.** Requests need your RunPod API key (checked by the gateway) and the
-  worker's own aivo token (checked by the agent).
-- Workers run in RunPod's Secure Cloud data centers in the countries you allow (EU by default).
-
-## Costs compared
-
-aivo's estimates know that preparing the GPU is free and that there's no minimum billing. For an
-example with RunPod's November 2026 prices, a 5-second video on an L40S-class GPU:
-
-| | Billed |
-|---|---|
-| DigitalOcean L40S: start, downloads, creation, 10 min idle | ≈ $0.50 |
-| RunPod Serverless 48 GB PRO: start, downloads, creation, 2 min idle | ≈ $0.25 |
-
-The gap grows when engines are reused: the worker's start-up (about 1 min for ComfyUI) is billed,
-but pulling the image isn't. Spending shows what aivo counted per machine, from RunPod's list prices; your RunPod invoice is the final word.
+- **Creations and prompts never pass through RunPod's job system.** The worker fetches the prompt and
+  starting picture from aivo, and uploads results to aivo. RunPod only holds the ticket (useless once
+  the job ends) and the file names.
+- **On the worker,** creations stay in memory (`/dev/shm`) where that is big enough, otherwise on the
+  worker's temporary disk, and are deleted right after delivery. RunPod runs the GPU, so this
+  trusts RunPod as much as any GPU provider.
+- **Tickets.**
+  - One per job; aivo stores only its SHA-256.
+  - It opens only that job's `spec`, `inputs`, `progress`, `outputs`, `complete` and `fail`, and only
+    while the job waits for or is with a worker.
+  - It stops working when the job ends, is cancelled or moves to another GPU type.
+  - A wrong ticket and an unknown job look the same (401).
+  - An upload must match the checksum the worker sends with it.
+- **Model files** come from Hugging Face. For gated models, aivo resolves a short-lived download link
+  with its own token, so workers never hold the token.
 
 ## Troubleshooting
 
-- **"RunPod had no GPU ready within 20 min"**: no worker became ready, often because the GPU type
-  is sold out in the allowed data centers. aivo tries the next GPU type. Allow more countries or
-  data centers, or more GPU types.
-- **"RunPod could not start the worker software"**: the worker failed RunPod's health check for 4
-  minutes. Look at the endpoint's worker logs in the RunPod console (Serverless → the `aivo-…`
-  endpoint → Workers). Check that `AIVO_WORKER_IMAGE` is public and up to date.
-- **Machine log** (Machines → Show log) works as on other providers once the worker is up. Before
-  that, the card shows RunPod's preparation step.
-- **401 errors in the backend log**: the API key is wrong or lacks Serverless access.
+- **Show log.** On a creation, admins see a log button. It shows the worker's lines: model downloads,
+  the job, the AI engine's output. The last 300 lines are kept with the creation.
+- **A creation waits at "Starting a GPU".**
+  - No GPU of that type is free in the allowed data centers. After 5 minutes aivo tries the next type.
+  - Allow more countries or data centers, or more GPU types.
+- **"Your RunPod account's worker limit is reached".** See the worker limit above.
+- **Workers start but nothing arrives in aivo.**
+  - The worker can't reach `AIVO_PUBLIC_URL`. Check the endpoint's worker logs in the RunPod console
+    (Serverless → `aivo-…` endpoint → Workers): look for "aivo unreachable" or "HTTP 401/413".
+  - A 413 means the ingress refuses large uploads.
+- **401 errors in the backend log about RunPod.** The API key is wrong or lacks Serverless access.
+- **`aivo inventory`** lists this deployment's endpoints with their queue and workers.
 
-## Limits of this mode
+## Limits
 
-- Prepared machine images, model disks and the firewall don't apply (Settings hides them). RunPod
-  pulls the image itself, and access goes through the gateway.
-- A starting picture can be at most 24 MB (RunPod's request size limit).
-- Only NVIDIA GPUs (the worker image is built for CUDA).
-- RunPod's API was implemented from its documentation (API v2, November 2026). It has been tested
-  against a local stand-in, not yet against RunPod itself. Please report anything that behaves
-  differently.
+- Only NVIDIA GPUs: the worker image is built for CUDA.
+- RunPod's API was implemented from its documentation (API v2, November 2026). It's tested against
+  a simulated RunPod, not yet against RunPod itself. Please report anything that behaves differently.

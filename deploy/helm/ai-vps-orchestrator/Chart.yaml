@@ -1,12 +1,12 @@
 apiVersion: v2
 name: ai-vps-orchestrator
-description: On-demand GPU machines for AI image/video/music generation (aivo) — dashboard, API and controller
+description: AI image/video/music generation on RunPod Serverless GPUs (aivo) — dashboard, API and controller
 type: application
 # Released charts are published as oci://ghcr.io/nltimv/charts/ai-vps-orchestrator with
 # version = appVersion = <VERSION file>.<build number> (e.g. 0.2.57), set by .github/workflows/images.yml.
 # This checkout copy is the development chart: it runs the newest images ("latest").
 version: 0.2.0-dev
 appVersion: "latest"
-keywords: [ai, gpu, digitalocean, comfyui]
+keywords: [ai, gpu, runpod, serverless, comfyui]
 home: https://github.com/nltimv/ai-vps-orchestrator
 sources: [https://github.com/nltimv/ai-vps-orchestrator]

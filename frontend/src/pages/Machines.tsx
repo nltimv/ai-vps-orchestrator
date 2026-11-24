@@ -1,17 +1,15 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Cpu, Flame, Power, ScrollText, Timer, Zap } from "lucide-react";
+import { Cpu, Flame, Timer, Zap } from "lucide-react";
 import { useState } from "react";
 
 import { post } from "@/api/client";
-import { useCatalog, useMachines, useOffers } from "@/api/queries";
-import type { Instance, Kind, MachineChoice, Preference, Quality } from "@/api/types";
-import { LogViewer } from "@/components/LogViewer";
-import { PausedBanner } from "@/components/PausedBanner";
+import { useCatalog, useGpus, useOffers } from "@/api/queries";
+import type { GpuEndpoint, Kind, MachineChoice, Preference, Quality, Worker } from "@/api/types";
 import { Badge, Button, Card, Chips, Empty, ErrorNote, Label, PageHeader } from "@/components/ui";
-import { ago, cn, duration, machineStateLabel, money, until } from "@/lib/format";
+import { ago, cn, duration, money, until, workerStateLabel } from "@/lib/format";
 
 export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
-  const machines = useMachines();
+  const gpus = useGpus();
   const catalog = useCatalog();
   const qc = useQueryClient();
   const [kind, setKind] = useState<Kind>("image");
@@ -21,7 +19,6 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   const offers = useOffers(kind, modelId, quality, preference);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [logOf, setLogOf] = useState<Instance | null>(null);
 
   const act = async (key: string, fn: () => Promise<unknown>) => {
     setBusy(key);
@@ -35,30 +32,53 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
       setBusy(null);
     }
   };
-  const live = machines.data?.live ?? [];
+  const keepReady = (gpuType: string, minutes: number) =>
+    act(`warm-${gpuType}`, () => post(`/machines/gpus/${encodeURIComponent(gpuType)}/keep-warm`, { minutes }));
+  const endpoints = gpus.data?.gpus ?? [];
+  const workers = gpus.data?.workers ?? [];
+  const live = workers.filter((w) => w.state !== "stopped");
+  const stopped = workers.filter((w) => w.state === "stopped");
   const models = (catalog.data?.models ?? []).filter((m) => m.kind === kind && m.enabled);
+  const keepWarm = gpus.data?.keep_warm_s ?? 60;
 
   return (
     <div>
-      <PageHeader title="Machines" subtitle="GPU machines start when there's work and shut down automatically when idle." />
-      <PausedBanner isAdmin={isAdmin} />
+      <PageHeader
+        title="GPUs"
+        subtitle="Creations run on RunPod. Each GPU type has a queue: workers start when there's work and stop soon after."
+      />
       <ErrorNote error={error} />
-      {logOf && <LogViewer machine={logOf} onClose={() => setLogOf(null)} />}
+
       <section className="mb-10">
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Running now</h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Working now</h2>
         {live.length === 0 ? (
-          <Empty icon={<Cpu className="size-8" />} title="No machines running">You're not paying for anything right now.</Empty>
+          <Empty icon={<Cpu className="size-8" />} title="No GPUs running">You're not paying for anything right now.</Empty>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {live.map((m) => <MachineCard key={m.id} m={m} isAdmin={isAdmin} busy={busy} act={act} onLog={() => setLogOf(m)}
-              names={Object.fromEntries((catalog.data?.models ?? []).map((x) => [x.id, x.name]))} />)}
+            {live.map((w) => <WorkerCard key={w.id} w={w} keepWarm={keepWarm} />)}
           </div>
         )}
       </section>
 
+      {endpoints.length > 0 && (
+        <section className="mb-10">
+          <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted">GPU types in use</h2>
+          <p className="mb-4 text-sm text-muted">
+            Up to {gpus.data?.max_workers_per_gpu ?? 1} at a time per type. A worker waits {duration(keepWarm)} for a next
+            creation before it stops.
+          </p>
+          <div className="space-y-2">
+            {endpoints.map((g) => (
+              <GpuRow key={g.gpu_type} g={g} isAdmin={isAdmin} busy={busy === `warm-${g.gpu_type}`}
+                onKeepReady={(m) => keepReady(g.gpu_type, m)} />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section>
-        <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted">Machine options</h2>
-        <p className="mb-4 text-sm text-muted">How well each available machine fits a typical creation. Availability changes often.</p>
+        <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted">GPU options</h2>
+        <p className="mb-4 text-sm text-muted">How well each GPU type fits a typical creation. Availability changes often.</p>
         <Card className="mb-4 grid gap-4 p-4 md:grid-cols-4">
           <div><Label>For</Label>
             <Chips name="Kind" value={kind} onChange={(v) => { setKind(v ?? "image"); setModelId(""); }}
@@ -78,10 +98,10 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
         {offers.data?.offers_error && <div className="mb-3 text-sm text-amber-500">Couldn't refresh availability: showing the last known list.</div>}
         <div className="space-y-2">
           {(offers.data?.choices ?? []).map((c, i) => (
-            <OptionRow key={c.key} c={c} rank={i} isAdmin={isAdmin} busy={busy === c.key}
-              onStart={() => act(c.key, () => post("/machines/warmup", { kind, model_id: modelId || null, quality, offer_key: c.key, preference }))} />
+            <OptionRow key={c.key} c={c} rank={i} isAdmin={isAdmin} busy={busy === `warm-${gpuTypeOf(c)}`}
+              onKeepReady={() => keepReady(gpuTypeOf(c), 30)} />
           ))}
-          {offers.data && offers.data.choices.length === 0 && <Empty icon={<Cpu className="size-8" />} title="No suitable machines available right now" />}
+          {offers.data && offers.data.choices.length === 0 && <Empty icon={<Cpu className="size-8" />} title="No suitable GPUs available right now" />}
         </div>
         {offers.data && offers.data.unsuitable.length > 0 && (
           <details className="mt-4 text-sm">
@@ -95,20 +115,14 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
         )}
       </section>
 
-      {(machines.data?.recent.length ?? 0) > 0 && (
+      {stopped.length > 0 && (
         <section className="mt-10">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Recently shut down</h2>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted">Stopped (last 24 hours)</h2>
           <Card className="divide-y divide-[var(--border)]">
-            {machines.data!.recent.map((m) => (
-              <div key={m.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
-                <span className="flex-1">{m.gpu} · {m.region_name}</span>
-                <span className="text-muted">{ago(m.created_at)} · ran {duration(m.uptime_s)} · {money(m.cost_so_far_usd)}</span>
-                {isAdmin && (
-                  <Button size="sm" variant="ghost" onClick={() => setLogOf(m)} title={m.has_saved_log ? "Includes the machine's last log lines" : "aivo's own record of this machine"}>
-                    <ScrollText className="size-4" /> Show log
-                  </Button>
-                )}
-                {m.failure_reason && <div className="w-full text-red-500">{m.failure_reason}</div>}
+            {stopped.map((w) => (
+              <div key={w.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
+                <span className="flex-1">{w.gpu} · {w.region_name}</span>
+                <span className="text-muted">{ago(w.started_at)} · ran {duration(w.hours * 3600)} · {money(w.cost_usd)}</span>
               </div>
             ))}
           </Card>
@@ -118,52 +132,58 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function MachineCard({ m, isAdmin, busy, act, names, onLog }: { m: Instance; isAdmin: boolean; busy: string | null; act: (k: string, fn: () => Promise<unknown>) => void; names: Record<string, string>; onLog: () => void }) {
-  const starting = ["pending", "creating", "provisioning", "booting"].includes(m.state);
-  // start-up journey only: first time each state was reached
-  const journey = m.timeline.map((t) => t.state).filter((st, i, a): st is string => !!st && a.indexOf(st) === i && st !== "busy");
+/** The offer key is "runpod:<GPU type>:<region>"; the GPU type itself may contain spaces. */
+const gpuTypeOf = (c: MachineChoice) => c.key.split(":").slice(1, -1).join(":");
+
+function WorkerCard({ w, keepWarm }: { w: Worker; keepWarm: number }) {
   return (
-    <Card className="p-5">
+    <Card className="p-5" data-testid="worker">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2 font-medium"><Cpu className="size-4" /> {m.gpu} <span className="text-muted">({m.vram_gb} GB)</span></div>
-          <div className="mt-0.5 text-sm text-muted">{m.region_name} · {money(m.price_hourly, 2)}/hour</div>
+          <div className="flex items-center gap-2 font-medium"><Cpu className="size-4" /> {w.gpu}</div>
+          <div className="mt-0.5 text-sm text-muted">{w.region_name} · {money(w.price_hourly, 2)}/hour</div>
         </div>
-        <Badge tone={m.state === "busy" ? "brand" : m.state === "ready" ? "good" : starting ? "warn" : "neutral"}>
-          {machineStateLabel(m.state)}
-        </Badge>
+        <Badge tone={w.state === "working" ? "brand" : "good"}>{workerStateLabel(w.state)}</Badge>
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-y-1 text-sm">
-        {m.boot_stage_label && <><dt className="text-muted">Start-up step</dt><dd data-testid="boot-stage">{m.boot_stage_label}</dd></>}
-        <dt className="text-muted">Running for</dt><dd>{duration(m.uptime_s)}</dd>
-        <dt className="text-muted">Cost so far</dt><dd>{money(m.cost_so_far_usd)}</dd>
-        {m.state === "ready" && <><dt className="text-muted">Shuts down</dt><dd className="flex items-center gap-1"><Timer className="size-3.5" />{until(m.idle_shutdown_at)}</dd></>}
-        {m.models_loaded.length > 0 && <><dt className="text-muted">Ready to use</dt><dd className="truncate">{m.models_loaded.map((x) => names[x] ?? x).join(", ")}</dd></>}
+        <dt className="text-muted">Running for</dt><dd>{duration(w.hours * 3600)}</dd>
+        <dt className="text-muted">Cost so far</dt><dd>{money(w.cost_usd)}</dd>
+        {w.state === "waiting" && (
+          <><dt className="text-muted">Stops</dt><dd className="flex items-center gap-1"><Timer className="size-3.5" />{w.stops_at ? until(w.stops_at) : `within ${duration(keepWarm)}`}</dd></>
+        )}
       </dl>
-      {journey.length > 0 && (
-        <ol className="mt-3 flex flex-wrap items-center gap-1 text-[11px] text-muted">
-          {journey.map((st, i) => <li key={st} className="rounded panel-2 px-1.5 py-0.5">{i > 0 && "→ "}{machineStateLabel(st)}</li>)}
-        </ol>
-      )}
-      {isAdmin && (
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button size="sm" onClick={onLog}>
-            <ScrollText className="size-4" /> Show log
-          </Button>
-          <Button size="sm" loading={busy === `warm-${m.id}`} onClick={() => act(`warm-${m.id}`, () => post(`/machines/${m.id}/keep-warm`, { minutes: 30 }))}>
-            <Flame className="size-4" /> Keep warm 30 min
-          </Button>
-          <Button size="sm" variant="ghost" className="text-red-500" loading={busy === `off-${m.id}`}
-            onClick={() => act(`off-${m.id}`, () => post(`/machines/${m.id}/shutdown`))}>
-            <Power className="size-4" /> Shut down
-          </Button>
+    </Card>
+  );
+}
+
+function GpuRow({ g, isAdmin, busy, onKeepReady }: { g: GpuEndpoint; isAdmin: boolean; busy: boolean; onKeepReady: (minutes: number) => void }) {
+  const warm = !!g.keep_warm_until;
+  return (
+    <Card className="flex flex-wrap items-center gap-4 p-4" data-testid="gpu-type">
+      <div className="min-w-48 flex-1">
+        <div className="flex items-center gap-2 font-medium">
+          {g.gpu} <span className="text-sm text-muted">{g.vram_gb} GB · {money(g.price_hourly, 2)}/h while working</span>
+          {g.status === "error" && <Badge tone="warn">Problem</Badge>}
+          {warm && <Badge tone="good"><Flame className="size-3" /> Kept ready {until(g.keep_warm_until)}</Badge>}
         </div>
+        <div className="mt-1 text-xs text-muted">
+          {(g.workers_running ?? 0) + (g.workers_idle ?? 0)} running · {g.jobs_waiting ?? 0} waiting
+          {g.last_used_at ? ` · last used ${ago(g.last_used_at)}` : ""}
+        </div>
+        {g.error && <div className="mt-1 text-xs text-red-500">{g.error}</div>}
+      </div>
+      {isAdmin && (
+        warm
+          ? <Button size="sm" variant="ghost" loading={busy} onClick={() => onKeepReady(0)}>Stop keeping ready</Button>
+          : <Button size="sm" loading={busy} onClick={() => onKeepReady(30)} title="One worker stays on (billed all the time): no start-up wait">
+              <Flame className="size-4" /> Keep one ready 30 min
+            </Button>
       )}
     </Card>
   );
 }
 
-function OptionRow({ c, rank, isAdmin, busy, onStart }: { c: MachineChoice; rank: number; isAdmin: boolean; busy: boolean; onStart: () => void }) {
+function OptionRow({ c, rank, isAdmin, busy, onKeepReady }: { c: MachineChoice; rank: number; isAdmin: boolean; busy: boolean; onKeepReady: () => void }) {
   return (
     <Card className={cn("flex flex-wrap items-center gap-4 p-4", rank === 0 && "border-brand-500")}>
       <div className="w-12 text-center">
@@ -174,7 +194,7 @@ function OptionRow({ c, rank, isAdmin, busy, onStart }: { c: MachineChoice; rank
         <div className="flex items-center gap-2 font-medium">
           {c.gpu} <span className="text-sm text-muted">{c.vram_gb} GB · {c.region_name}</span>
           {rank === 0 && <Badge tone="brand"><Zap className="size-3" /> Best pick</Badge>}
-          {c.status !== "new" && <Badge tone="good">{c.status === "running" ? "Running" : "Starting"}</Badge>}
+          {c.status === "running" && <Badge tone="good">On now</Badge>}
         </div>
         <div className="mt-1 flex flex-wrap gap-1">
           {c.reasons.map((r) => <span key={r} className="rounded panel-2 px-2 py-0.5 text-xs text-muted">{r}</span>)}
@@ -184,7 +204,11 @@ function OptionRow({ c, rank, isAdmin, busy, onStart }: { c: MachineChoice; rank
         <div>{money(c.price_hourly, 2)}/h</div>
         <div className="text-xs text-muted">≈ {money(c.est_cost_usd)} · ~{duration(c.est_wait_s)}</div>
       </div>
-      {isAdmin && c.status === "new" && <Button size="sm" onClick={onStart} loading={busy}>Start this one</Button>}
+      {isAdmin && c.status !== "running" && (
+        <Button size="sm" variant="ghost" onClick={onKeepReady} loading={busy} title="One worker stays on (billed all the time) for 30 minutes">
+          Keep one ready
+        </Button>
+      )}
     </Card>
   );
 }

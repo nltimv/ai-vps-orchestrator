@@ -93,12 +93,6 @@ export function CreatePage() {
   const { prompt: _ignored, ...estimateKey } = body;
   const estimate = useEstimate({ ...estimateKey, prompt: "estimate" }, !!catalog.data && usable.length > 0);
   useEffect(() => { if (estimate.data?.model_id) setRoutedId(estimate.data.model_id); }, [estimate.data?.model_id]);
-  // speculative start (only does something when enabled in Settings and no machine is running)
-  useEffect(() => {
-    if (sessionStorage.getItem("aivo-prewarmed")) return;
-    sessionStorage.setItem("aivo-prewarmed", "1");
-    post("/machines/prewarm", { kind: "image", quality: "standard" }).catch(() => undefined);
-  }, []);
 
   const submit = async (confirmed = false) => {
     if (!fullPrompt.trim()) return;
@@ -138,7 +132,7 @@ export function CreatePage() {
     <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_380px]">
       <div>
         <h1 className="mb-1 text-2xl font-semibold tracking-tight">What do you want to create?</h1>
-        <p className="mb-6 text-sm text-muted">Describe it in your own words. A machine starts only when needed and shuts down when you're done.</p>
+        <p className="mb-6 text-sm text-muted">Describe it in your own words. A GPU starts only when needed and stops when it's done.</p>
 
         <div className="mb-5 inline-flex rounded-xl panel p-1" role="tablist">
           {KIND_TABS.map((t) => (

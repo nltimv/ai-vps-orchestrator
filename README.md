@@ -1,38 +1,40 @@
 # ai-vps-orchestrator (aivo)
 
-Create **images, videos and music with open AI models** on cloud GPU machines that exist
-**only while there is work**. A GPU droplet is started when someone presses *Create*, is reused
-while more work arrives, and is **destroyed** after it has been idle for a while. Powered-off
-droplets are still billed, so destroying them is the only way to stop the meter.
+Create **images, videos and music with open AI models** on **RunPod Serverless** GPUs that run
+**only while there is work**. Each GPU type has a queue on RunPod: when someone presses *Create*,
+the job goes into the best-fitting GPU's queue, RunPod starts a worker, the worker delivers the result
+straight back to aivo, and stops shortly after. You pay per second of GPU work, nothing in between.
 
 - **Friendly dashboard**: describe what you want, pick a style, shape, quality and length.
   No samplers, steps or other jargon. You see a cost and wait estimate before you start.
-- **Encrypted gallery** on your own volume. Generated content never stays at the cloud provider.
-- **Automatic machine choice**: available GPU types and locations are ranked by suitability
-  (enough memory but not overkill, price, availability, distance, already-running machines,
-  cached models). The top one is used and the next one is tried when a type is sold out.
-  You can also pick a machine by hand.
-- **Fast start-up**: a prepared machine image, a private model mirror and optional model disks
-  near the GPUs.
-- **Safety nets against surprise bills**: idle shutdown, a maximum lifetime, monthly spending
-  limits, orphan sweeps, an optional self-destruct watchdog on each machine, and a Kubernetes
-  janitor.
-- **DigitalOcean GPU Droplets**, or **RunPod Serverless** (experimental: pay only while a worker runs), behind a provider interface for other clouds.
+- **Encrypted gallery** on your own volume. Creations never stay at RunPod: workers upload them to aivo,
+  which encrypts them right away. RunPod's job queue only ever sees a one-time ticket.
+- **Automatic GPU choice**: RunPod's GPU types are ranked by suitability (enough memory but not
+  overkill, price, availability, a GPU of that type already on). When no GPU of a type becomes free in
+  time, the job moves to the next type. You can also pick a GPU by hand.
+- **RunPod runs the workers**: one queue endpoint per GPU type, created on first use. RunPod starts
+  workers for waiting jobs (up to your limit per type), reuses a worker for the next job while it waits,
+  and stops it after a short wait. An idle endpoint costs nothing.
+- **Safety nets against surprise bills**: monthly spending limits with per-job reservations, a time
+  limit per creation, workers that stop on their own, and cleanup of endpoints aivo no longer uses.
 - **Sign in with your own SSO** (OpenID Connect: Keycloak, Authentik, Entra ID, Google, …), with
   group-based admin roles and invite-only mode, alongside or instead of passwords
   ([docs/sso.md](docs/sso.md)).
 
 ```
 Browser ─► frontend (React) ─► backend API ──► Postgres
-                                   │           encrypted media volume  ◄── the only place content is kept
-                                   └─ controller ──HTTPS (pinned per-machine certificate)──► GPU droplet
-                                                                                             worker → ComfyUI
+                                 ▲   │          encrypted media volume  ◄── the only place creations are kept
+                                 │   └─ controller ──► RunPod API: queue endpoint per GPU type, job = ticket
+                                 │                                    │
+                                 └── HTTPS, one-time ticket ◄──── RunPod worker → ComfyUI
+                                     (fetch job, progress, upload results)
 ```
 
 ## Quick start (local, no cloud spend)
 
-The default *fake* provider simulates GPU machines with a real worker agent that returns
-placeholder images, videos and audio. The whole flow works on a laptop.
+The default *fake* provider simulates RunPod inside the backend: queues, workers that start and
+stop, and the real worker code with a CPU engine that returns placeholder images, videos and audio.
+The whole flow works on a laptop.
 
 ```bash
 cp deploy/compose/.env.example deploy/compose/.env
@@ -51,13 +53,9 @@ docker compose -f deploy/compose/docker-compose.yml up --build
 
 Open <http://localhost:5173> and create the admin account.
 
-To use real GPUs, set `AIVO_PROVIDER=digitalocean` and `AIVO_DO_TOKEN` in `.env`. See
-[docs/operations-do.md](docs/operations-do.md) first: it covers the GPU quota, a dedicated
-team, billing alerts and the smoke test.
-
-To try RunPod Serverless instead, set `AIVO_PROVIDER=runpod` and `AIVO_RUNPOD_API_KEY`. See
-[docs/operations-runpod.md](docs/operations-runpod.md) for how it works, what it costs and
-what's different.
+To use real GPUs, set `AIVO_PROVIDER=runpod`, `AIVO_RUNPOD_API_KEY` and `AIVO_PUBLIC_URL` (an HTTPS
+address RunPod's workers can reach) in `.env`. See [docs/operations-runpod.md](docs/operations-runpod.md)
+for how it works, what it costs and how to set it up.
 
 ## Production (Kubernetes)
 
@@ -67,23 +65,24 @@ images and its chart get that same version. Install a specific release from the 
 ```bash
 helm install aivo oci://ghcr.io/nltimv/charts/ai-vps-orchestrator --version 0.2.57 \
   --set secrets.mediaKeks="$(uv run aivo generate-key)" \
-  --set secrets.doToken=dop_v1_... \
+  --set secrets.runpodApiKey="<your RunPod API key>" \
   --set ingress.enabled=true --set ingress.host=aivo.example.com
 ```
 
-Upgrade by naming the new version. Dashboard, controller and the worker software on new GPU
-machines all move to that release, and database migrations run before the new backend starts.
+Upgrade by naming the new version. Dashboard, controller and the worker software RunPod runs all
+move to that release, and database migrations run before the new backend starts.
 See [docs/releases.md](docs/releases.md).
 
-The default topology runs API and controller in one pod, so it works with a ReadWriteOnce
-media volume. It also includes a bundled PostgreSQL (official image), a janitor CronJob and
+The dashboard must be reachable from the internet: RunPod's workers fetch jobs and deliver results
+under `/api/v1/worker/` (allow large uploads on your ingress, see `values.yaml`). The default topology
+runs API and controller in one pod, so it works with a ReadWriteOnce media volume. It also includes a bundled PostgreSQL (official image), a janitor CronJob and
 NetworkPolicies. See [`values.yaml`](deploy/helm/ai-vps-orchestrator/values.yaml).
 
 ## Which models?
 
-| Dashboard name | Model | License | Typical machine |
+| Dashboard name | Model | License | Typical GPU |
 |---|---|---|---|
-| Image · Fast | Z-Image-Turbo | Apache-2.0 | RTX 4000 Ada (20 GB, ~$0.76/h) |
+| Image · Fast | Z-Image-Turbo | Apache-2.0 | 16–24 GB (~$0.58–0.68/h on RunPod) |
 | Image · Best | FLUX.2 [dev] | Non-commercial | L40S / RTX 6000 Ada (48 GB) |
 | Image · Text & posters | Qwen-Image-2512 | Apache-2.0 | 48 GB |
 | Edit an image | Qwen-Image-Edit-2511, FLUX.2 [klein] 4B | Apache-2.0 | 48 GB / 20 GB |
@@ -104,14 +103,13 @@ and how to add a model.
 
 | Path | What |
 |---|---|
-| `backend/` | FastAPI API, controller (scheduler, provisioner, reconciler, budget), providers, encrypted store |
-| `worker/` | GPU worker agent (TLS API in front of headless ComfyUI) + CPU mock engine |
+| `backend/` | FastAPI API, worker API, controller (scheduler, job runner, housekeeping, budget), RunPod client + simulated RunPod, encrypted store |
+| `worker/` | RunPod Serverless worker (headless ComfyUI) + CPU mock engine |
 | `packages/protocol/` | Shared backend↔worker contract and catalog schema |
 | `catalog/` | Model manifests and ComfyUI workflow templates (adding a model is data, not code) |
 | `frontend/` | React + Vite + Tailwind dashboard |
 | `deploy/` | docker compose (dev) and Helm chart (production) |
-| `scripts/do_smoke.py` | Cost-capped real-GPU smoke test on DigitalOcean |
-| `docs/` | Architecture, models, costs, security, operations, extending |
+| `docs/` | Architecture, models, costs, security, RunPod operations, releases |
 
 ## Development
 
@@ -131,20 +129,22 @@ uv run ruff check backend worker packages
 cd frontend && npm ci && npm run typecheck && npm run lint:jargon && npm run build
 ```
 
-The test suite covers the following with real TLS mock workers and a real Postgres:
+The test suite runs the full stack against the simulated RunPod (real worker code, CPU engine) and a
+real Postgres:
 
 - **Crypto**: tampering, truncation, Range reads and key rotation.
 - **The suitability scorer**: golden and property tests.
-- **The DigitalOcean client**: mocked HTTP.
-- **RunPod Serverless**: the full stack against a local stand-in for RunPod's API and gateway.
+- **The RunPod client**: request paths and errors (mocked HTTP), and the endpoint aivo creates per GPU type.
 - **The ComfyUI engine**: against a fake ComfyUI.
-- **The full stack**: capacity fallback, unknown create outcomes, orphans, out-of-memory retry,
-  budget races, restart recovery, lease fencing and data residency.
+- **The full stack**: tickets, one endpoint per GPU type, workers reused and stopped, parallel jobs,
+  falling back to the next GPU type, a crashed worker, out-of-memory retry, cancelling, budget races,
+  restart recovery, lease fencing, adult-content rules and data residency.
 
 ## Status
 
-The orchestration, dashboard, encryption, provider and deployment code are complete and
-tested end to end with the simulated provider.
+The orchestration, dashboard, encryption and deployment code are complete and tested end to end with
+the simulated RunPod. The RunPod API calls follow RunPod's documentation (API v2, November 2026) but
+haven't run against RunPod itself yet: try it with a low spending limit first.
 
 Not yet verified on real GPUs:
 
@@ -152,5 +152,5 @@ Not yet verified on real GPUs:
   Image · Best (FLUX.2 [dev]).
 - Model file names and sizes are checked against Hugging Face with `aivo catalog-check --online`.
 
-Run `scripts/do_smoke.py` per engine before relying on one. Check each model's license
-on its card before commercial use.
+Try each engine once with a low spending limit before relying on it. Check each model's license on
+its card before commercial use.

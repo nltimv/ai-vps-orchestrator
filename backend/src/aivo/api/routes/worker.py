@@ -28,6 +28,7 @@ from aivo.controller.lifecycle import job_progress, transition_job
 from aivo.controller.workers import job_cost, worker_done, worker_session
 from aivo.db.models import Asset, GpuEndpoint, Instance, Job
 from aivo.storage.thumbnails import make_thumbnail
+from aivo_protocol import PROTOCOL_VERSION, protocol_compatible
 from aivo_protocol.worker_api import (
     CompleteIn,
     FailIn,
@@ -108,6 +109,8 @@ async def spec(
 ) -> WorkSpec:
     if job.cancel_requested:
         raise HTTPException(410, "cancelled")
+    if not protocol_compatible(body.protocol):
+        raise HTTPException(409, f"this worker speaks protocol {body.protocol}; aivo needs {PROTOCOL_VERSION}")
     now = utcnow()
     endpoint = None
     if job.endpoint_id:

@@ -131,7 +131,7 @@ class Executor:
                 self.logs.emit(
                     "agent",
                     f"job {sid}: done in {time.monotonic() - t0:.1f} s, "
-                    f"{len(rec.status.outputs)} output(s), {size:.1f} MB ready to collect",
+                    f"{len(rec.status.outputs)} output(s), {size:.1f} MB ready to deliver",
                 )
             except TimeoutError:
                 await self.engine.cancel()

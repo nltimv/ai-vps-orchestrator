@@ -5,10 +5,9 @@ from hypothesis import strategies as st
 
 from aivo.catalog.loader import Catalog
 from aivo.catalog.presets import FriendlyParams, plan
-from aivo.config import REPO_ROOT
+from aivo.config import REPO_ROOT, EnvSettings
 from aivo.placement.request import build_request
 from aivo.placement.scorer import Context, rank
-from aivo.config import EnvSettings
 from aivo.providers.runpod.catalog import GpuCatalog
 from aivo.providers.runpod.fake import FakeRunPod
 

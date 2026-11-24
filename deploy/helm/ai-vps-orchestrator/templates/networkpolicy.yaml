@@ -1,6 +1,6 @@
 {{- if .Values.networkPolicy.enabled }}
-# Backend: reachable only from the frontend pods. (Egress stays open: it must reach the
-# cloud API, the GPU machines and model mirrors.)
+# Backend: reachable only from the frontend pods (RunPod workers come in through the ingress and the frontend's
+# proxy). Egress stays open: it must reach RunPod's API and Hugging Face.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

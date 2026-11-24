@@ -17,8 +17,9 @@ makes video seeking work.
 - outputs, thumbnails and posters, and uploaded starting images;
 - prompts and lyrics, sealed field by field in the DB.
 
-**Plaintext.** It exists only in RAM: a tmpfs scratch on the backend, and tmpfs job
-directories on the GPU machine.
+**Plaintext.** It exists only in RAM on the backend (a tmpfs scratch), and on the RunPod worker
+while it works (in `/dev/shm` where that is big enough, otherwise its temporary disk; deleted right
+after delivery).
 
 **Key rotation:**
 1. Add a new key: `k2:…`.
@@ -29,25 +30,27 @@ directories on the GPU machine.
 **Backups.** Back up the media volume and the KEK *separately*. Without the KEK, the volume is
 unreadable.
 
-## Backend ↔ GPU machine
-**Push model.** The backend calls the machine, never the other way round. The backend holds the
-cloud token, the KEK and the DB, so it is never exposed.
+## Backend ↔ RunPod workers
+**Tickets, not secrets.** RunPod's queue gives each job to a worker. The job's whole input is a ticket:
+aivo's address, the job id and a one-time 256-bit token. The worker uses it to talk to aivo over HTTPS
+(`/api/v1/worker/jobs/<id>/…`):
+- **Storage:** aivo stores only the token's SHA-256 and compares in constant time.
+- **Scope:** it opens only that job: its spec, its starting picture, progress, results, done/failed.
+- **Lifetime:** it works only while the job waits for or is with a worker. It stops working when the
+  job ends, is cancelled or moves to another GPU type.
+- **No hints:** a wrong token and an unknown job both get 401.
+- **Uploads:** each upload is checked against the SHA-256 the worker sends with it.
 
-**Per-machine trust:**
-- **Certificates.** Each machine gets a throwaway CA and a leaf certificate for
-  `i-<instance-uuid>.worker.aivo.invalid`. The CA's private key is discarded at once. The
-  backend pins that CA and sends the synthetic name as SNI. If a destroyed machine's public IP
-  is reused by someone else, the handshake fails, and no prompt or token is ever sent there.
-- **Tokens.** A 256-bit bearer token is checked in constant time. user_data holds only its
-  hash. The token is rotated on first contact, and the backend stores it encrypted.
-- **Inside the machine:**
-  - Containers cannot reach the cloud metadata service (iptables `DOCKER-USER` rule).
-  - ComfyUI listens on `127.0.0.1` only.
-  - The agent strips metadata from outputs.
-- **Network.**
-  - A per-deployment Cloud Firewall limits port 443 to the backend's egress IP.
-  - A throwaway SSH key is registered so DigitalOcean never emails a root password.
-    No private key is kept.
+**What RunPod holds:**
+- **API key:** aivo's RunPod API key stays in the backend.
+- **Endpoint settings:** the worker image, aivo's deployment id and the GPU type. No keys or tokens.
+- **Jobs:** only the ticket (useless once the job ends) and the result's file names.
+- **Prompts and pictures:** never in RunPod's job system. RunPod runs the GPU, so on the worker itself
+  aivo trusts RunPod as much as any GPU provider.
+
+**Inside the worker:** ComfyUI listens on `127.0.0.1` only, and the worker strips metadata from
+outputs. Hugging Face downloads of gated models use short-lived signed links that aivo resolves with
+its own token; workers never hold it.
 
 ## Web application
 - **Sessions.** argon2id password hashes. Session cookies are opaque tokens (only their
@@ -64,12 +67,10 @@ cloud token, the KEK and the DB, so it is never exposed.
 - **Uploads.** They are re-encoded to PNG, which drops EXIF/GPS metadata, and capped at 25 MB
   and 2048 px.
 - **Roles.**
-  - Admins can change settings, machines, cache and users.
+  - Admins can change settings, GPUs and users, and see the worker logs of creations.
   - Members can create, and can see the shared gallery and their own jobs' details.
 
-## Cloud blast radius
-- Every resource is tagged with the deployment id. Sweeps never touch other deployments.
-- Destroys are plain droplet deletes, never "with associated resources", so cache disks
-  survive.
-- The optional watchdog token can delete *any* droplet in its account. Use it only inside a
-  dedicated team.
+## RunPod blast radius
+- Every endpoint aivo makes carries the deployment id. Cleanup never touches other endpoints.
+- The RunPod API key can manage everything in its RunPod account. Keep it in a Secret, and use a
+  dedicated RunPod account (or team) if others share yours.

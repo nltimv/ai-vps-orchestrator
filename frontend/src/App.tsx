@@ -5,7 +5,7 @@ import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom"
 
 import { post } from "./api/client";
 import { useServerEvents } from "./api/events";
-import { useAuthStatus, useMachines, useMe, useSpending } from "./api/queries";
+import { useAuthStatus, useGpus, useMe, useSpending } from "./api/queries";
 import { cn, money } from "./lib/format";
 import { CreatePage } from "./pages/Create";
 import { GalleryPage } from "./pages/Gallery";
@@ -18,7 +18,7 @@ import { SpendingPage } from "./pages/Spending";
 const NAV = [
   { to: "/", label: "Create", icon: Sparkles, end: true },
   { to: "/gallery", label: "Gallery", icon: Images },
-  { to: "/machines", label: "Machines", icon: Cpu },
+  { to: "/machines", label: "GPUs", icon: Cpu },
   { to: "/spending", label: "Spending", icon: Coins },
   { to: "/settings", label: "Settings", icon: SettingsIcon, admin: true },
 ];
@@ -65,9 +65,9 @@ export function App() {
 
 function Sidebar({ isAdmin, name }: { isAdmin: boolean; name: string }) {
   const qc = useQueryClient();
-  const machines = useMachines();
+  const machines = useGpus();
   const spending = useSpending();
-  const running = machines.data?.live.filter((m) => m.state !== "destroyed").length ?? 0;
+  const running = machines.data?.workers.filter((w) => w.state !== "stopped").length ?? 0;
   const [dark, setDark] = useState(document.documentElement.classList.contains("dark"));
   const toggleTheme = () => {
     const next = !dark;
@@ -105,7 +105,7 @@ function Sidebar({ isAdmin, name }: { isAdmin: boolean; name: string }) {
       <div className="mt-6 px-5 text-xs text-muted">
         <div className="flex items-center gap-2">
           <span className={cn("size-2 rounded-full", running ? "bg-emerald-500 animate-pulse" : "bg-zinc-500")} />
-          {running ? `${running} machine${running > 1 ? "s" : ""} running` : "No machines running"}
+          {running ? `${running} GPU${running > 1 ? "s" : ""} running` : "No GPUs running"}
         </div>
         {spending.data && (
           <div className="mt-2">
