@@ -17,7 +17,7 @@ droplets are still billed, so destroying them is the only way to stop the meter.
 - **Safety nets against surprise bills**: idle shutdown, a maximum lifetime, monthly spending
   limits, orphan sweeps, an optional self-destruct watchdog on each machine, and a Kubernetes
   janitor.
-- **DigitalOcean GPU Droplets** today, behind a provider interface for other clouds later.
+- **DigitalOcean GPU Droplets**, or **RunPod Serverless** (experimental: pay only while a worker runs), behind a provider interface for other clouds.
 - **Sign in with your own SSO** (OpenID Connect: Keycloak, Authentik, Entra ID, Google, …), with
   group-based admin roles and invite-only mode, alongside or instead of passwords
   ([docs/sso.md](docs/sso.md)).
@@ -54,6 +54,10 @@ Open <http://localhost:5173> and create the admin account.
 To use real GPUs, set `AIVO_PROVIDER=digitalocean` and `AIVO_DO_TOKEN` in `.env`. See
 [docs/operations-do.md](docs/operations-do.md) first: it covers the GPU quota, a dedicated
 team, billing alerts and the smoke test.
+
+To try RunPod Serverless instead, set `AIVO_PROVIDER=runpod` and `AIVO_RUNPOD_API_KEY`. See
+[docs/operations-runpod.md](docs/operations-runpod.md) for how it works, what it costs and
+what's different.
 
 ## Production (Kubernetes)
 
@@ -125,6 +129,7 @@ The test suite covers the following with real TLS mock workers and a real Postgr
 - **Crypto**: tampering, truncation, Range reads and key rotation.
 - **The suitability scorer**: golden and property tests.
 - **The DigitalOcean client**: mocked HTTP.
+- **RunPod Serverless**: the full stack against a local stand-in for RunPod's API and gateway.
 - **The ComfyUI engine**: against a fake ComfyUI.
 - **The full stack**: capacity fallback, unknown create outcomes, orphans, out-of-memory retry,
   budget races, restart recovery, lease fencing and data residency.

@@ -25,11 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aivo.context import AppContext
 from aivo.controller.budget import accrue, admit, ensure_period, month_compute_spend
-from aivo.controller.common import utcnow, worker_client
+from aivo.controller.common import effective_idle_timeout, effective_min_billing, utcnow, worker_client
 from aivo.controller.lifecycle import STARTING_STATES, transition_instance, transition_job
 from aivo.db.models import BackgroundRun, CacheResource, Event, Instance, Job
 from aivo.events.bus import emit
-from aivo.providers.base import ProviderInstance, deployment_tag
+from aivo.providers.base import ProviderInstance, deployment_tag, traits_for
 from aivo.worker_client.client import WorkerUnreachable
 
 SAVED_LOG_LINES = 60  # log lines kept when a machine is shut down
@@ -258,13 +258,14 @@ class Reconciler:
                 idle_for = (now - inst.idle_since).total_seconds() if inst.idle_since else 0
                 # you pay the provider's minimum anyway, so never destroy before it has elapsed
                 billed_for = (now - inst.create_accepted_at).total_seconds() if inst.create_accepted_at else 0
-                timeout = max(rs.idle_timeout_s, 0)
+                timeout = max(effective_idle_timeout(self.app, rs), 0)
+                min_billing = effective_min_billing(self.app, rs)
                 reason = None
                 if inst.max_lifetime_at and now > inst.max_lifetime_at:
                     reason = "max_lifetime"
                 elif inst.drain_reason in ("budget", "lifetime", "manual"):
                     reason = inst.drain_reason
-                elif not keep_warm and idle_for >= timeout and billed_for >= rs.min_billing_s:
+                elif not keep_warm and idle_for >= timeout and billed_for >= min_billing:
                     reason = "idle"
                 if reason:
                     await transition_instance(
@@ -287,7 +288,7 @@ class Reconciler:
                 limit = {
                     "pending": rs.provision_deadline_s,
                     "creating": rs.provision_deadline_s,
-                    "provisioning": rs.boot_ip_timeout_s,
+                    "provisioning": max(rs.boot_ip_timeout_s, traits_for(inst.provider).prepare_timeout_s or 0),
                     "booting": rs.boot_health_timeout_s,
                 }[inst.state] + 60
                 running = controller is not None and controller.has_provisioner(inst.id)

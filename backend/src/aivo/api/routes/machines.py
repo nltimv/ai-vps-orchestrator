@@ -81,8 +81,9 @@ async def _instance_out(s: AsyncSession, i: Instance, idle_timeout_s: int, with_
         models_loaded=list(i.models_loaded or []),
         current_job_id=job_id,
         failure_reason=i.failure_reason,
-        boot_stage=i.boot_stage if i.state == "booting" else None,
-        boot_stage_label=stage_label(i.boot_stage) if i.state == "booting" and i.boot_stage else None,
+        # start-up step; RunPod Serverless reports its preparation while the machine is still "provisioning"
+        boot_stage=i.boot_stage if i.state in ("provisioning", "booting") else None,
+        boot_stage_label=stage_label(i.boot_stage) if i.state in ("provisioning", "booting") and i.boot_stage else None,
         has_saved_log=bool(i.boot_log),
         timeline=timeline,
     )
@@ -263,7 +264,7 @@ async def warmup(
         raise HTTPException(409, "No suitable machine is available right now")
     top = cands[0]
     now = datetime.now(UTC)
-    reservation = reservation_for(top.offer.price_hourly, rs.idle_timeout_s, rs)
+    reservation = reservation_for(top.offer.price_hourly, rs.idle_timeout_s, rs, top.offer.provider)
     adm = await admit(s, rs, now, reservation)
     if not adm.ok:
         raise HTTPException(402, "This month's spending limit has been reached")

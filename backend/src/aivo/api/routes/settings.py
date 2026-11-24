@@ -11,7 +11,6 @@ from aivo.api.deps import get_app, get_session, require_admin
 from aivo.config import RuntimeSettings
 from aivo.context import AppContext, load_runtime
 from aivo.db.models import AuditLog, Setting, User
-from aivo.providers.regions import DO_REGIONS
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -24,8 +23,15 @@ async def get_settings(
     return {
         "settings": rs.model_dump(),
         "defaults": RuntimeSettings().model_dump(),
-        "regions": [{"id": r.slug, "name": r.name} for r in DO_REGIONS.values()],
+        "regions": [{"id": r.slug, "name": r.name} for r in app.provider.regions().values()],
         "provider": app.provider.name,
+        "runpod": {
+            "network_volume": bool(app.env.runpod_network_volume_id),
+            "keep_warm_s": app.env.runpod_keep_warm_s,
+            "idle_timeout_s": app.env.runpod_idle_timeout_s,
+        }
+        if app.provider.name == "runpod"
+        else None,
         "spaces_configured": bool(app.env.spaces_bucket),
         "watchdog_token_configured": bool(app.env.do_watchdog_token),
     }

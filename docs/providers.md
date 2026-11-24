@@ -28,6 +28,23 @@ Map errors to the shared taxonomy. Fallback and idempotency depend on it:
 | `AuthError` / `ConfigError` | Configuration problem; surfaced to the admin |
 | `TransientError` | Retry later |
 
+## Traits
+A provider that isn't "a machine billed from create to delete, reached over pinned TLS"
+registers `ProviderTraits` (`providers/base.py`). RunPod Serverless uses them:
+
+- `bills_from_boot`, `min_billing_s`: billing starts when the worker starts, with no minimum.
+  Budget accrual and the scorer's cost estimates follow.
+- `max_idle_s`: idle machines are let go sooner than the general idle timeout.
+- `prepare_timeout_s`: how long the provider may prepare a machine (free) before aivo moves on.
+- `firewall`, `machine_images`: skip firewall rules, prepared images and model disks.
+- `pinned_tls=False`: the worker sits behind the provider's HTTPS gateway.
+  `get_instance` returns `address` (the gateway URL) instead of an IP. The backend then uses
+  `WorkerClient.via_gateway` (token in `X-Aivo-Token`, requests pinned to one worker, outputs
+  fetched in ranges below the gateway's body limit).
+
+`get_instance` may also report `stage`/`note`, the step before the machine runs, shown on the
+machine card, and `failed` for a definitive start-up failure.
+
 ## Optional capabilities
 These unlock the "Faster start-up" features (`hasattr` checks):
 - `create_bake_instance`, `snapshot`, `wait_action`, `find_snapshot`, `transfer_image`,

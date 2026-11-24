@@ -82,6 +82,8 @@ class Context:
     max_gpu_count: int = 1
     idle_timeout_s: float = 600
     min_billing_s: float = 300
+    # RunPod Serverless: creating the endpoint and preparing the host are not billed
+    create_unbilled: bool = False
     tail_share: float = 0.5
     allow_new: bool = True  # False when max_instances reached / budget locked
     estimator: Estimator = field(default_factory=Estimator)
@@ -269,7 +271,8 @@ def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: 
     fixed = t_create + t_boot + t_load
     wait = fixed + t_run + t_xfer
     k = max(1, req.k)
-    billable = max(fixed + k * t_run, ctx.min_billing_s) + ctx.tail_share * ctx.idle_timeout_s
+    billed_fixed = fixed - t_create if ctx.create_unbilled else fixed
+    billable = max(billed_fixed + k * t_run, ctx.min_billing_s) + ctx.tail_share * ctx.idle_timeout_s
     cost = offer.price_hourly / 3600 * billable / k
     p_fail = ctx.p_fail.get((offer.size_slug, offer.region), P_FAIL_PRIOR)
     if not offer.regions_known:

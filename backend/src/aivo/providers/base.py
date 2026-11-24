@@ -133,6 +133,49 @@ class ProviderInstance:
     size_slug: str | None = None
     region: str | None = None
     port: int = 443
+    # RunPod Serverless: the gateway URL that reaches the worker (instead of an IP address)
+    address: str | None = None
+    # what the provider is doing before the machine runs (start-up step + detail), e.g. preparing a host
+    stage: str | None = None
+    note: str | None = None
+    # the provider reports the machine can't start (e.g. its worker keeps crashing)
+    failed: str | None = None
+
+
+@dataclass(frozen=True)
+class ProviderTraits:
+    """How a provider differs from "a cloud machine billed from create to delete"."""
+
+    # billing starts when the machine starts working (RunPod Serverless), not when it is ordered
+    bills_from_boot: bool = False
+    # minimum billed time per machine; None = the runtime setting
+    min_billing_s: float | None = None
+    # an idle machine is kept at most this long, whatever the general idle timeout says
+    max_idle_s: float | None = None
+    # how long the provider may take to get a machine ready to start (not billed when bills_from_boot)
+    prepare_timeout_s: float | None = None
+    # firewall rules, prepared machine images and attachable model disks
+    firewall: bool = True
+    machine_images: bool = True
+    # True: aivo reaches the worker directly over TLS pinned to the machine's own certificate.
+    # False: through the provider's HTTPS gateway (RunPod Serverless).
+    pinned_tls: bool = True
+
+
+DEFAULT_TRAITS = ProviderTraits()
+_TRAITS: dict[str, ProviderTraits] = {}
+
+
+def register_traits(provider: str, traits: ProviderTraits) -> None:
+    _TRAITS[provider] = traits
+
+
+def traits_for(provider: str | None) -> ProviderTraits:
+    if provider == "runpod" and provider not in _TRAITS:  # static parts, before the provider is created
+        return ProviderTraits(
+            bills_from_boot=True, min_billing_s=0, firewall=False, machine_images=False, pinned_tls=False
+        )
+    return _TRAITS.get(provider or "", DEFAULT_TRAITS)
 
 
 @runtime_checkable

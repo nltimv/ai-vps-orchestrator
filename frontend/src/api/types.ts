@@ -274,6 +274,7 @@ export interface SettingsResponse {
   defaults: RuntimeSettings;
   regions: { id: string; name: string }[];
   provider: string;
+  runpod: { network_volume: boolean; keep_warm_s: number; idle_timeout_s: number } | null;
   spaces_configured: boolean;
   watchdog_token_configured: boolean;
 }

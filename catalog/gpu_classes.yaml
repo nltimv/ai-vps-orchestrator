@@ -35,3 +35,69 @@
   vendor: amd
   perf: 6.5
   aliases: ["mi325x", "amd_mi325x"]
+# RunPod Serverless GPUs (the provider maps RunPod's GPU names to these ids)
+- id: a4000
+  label: NVIDIA RTX A4000 (16 GB)
+  vendor: nvidia
+  perf: 0.6
+  aliases: ["rtx a4000", "nvidia rtx a4000"]
+- id: a4500
+  label: NVIDIA RTX A4500 (20 GB)
+  vendor: nvidia
+  perf: 0.75
+  aliases: ["rtx a4500", "nvidia rtx a4500"]
+- id: l4
+  label: NVIDIA L4 (24 GB)
+  vendor: nvidia
+  perf: 0.8
+  aliases: ["l4", "nvidia l4"]
+- id: a5000
+  label: NVIDIA RTX A5000 (24 GB)
+  vendor: nvidia
+  perf: 0.9
+  aliases: ["rtx a5000", "nvidia rtx a5000"]
+- id: rtx3090
+  label: NVIDIA RTX 3090 (24 GB)
+  vendor: nvidia
+  perf: 1.1
+  aliases: ["rtx 3090", "nvidia geforce rtx 3090"]
+- id: rtx4090
+  label: NVIDIA RTX 4090 (24 GB)
+  vendor: nvidia
+  perf: 2.2
+  aliases: ["rtx 4090", "nvidia geforce rtx 4090"]
+- id: rtx5090
+  label: NVIDIA RTX 5090 (32 GB)
+  vendor: nvidia
+  perf: 3.0
+  aliases: ["rtx 5090", "nvidia geforce rtx 5090"]
+- id: a40
+  label: NVIDIA A40 (48 GB)
+  vendor: nvidia
+  perf: 1.5
+  aliases: ["a40", "nvidia a40"]
+- id: a6000
+  label: NVIDIA RTX A6000 (48 GB)
+  vendor: nvidia
+  perf: 1.6
+  aliases: ["rtx a6000", "nvidia rtx a6000"]
+- id: l40
+  label: NVIDIA L40 (48 GB)
+  vendor: nvidia
+  perf: 2.6
+  aliases: ["l40", "nvidia l40"]
+- id: a100
+  label: NVIDIA A100 (80 GB)
+  vendor: nvidia
+  perf: 4.0
+  aliases: ["a100", "a100 pcie", "a100 sxm", "nvidia a100 80gb pcie", "nvidia a100-sxm4-80gb"]
+- id: rtxpro6000
+  label: NVIDIA RTX PRO 6000 (96 GB)
+  vendor: nvidia
+  perf: 5.0
+  aliases: ["rtx pro 6000", "nvidia rtx pro 6000 blackwell server edition"]
+- id: b200
+  label: NVIDIA B200 (180 GB)
+  vendor: nvidia
+  perf: 10.0
+  aliases: ["b200", "nvidia b200"]

@@ -12,17 +12,28 @@ def sha256_hex(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+TOKEN_HEADER = "x-aivo-token"  # noqa: S105 (a header name)
+
+
 class TokenAuth:
-    """Bearer-token check (constant time). Only the token hash is kept in memory/disk."""
+    """Bearer-token check (constant time). Only the token hash is kept in memory/disk.
+
+    Behind RunPod's gateway, ``Authorization`` carries the RunPod API key, so the backend sends
+    the worker token in ``X-Aivo-Token`` instead; that header wins when present.
+    """
 
     def __init__(self, token_sha256: str):
         self._hash = token_sha256
         self.last_contact = time.monotonic()
 
     def check(self, request: Request) -> None:
-        header = request.headers.get("authorization", "")
-        scheme, _, presented = header.partition(" ")
-        if scheme.lower() != "bearer" or not presented:
+        presented = request.headers.get(TOKEN_HEADER, "")
+        if not presented:
+            header = request.headers.get("authorization", "")
+            scheme, _, presented = header.partition(" ")
+            if scheme.lower() != "bearer":
+                presented = ""
+        if not presented:
             raise HTTPException(status_code=401, detail="missing token")
         if not hmac.compare_digest(sha256_hex(presented), self._hash):
             raise HTTPException(status_code=401, detail="bad token")

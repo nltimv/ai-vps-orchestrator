@@ -32,18 +32,22 @@ class WatchdogConfig(BaseModel):
 
 
 class WorkerBootstrap(BaseModel):
-    """Everything a freshly booted worker needs. Delivered via cloud-init user_data.
+    """Everything a freshly booted worker needs. Delivered via cloud-init user_data
+    (DigitalOcean) or as the ``AIVO_BOOTSTRAP_B64`` environment variable (RunPod Serverless).
 
     Never contains user content (prompts, images): those only travel over the
-    pinned-TLS channel, and only into RAM-backed directories.
+    worker channel, and only into RAM-backed directories where possible.
+
+    Without a TLS certificate the agent serves plain HTTP: only for RunPod Serverless, whose
+    gateway terminates HTTPS in front of the worker.
     """
 
     protocol: str = PROTOCOL_VERSION
     instance_id: str
     deployment_id: str
     token_sha256: str
-    tls_cert_pem: str
-    tls_key_pem: str
+    tls_cert_pem: str = ""
+    tls_key_pem: str = ""
     listen_host: str = "0.0.0.0"
     listen_port: int = 443
     engine: EngineName = "comfy"
@@ -52,6 +56,24 @@ class WorkerBootstrap(BaseModel):
     job_dir: str = "/run/aivo/jobs"  # tmpfs: inputs/outputs never touch disk
     watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
     worker_image: str | None = None
+
+
+BOOTSTRAP_ENV = "AIVO_BOOTSTRAP_B64"
+
+
+def encode_bootstrap_env(boot: WorkerBootstrap) -> str:
+    """The bootstrap as one environment variable value (RunPod endpoints take env, not user_data)."""
+    import base64
+    import zlib
+
+    return base64.b64encode(zlib.compress(boot.model_dump_json(exclude_none=True).encode(), 9)).decode()
+
+
+def decode_bootstrap_env(value: str) -> WorkerBootstrap:
+    import base64
+    import zlib
+
+    return WorkerBootstrap.model_validate_json(zlib.decompress(base64.b64decode(value)))
 
 
 # ---------------------------------------------------------------- files

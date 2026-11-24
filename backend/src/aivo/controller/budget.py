@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from aivo.config import RuntimeSettings
 from aivo.db.models import CacheResource, CostAccrual, Instance, SpendPeriod
+from aivo.providers.base import traits_for
 
 D = Decimal
 
@@ -46,9 +47,16 @@ def split_by_month(start: datetime, end: datetime) -> dict[date, float]:
 
 
 def billed_window(inst: Instance, now: datetime, min_billing_s: float) -> tuple[datetime, datetime] | None:
+    traits = traits_for(inst.provider)
+    if traits.min_billing_s is not None:
+        min_billing_s = traits.min_billing_s
     if inst.create_accepted_at is None:
         return None
     start = inst.create_accepted_at
+    if traits.bills_from_boot:  # RunPod Serverless: preparing the host is free; the worker's run is billed
+        if inst.ip_at is None:
+            return None
+        start = inst.ip_at
     end = inst.destroy_confirmed_at or now
     if end < start:
         end = start
@@ -163,6 +171,11 @@ async def admit(session: AsyncSession, rs: RuntimeSettings, now: datetime, amoun
     return Admission(True, None, spent, reserved, hard, soft)
 
 
-def reservation_for(price_hourly: float, expected_billable_s: float, rs: RuntimeSettings) -> Decimal:
-    secs = max(expected_billable_s, rs.min_billing_s) + rs.idle_timeout_s + 300
+def reservation_for(
+    price_hourly: float, expected_billable_s: float, rs: RuntimeSettings, provider: str | None = None
+) -> Decimal:
+    traits = traits_for(provider)
+    min_billing = rs.min_billing_s if traits.min_billing_s is None else traits.min_billing_s
+    idle = rs.idle_timeout_s if traits.max_idle_s is None else min(rs.idle_timeout_s, traits.max_idle_s)
+    secs = max(expected_billable_s, min_billing) + idle + 300
     return D(str(round(price_hourly * secs / 3600, 4)))

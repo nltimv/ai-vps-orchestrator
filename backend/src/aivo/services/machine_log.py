@@ -33,6 +33,10 @@ from aivo_protocol.worker_api import LogsOut
 
 UPSTREAM_WAIT_S = 15.0
 REACHABLE_STATES = ("booting", "ready", "busy", "draining")
+GATEWAY_STATE_TEXT = {
+    "provisioning": "RunPod accepted the request; waiting for it to prepare a GPU (not billed)",
+    "booting": "RunPod has a GPU ready; starting the worker (billed from now)",
+}
 STATE_TEXT = {
     "pending": "Machine requested",
     "creating": "Asking the cloud for the machine",
@@ -90,6 +94,8 @@ def render_event(ev: Event) -> dict[str, Any] | None:
         if state == "pending" and p.get("retry"):
             return None  # back in line for the next option: the placement attempt already says so
         text = STATE_TEXT.get(state, f"State: {state}")
+        if p.get("gateway") and state in GATEWAY_STATE_TEXT:  # RunPod Serverless
+            text = GATEWAY_STATE_TEXT[state]
         if state == "creating" and p.get("size"):
             text += f" ({p['size']} in {p.get('region', '?')})"
         if p.get("reason"):
@@ -200,7 +206,9 @@ async def stream(
                 yield msg("end", {"reason": "destroyed", "saved_log": bool(inst.boot_log)})
                 return
 
-            reachable = inst.state in REACHABLE_STATES and bool(inst.public_ipv4 and inst.cert_ca_pem)
+            reachable = inst.state in REACHABLE_STATES and bool(
+                (inst.public_ipv4 and inst.cert_ca_pem) or inst.endpoint_url  # RunPod: through its gateway
+            )
             if reachable and upstream is None:
                 upstream = asyncio.create_task(fetch(inst, cursor.machine))
             elif not reachable:

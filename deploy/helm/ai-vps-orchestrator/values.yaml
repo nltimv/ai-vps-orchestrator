@@ -10,13 +10,21 @@ image:
     pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# -- Cloud provider: digitalocean | fake
+# -- Cloud provider: digitalocean | runpod (RunPod Serverless, experimental) | fake
 provider: digitalocean
+# -- RunPod Serverless settings (provider: runpod). The API key goes in secrets.runpodApiKey.
+runpod:
+  countries: []              # ISO codes where workers may run; empty = the built-in European list
+  dataCenters: []            # or exact data centers, e.g. [EU-NL-1, EU-RO-1] (overrides countries)
+  networkVolumeId: ""        # keeps model files between workers (pins workers to its data center)
+  gpuTypes: []               # only these GPU types (RunPod names); empty = all
+  keepWarmSeconds: 120       # keep an idle worker (billed) this long for follow-up creations
+  region: eu                 # name shown in aivo for RunPod machines
 # -- Worker image the GPU machines run
 workerImage: ghcr.io/nltimv/aivo-worker:latest
 
 # -- Secrets. Either let the chart create one from these values, or point at an existing Secret
-#    with keys: AIVO_MEDIA_KEKS, AIVO_DO_TOKEN, [AIVO_DO_WATCHDOG_TOKEN, AIVO_SPACES_KEY, AIVO_SPACES_SECRET,
+#    with keys: AIVO_MEDIA_KEKS, AIVO_DO_TOKEN or AIVO_RUNPOD_API_KEY, [AIVO_DO_WATCHDOG_TOKEN, AIVO_SPACES_KEY, AIVO_SPACES_SECRET,
 #    AIVO_HF_TOKEN, AIVO_ADMIN_PASSWORD, AIVO_DATABASE_URL]
 secrets:
   existingSecret: ""
@@ -24,6 +32,7 @@ secrets:
   mediaActiveKeyId: ""
   doToken: ""
   doWatchdogToken: ""
+  runpodApiKey: ""         # provider: runpod
   spacesKey: ""
   spacesSecret: ""
   hfToken: ""

@@ -1,4 +1,4 @@
-"""Run the worker agent with TLS. Used by ``main`` (real machines) and by the
+"""Run the worker agent (TLS, or plain HTTP behind RunPod's gateway). Used by ``main`` (real machines) and by the
 backend's fake provider (in-process mock workers)."""
 
 from __future__ import annotations
@@ -64,22 +64,25 @@ class WorkerServer:
 
     async def start(self) -> None:
         boot = self.state.boot
-        # uvicorn needs files; keep them on tmpfs where available
-        base = "/dev/shm" if os.path.isdir("/dev/shm") else None
-        self._tlsdir = tempfile.TemporaryDirectory(prefix="aivo-tls-", dir=base)
-        cert = Path(self._tlsdir.name) / "cert.pem"
-        key = Path(self._tlsdir.name) / "key.pem"
-        cert.write_text(boot.tls_cert_pem)
-        key.write_text(boot.tls_key_pem)
-        os.chmod(key, 0o600)
+        tls: dict[str, str] = {}
+        if boot.tls_cert_pem:
+            # uvicorn needs files; keep them on tmpfs where available
+            base = "/dev/shm" if os.path.isdir("/dev/shm") else None
+            self._tlsdir = tempfile.TemporaryDirectory(prefix="aivo-tls-", dir=base)
+            cert = Path(self._tlsdir.name) / "cert.pem"
+            key = Path(self._tlsdir.name) / "key.pem"
+            cert.write_text(boot.tls_cert_pem)
+            key.write_text(boot.tls_key_pem)
+            os.chmod(key, 0o600)
+            tls = {"ssl_certfile": str(cert), "ssl_keyfile": str(key)}
+        # else: plain HTTP behind RunPod's gateway, which terminates HTTPS
         self._sock = self._bind()
         config = uvicorn.Config(
             create_app(self.state),
-            ssl_certfile=str(cert),
-            ssl_keyfile=str(key),
             log_level="warning",
             lifespan="on",
             access_log=False,
+            **tls,  # type: ignore[arg-type]
         )
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve(sockets=[self._sock]), name="worker-server")

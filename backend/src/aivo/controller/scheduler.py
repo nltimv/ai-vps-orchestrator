@@ -211,7 +211,7 @@ class Scheduler:
                     continue
                 # new machine
                 new_cands = [c for c in cands if c.instance_id is None][:MAX_CANDIDATES]
-                reservation = reservation_for(top.offer.price_hourly, top.wait_s, rs)
+                reservation = reservation_for(top.offer.price_hourly, top.wait_s, rs, top.offer.provider)
                 adm = await admit(s, rs, now, reservation)
                 if not adm.ok:
                     await transition_job(

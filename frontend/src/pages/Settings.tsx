@@ -4,11 +4,11 @@ import { useEffect, useState } from "react";
 
 import { patch, post } from "@/api/client";
 import { useCacheStatus, useCatalog, useHealth, useSaveSettings, useSettings, useUsers } from "@/api/queries";
-import type { RuntimeSettings } from "@/api/types";
+import type { RuntimeSettings, SettingsResponse } from "@/api/types";
 import { LicenseBadge } from "@/components/LicenseBadge";
 import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, ErrorNote, Field, Input, Label, PageHeader, Toggle } from "@/components/ui";
-import { ago, cn, money, setupStepLabel } from "@/lib/format";
+import { ago, cn, money, providerLabel, setupStepLabel } from "@/lib/format";
 
 export function SettingsPage() {
   const s = useSettings();
@@ -24,10 +24,11 @@ export function SettingsPage() {
   );
   const onSave = async () => { await save.mutateAsync(changed); setSaved(true); };
   const regions = s.data.regions;
+  const runpod = s.data.provider === "runpod" ? s.data.runpod : null;
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Settings" subtitle={`Cloud: ${s.data.provider === "fake" ? "simulated (no real machines)" : "DigitalOcean"}`}
+      <PageHeader title="Settings" subtitle={`Cloud: ${providerLabel(s.data.provider)}`}
         actions={<Button variant="primary" onClick={onSave} loading={save.isPending} disabled={!Object.keys(changed).length}>
           {saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Saved" : "Save changes"}</Button>} />
       <ErrorNote error={save.error} />
@@ -67,9 +68,10 @@ export function SettingsPage() {
       </Section>
 
       <Engines draft={draft} set={set} />
-      <CacheSection draft={draft} set={set} spaces={s.data.spaces_configured} regions={regions} />
+      {runpod ? <RunPodSection info={runpod} idleMinutes={Math.round(draft.idle_timeout_s / 60)} />
+        : <CacheSection draft={draft} set={set} spaces={s.data.spaces_configured} regions={regions} />}
 
-      <Section title="Security" desc="Who may connect to the machines, and what happens if this server disappears.">
+      {!runpod && <Section title="Security" desc="Who may connect to the machines, and what happens if this server disappears.">
         <Label>Machine access</Label>
         <Chips name="Machine access" value={draft.firewall_mode} onChange={(v) => v && set("firewall_mode", v)} options={[
           { id: "auto_egress_ip", label: "Only this server (automatic)" },
@@ -87,7 +89,7 @@ export function SettingsPage() {
             <p className="mt-2 text-xs text-amber-500">Needs AIVO_DO_WATCHDOG_TOKEN (a token that may only delete machines; use a dedicated cloud team).</p>
           )}
         </div>
-      </Section>
+      </Section>}
 
       <Section title="Adult content (18+)" desc="Engines that make nudity and sexual content, for adults only.">
         <Toggle checked={draft.adult_content_enabled} onChange={(v) => set("adult_content_enabled", v)}
@@ -185,6 +187,23 @@ function Engines({ draft, set }: { draft: RuntimeSettings; set: <K extends keyof
           </div>
         ))}
       </div>
+    </Section>
+  );
+}
+
+function RunPodSection({ info, idleMinutes }: { info: NonNullable<SettingsResponse["runpod"]>; idleMinutes: number }) {
+  const keepWarm = Math.max(1, Math.round(info.keep_warm_s / 60));
+  return (
+    <Section title="RunPod Serverless" desc="Each machine is a RunPod endpoint with one worker. You pay only while the worker runs.">
+      <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
+        <li>Getting a GPU ready and downloading the worker software is free; billing starts when the worker starts.</li>
+        <li>An idle worker is kept for follow-up creations for {Math.min(keepWarm, idleMinutes)} min, then let go
+          (AIVO_RUNPOD_KEEP_WARM_S). If this server goes silent, RunPod stops it after {info.idle_timeout_s} s.</li>
+        <li>{info.network_volume
+          ? "Model files are kept on your RunPod network volume, so later workers start faster."
+          : "Model files are downloaded by every new worker. A RunPod network volume (AIVO_RUNPOD_NETWORK_VOLUME_ID) keeps them."}</li>
+        <li>RunPod's gateway handles the encryption to the worker; creations pass through it but are never stored there.</li>
+      </ul>
     </Section>
   );
 }

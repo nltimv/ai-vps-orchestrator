@@ -1,6 +1,7 @@
 # Local development: everything runs on your machine; GPU machines are simulated
 # by default (AIVO_PROVIDER=fake). Set AIVO_PROVIDER=digitalocean + AIVO_DO_TOKEN
-# in .env to use real GPU Droplets.
+# in .env to use real GPU Droplets, or AIVO_PROVIDER=runpod + AIVO_RUNPOD_API_KEY for
+# RunPod Serverless (experimental).
 #
 #   cp deploy/compose/.env.example deploy/compose/.env
 #   docker compose -f deploy/compose/docker-compose.yml up --build
