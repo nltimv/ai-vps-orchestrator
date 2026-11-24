@@ -20,11 +20,11 @@ HEADERS = {"X-Requested-With": "aivo"}
 
 
 class Harness:
-    def __init__(self, env, *, settings: dict[str, Any] | None = None, role: str = "all"):
+    def __init__(self, env, *, settings: dict[str, Any] | None = None, role: str = "all", provider: Any = None):
         self.env = env
         self.settings = {"min_billing_s": 0, "idle_timeout_s": 3600, **(settings or {})}
         self.role = role
-        self.provider = FakeProvider(boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds)
+        self.provider = provider or FakeProvider(boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds)
 
     async def __aenter__(self) -> Harness:
         from tests.conftest import reset_db

@@ -37,7 +37,7 @@ class EnvSettings(BaseSettings):
 
     catalog_dir: Path = REPO_ROOT / "catalog"
 
-    provider: Literal["fake", "digitalocean"] = "fake"
+    provider: Literal["fake", "digitalocean", "runpod"] = "fake"
     do_token: SecretStr | None = None
     do_api_base: str = "https://api.digitalocean.com"
     # Optional custom-scoped token (droplet:delete) handed to workers for the self-destruct watchdog.
@@ -49,6 +49,34 @@ class EnvSettings(BaseSettings):
     # Debugging only: your own DigitalOcean SSH key ids/fingerprints, added to every machine
     # (also open port 22 with Settings -> debug_ssh_cidrs).
     do_ssh_key_ids: CsvList = Field(default_factory=list)
+
+    # --- RunPod Serverless (AIVO_PROVIDER=runpod, experimental) ----------------------------
+    # Each machine is its own load-balancing endpoint with at most one worker; deleting the endpoint
+    # stops its billing at once. See docs/operations-runpod.md.
+    runpod_api_key: SecretStr | None = None
+    runpod_api_base: str = "https://api.runpod.io"
+    # The gateway in front of an endpoint's worker ({endpoint_id} is filled in).
+    runpod_gateway_url: str = "https://{endpoint_id}.api.runpod.ai"
+    # Where workers may run: these countries (ISO codes) ...
+    runpod_countries: CsvList = Field(
+        default_factory=lambda: "NL,BE,DE,FR,CZ,RO,SE,NO,IS,FI,PL,ES,IT,AT,DK,IE,PT".split(",")
+    )
+    # ... or exactly these data centers (e.g. EU-NL-1,EU-RO-1); overrides the countries
+    runpod_data_centers: CsvList = Field(default_factory=list)
+    # Region name shown in aivo for RunPod machines
+    runpod_region: str = "eu"
+    # Only these GPU types (RunPod ids or names, e.g. "NVIDIA L40S,RTX 4090"); empty = all
+    runpod_gpu_types: CsvList = Field(default_factory=list)
+    # Optional network volume that keeps downloaded model files between workers (pins its data center)
+    runpod_network_volume_id: str | None = None
+    # Container disk for model files when there is no network volume (GB)
+    runpod_disk_gb: int = 150
+    # RunPod stops a worker this long after the last request: the safety net if aivo goes silent
+    runpod_idle_timeout_s: int = 90
+    # aivo keeps an idle RunPod worker running (billed) at most this long for follow-up jobs
+    runpod_keep_warm_s: int = 120
+    # Waiting for RunPod to prepare a GPU host (pulling the worker software) is not billed
+    runpod_prepare_timeout_s: int = 1200
 
     spaces_key: SecretStr | None = None
     spaces_secret: SecretStr | None = None
@@ -103,6 +131,9 @@ class EnvSettings(BaseSettings):
         "cors_origins",
         "do_ssh_key_ids",
         "fake_chaos",
+        "runpod_countries",
+        "runpod_data_centers",
+        "runpod_gpu_types",
         mode="before",
     )
     @classmethod

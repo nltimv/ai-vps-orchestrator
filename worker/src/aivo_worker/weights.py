@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 
@@ -169,7 +170,8 @@ async def download(
     """Parallel ranged download to ``dest`` (via ``dest.part`` + rename)."""
     own = client is None
     client = client or httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(60, read=300))
-    part = dest.with_suffix(dest.suffix + ".part")
+    # unique per download: on a shared RunPod network volume several workers may fetch the same file
+    part = dest.with_name(f"{dest.name}.{os.getpid()}-{secrets.token_hex(4)}.part")
     try:
         head = await client.get(url, headers={**(headers or {}), "Range": "bytes=0-0"})
         size = expected_size

@@ -1,4 +1,4 @@
-"""Entry point on a real GPU machine: ``aivo-worker`` (systemd / docker)."""
+"""Entry point on a real GPU machine: ``aivo-worker`` (systemd / docker / RunPod Serverless)."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
 
-from aivo_protocol.worker_api import LogLine, WorkerBootstrap
+from aivo_protocol.worker_api import BOOTSTRAP_ENV, LogLine, WorkerBootstrap, decode_bootstrap_env
 from aivo_worker.logbuf import BufferHandler, LogBuffer
 from aivo_worker.server import WorkerServer, build_state
 from aivo_worker.watchdog import Watchdog
@@ -27,8 +28,33 @@ def _echo(line: LogLine) -> None:
     print(f"{stamp} [{line.source}] {line.text}", file=sys.stdout, flush=True)
 
 
-def load_bootstrap(path: Path = BOOTSTRAP_PATH) -> WorkerBootstrap:
+# A RAM-backed job directory must hold a job's inputs and outputs (a few hundred MB at most).
+MIN_RAM_JOB_DIR_BYTES = 2 * 1024**3
+
+
+def load_bootstrap(path: Path = BOOTSTRAP_PATH, environ: dict[str, str] | None = None) -> WorkerBootstrap:
+    """From ``/etc/aivo/bootstrap.json`` (cloud machines) or ``AIVO_BOOTSTRAP_B64`` (RunPod Serverless,
+    where the endpoint's environment is the only way in). ``PORT`` is RunPod's port for the agent."""
+    env = os.environ if environ is None else environ
+    if env.get(BOOTSTRAP_ENV):
+        boot = decode_bootstrap_env(env[BOOTSTRAP_ENV])
+        if env.get("PORT", "").isdigit():
+            boot = boot.model_copy(update={"listen_port": int(env["PORT"])})
+        return boot.model_copy(update={"job_dir": pick_job_dir(boot.job_dir)})
     return WorkerBootstrap.model_validate(json.loads(path.read_text()))
+
+
+def pick_job_dir(preferred: str, fallback: str = "/tmp/aivo/jobs") -> str:
+    """Keep creations in RAM (``/dev/shm``) when it is big enough; a container's default 64 MB is not."""
+    base = Path(preferred)
+    probe = next((p for p in (base, *base.parents) if p.exists()), None)
+    try:
+        if probe is not None and shutil.disk_usage(probe).total >= MIN_RAM_JOB_DIR_BYTES:
+            return preferred
+    except OSError:
+        pass
+    print(f"aivo: {preferred} is too small for jobs; using {fallback} (container disk)", file=sys.stderr)
+    return fallback
 
 
 async def amain() -> None:

@@ -19,4 +19,8 @@ def make_provider(env: EnvSettings) -> CloudProvider:
         if env.do_token is None:
             raise ValueError("AIVO_DO_TOKEN is required for the digitalocean provider")
         return DigitalOceanProvider(env)
+    if env.provider == "runpod":
+        from aivo.providers.runpod.provider import RunPodServerlessProvider
+
+        return RunPodServerlessProvider(env)
     raise ValueError(f"unknown provider {env.provider}")

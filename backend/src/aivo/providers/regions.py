@@ -1,4 +1,4 @@
-"""Static metadata for DigitalOcean datacenters (coordinates for latency estimates)."""
+"""Static metadata for DigitalOcean datacenters (coordinates for latency estimates), plus other providers' regions."""
 
 from __future__ import annotations
 
@@ -25,5 +25,13 @@ DO_REGIONS: dict[str, RegionMeta] = {
 }
 
 
+# regions of other providers (RunPod's region group), registered when the provider is created
+_OTHER_REGIONS: dict[str, RegionMeta] = {}
+
+
+def register_regions(regions: dict[str, RegionMeta]) -> None:
+    _OTHER_REGIONS.update(regions)
+
+
 def region_meta(slug: str) -> RegionMeta:
-    return DO_REGIONS.get(slug) or RegionMeta(slug, slug.upper(), 0.0, 0.0, None)
+    return DO_REGIONS.get(slug) or _OTHER_REGIONS.get(slug) or RegionMeta(slug, slug.upper(), 0.0, 0.0, None)

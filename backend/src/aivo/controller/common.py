@@ -24,7 +24,7 @@ from aivo.db.models import (
 )
 from aivo.placement.estimates import Estimator
 from aivo.placement.scorer import Context, LiveInstance
-from aivo.providers.base import GpuOffer
+from aivo.providers.base import GpuOffer, traits_for
 from aivo.worker_client.client import WorkerClient
 
 FAILURE_OUTCOMES = ("capacity", "quota", "late_failure", "boot_failure", "error")
@@ -52,6 +52,17 @@ async def get_offers(app: AppContext, *, max_age_s: float = 60, force: bool = Fa
             if not oc.offers:
                 raise
     return oc.offers
+
+
+def effective_idle_timeout(app: AppContext, rs: RuntimeSettings) -> float:
+    """The general idle timeout, capped by the provider (RunPod Serverless keeps idle workers briefly)."""
+    cap = traits_for(app.provider.name).max_idle_s
+    return float(rs.idle_timeout_s if cap is None else min(rs.idle_timeout_s, cap))
+
+
+def effective_min_billing(app: AppContext, rs: RuntimeSettings) -> float:
+    m = traits_for(app.provider.name).min_billing_s
+    return float(rs.min_billing_s if m is None else m)
 
 
 def offer_from_instance(inst: Instance) -> GpuOffer:
@@ -125,8 +136,9 @@ async def build_context(app: AppContext, session: AsyncSession, rs: RuntimeSetti
         preferred_regions=frozenset(rs.preferred_regions),
         denied_sizes=frozenset(rs.denied_sizes),
         max_price_hourly=rs.max_price_hourly,
-        idle_timeout_s=rs.idle_timeout_s,
-        min_billing_s=rs.min_billing_s,
+        idle_timeout_s=effective_idle_timeout(app, rs),
+        min_billing_s=effective_min_billing(app, rs),
+        create_unbilled=traits_for(app.provider.name).bills_from_boot,
         tail_share=await tail_share(session, rs),
         allow_new=allow_new,
         estimator=Estimator(est_values),
@@ -204,6 +216,18 @@ async def live_view(session: AsyncSession, app: AppContext) -> tuple[list[Instan
 
 
 def worker_client(app: AppContext, inst: Instance) -> WorkerClient:
+    if inst.endpoint_url and inst.token_enc:  # RunPod Serverless: through the gateway, pinned to its worker
+        token = app.keyring.open(inst.token_enc, inst.id.bytes)
+        api_key = app.env.runpod_api_key
+        assert token is not None
+        if api_key is None:
+            raise RuntimeError("AIVO_RUNPOD_API_KEY is not set")
+        return WorkerClient.via_gateway(
+            inst.endpoint_url,
+            token,
+            api_key=api_key.get_secret_value(),
+            worker_id=inst.worker_ref,
+        )
     if not (inst.public_ipv4 and inst.cert_ca_pem and inst.sni_name and inst.token_enc):
         raise RuntimeError("instance has no connection details yet")
     token = app.keyring.open(inst.token_enc, inst.id.bytes)

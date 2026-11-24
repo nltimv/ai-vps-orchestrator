@@ -163,6 +163,9 @@ class Instance(Base):
     state_version: Mapped[int] = mapped_column(Integer, default=0)
     public_ipv4: Mapped[str | None] = mapped_column(String(45))
     port: Mapped[int] = mapped_column(Integer, default=443)
+    # RunPod Serverless: the gateway URL in front of the worker, and the worker every request is pinned to
+    endpoint_url: Mapped[str | None] = mapped_column(Text)
+    worker_ref: Mapped[str | None] = mapped_column(String(128))
     cert_ca_pem: Mapped[str | None] = mapped_column(Text)
     sni_name: Mapped[str | None] = mapped_column(String(128))
     token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)

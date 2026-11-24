@@ -69,7 +69,18 @@ const SETUP_STEPS: Record<string, string> = {
   checking_engine: "checking the worker software can use the GPU",
   cleaning_up: "cleaning up",
   starting_engine: "starting the AI engine",
+  // RunPod Serverless, before the worker runs (not billed yet)
+  preparing_host: "RunPod is preparing a GPU",
+  waiting_for_gpu: "waiting for a free GPU",
+  starting_worker: "starting the worker",
 };
+
+const PROVIDERS: Record<string, string> = {
+  fake: "simulated (no real machines)",
+  digitalocean: "DigitalOcean",
+  runpod: "RunPod Serverless (experimental)",
+};
+export const providerLabel = (p: string) => PROVIDERS[p] ?? p;
 export const setupStepLabel = (s: string) => SETUP_STEPS[s] ?? s.replace(/_/g, " ");
 
 export const isActive = (state: string) => !["succeeded", "failed", "cancelled"].includes(state);

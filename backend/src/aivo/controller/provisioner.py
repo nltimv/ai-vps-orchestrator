@@ -40,6 +40,7 @@ from aivo.providers.base import (
     VolumeBusy,
     instance_tag,
     tags_for,
+    traits_for,
 )
 from aivo.worker_client.client import WorkerClient, WorkerUnreachable
 from aivo.worker_client.tls import make_worker_credentials
@@ -63,6 +64,10 @@ BOOT_STAGES = {
     # preparing a machine image (bake)
     "checking_engine": "checking the worker software can use the GPU",
     "cleaning_up": "cleaning up for the snapshot",
+    # RunPod Serverless (reported by the provider before the worker runs; not billed)
+    "preparing_host": "RunPod is preparing a GPU host",
+    "waiting_for_gpu": "waiting for a free GPU",
+    "starting_worker": "starting the worker",
 }
 
 
@@ -199,7 +204,11 @@ class Provisioner:
                     provider_instance_id=pi.provider_id,
                     create_accepted_at=utcnow(),
                     public_ipv4=pi.public_ipv4,
-                    event_payload={"size": offer.size_slug, "region": offer.region},
+                    event_payload={
+                        "size": offer.size_slug,
+                        "region": offer.region,
+                        **({"gateway": True} if traits_for(app.provider.name).bills_from_boot else {}),
+                    },
                 )
             del token
             return True
@@ -214,14 +223,17 @@ class Provisioner:
         """Mint fresh credentials for this attempt and move the row to ``creating``."""
         app = self.app
         rs = await app.runtime()
-        creds = make_worker_credentials(inst.id)
+        traits = traits_for(app.provider.name)
+        # pinned TLS: a throw-away CA per machine. Behind RunPod's gateway the token alone protects the worker.
+        creds = make_worker_credentials(inst.id) if traits.pinned_tls else None
         token = secrets.token_urlsafe(32)
         image = await self._choose_image(offer, rs.boot_strategy)
-        await self._ensure_access(rs)
+        if traits.firewall:
+            await self._ensure_access(rs)
         volume_ids: list[str] = []
         volume_row_id = None
         async with app.sessionmaker() as s, s.begin():
-            if use_volume and rs.cache_policy.volume_enabled:
+            if use_volume and rs.cache_policy.volume_enabled and traits.machine_images:
                 vol = (
                     await s.execute(
                         update(CacheResource)
@@ -238,7 +250,7 @@ class Provisioner:
                 if vol:
                     volume_row_id, volume_ids = vol[0], [vol[1]]
             watchdog = WatchdogConfig()
-            if rs.watchdog_enabled and app.env.do_watchdog_token:
+            if rs.watchdog_enabled and app.env.do_watchdog_token and app.provider.name == "digitalocean":
                 watchdog = WatchdogConfig(
                     enabled=True,
                     token=app.env.do_watchdog_token.get_secret_value(),
@@ -262,10 +274,12 @@ class Provisioner:
                 image_ref=image.ref,
                 image_kind=image.kind,
                 worker_image=app.env.worker_image,
-                cert_ca_pem=creds.ca_pem,
-                sni_name=creds.sni_name,
+                cert_ca_pem=creds.ca_pem if creds else None,
+                sni_name=creds.sni_name if creds else None,
                 token_enc=app.keyring.seal(token, inst.id.bytes),
                 port=app.env.worker_port,
+                endpoint_url=None,
+                worker_ref=None,
                 volume_resource_id=volume_row_id,
                 event_payload={"size": offer.size_slug, "region": offer.region},
             )
@@ -275,8 +289,8 @@ class Provisioner:
             instance_id=str(inst.id),
             deployment_id=str(app.deployment_id),
             token_sha256=hashlib.sha256(token.encode()).hexdigest(),
-            tls_cert_pem=creds.cert_pem,
-            tls_key_pem=creds.key_pem,
+            tls_cert_pem=creds.cert_pem if creds else "",
+            tls_key_pem=creds.key_pem if creds else "",
             listen_port=app.env.worker_port,
             engine="comfy",
             volume_mount="/mnt/aivo-cache" if volume_ids else None,
@@ -402,16 +416,26 @@ class Provisioner:
     # ------------------------------------------------------------------ boot
 
     async def _wait_ip(self, inst: Instance) -> bool:
+        """Until the machine has an address (cloud machines) or a prepared worker (RunPod Serverless)."""
         rs = await self.app.runtime()
+        traits = traits_for(self.app.provider.name)
+        timeout = traits.prepare_timeout_s or rs.boot_ip_timeout_s
         start = time.monotonic()
         delays = [2, 3, 5, 5, 10]
         i = 0
-        while time.monotonic() - start < rs.boot_ip_timeout_s:
+        stage = inst.boot_stage
+        while time.monotonic() - start < timeout:
             cur = await self._load(inst.id)
             if cur is None or cur.state != "provisioning":
                 return False
             assert cur.provider_instance_id
-            pi = await self.app.provider.get_instance(cur.provider_instance_id)
+            try:
+                pi = await self.app.provider.get_instance(cur.provider_instance_id)
+            except ProviderError as e:  # a passing API hiccup: look again shortly
+                log.info("looking up machine %s failed: %s", inst.id, e)
+                await asyncio.sleep(delays[min(i, len(delays) - 1)] * (self.poll_s / 2.0))
+                i += 1
+                continue
             if pi is None:
                 await self._fail(
                     inst.id,
@@ -421,10 +445,24 @@ class Provisioner:
                     outcome="late_failure",
                 )
                 return False
-            if pi.public_ipv4 and pi.status == "active":
+            if pi.failed:
+                await self._boot_failed(cur, pi.failed, definitive=True)
+                return False
+            if pi.stage:
+                stage = await self._set_stage(cur, stage, pi.stage, pi.note)
+            reachable = pi.public_ipv4 or pi.address
+            if reachable and pi.status == "active":
                 async with self.app.sessionmaker() as s, s.begin():
                     await transition_instance(
-                        s, inst.id, "provisioning", "booting", public_ipv4=pi.public_ipv4, port=pi.port, ip_at=utcnow()
+                        s,
+                        inst.id,
+                        "provisioning",
+                        "booting",
+                        public_ipv4=pi.public_ipv4,
+                        endpoint_url=pi.address,
+                        port=pi.port,
+                        ip_at=utcnow(),
+                        event_payload={"gateway": True} if pi.address else None,
                     )
                     if cur.create_accepted_at:
                         secs = (utcnow() - cur.create_accepted_at).total_seconds()
@@ -438,9 +476,10 @@ class Provisioner:
                 return True
             await asyncio.sleep(delays[min(i, len(delays) - 1)] * (self.poll_s / 2.0))
             i += 1
-        await self._fail(
-            inst.id, "The machine took too long to start.", requeue=True, code="late_failure", outcome="late_failure"
-        )
+        msg = "The machine took too long to start."
+        if traits.bills_from_boot:
+            msg = f"RunPod had no GPU ready within {round(timeout / 60)} min (last step: {stage_label(stage)})."
+        await self._fail(inst.id, msg, requeue=True, code="late_failure", outcome="late_failure")
         return False
 
     async def _wait_healthy(self, inst: Instance) -> bool:
@@ -509,7 +548,12 @@ class Provisioner:
                 log.debug("health probe for %s failed: %s", inst.id, e)
             await asyncio.sleep(self.poll_s * 1.5)
         minutes = max(1, round((time.monotonic() - start) / 60))
-        if not answered:
+        if not answered and cur is not None and cur.endpoint_url:
+            msg = (
+                f"The RunPod worker never answered within {minutes} min "
+                "(see the endpoint's worker logs in the RunPod console)."
+            )
+        elif not answered:
             msg = (
                 f"The machine never answered within {minutes} min "
                 "(its start-up script may not have run, or the network blocks the worker port)."
@@ -536,6 +580,8 @@ class Provisioner:
                 files_present=h.files_present,
                 models_loaded=h.models_loaded,
                 boot_stage=None,
+                # RunPod: from now on every request goes to this worker, or fails if it is gone
+                **({"worker_ref": client.worker_id} if client.gateway and client.worker_id else {}),
             )
             secs = (now - cur.ip_at).total_seconds() if cur.ip_at else None
             if secs is not None:

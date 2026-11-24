@@ -1,4 +1,4 @@
-"""Worker agent HTTP API (served over TLS with a per-machine certificate)."""
+"""Worker agent HTTP API (served over TLS with a per-machine certificate, or behind RunPod's gateway)."""
 
 from __future__ import annotations
 
@@ -87,6 +87,11 @@ def create_app(state: WorkerState) -> FastAPI:
 
     def auth(request: Request) -> None:
         state.auth.check(request)
+
+    @app.get("/ping")
+    async def ping() -> dict[str, str]:
+        """Health check of RunPod's load balancer (no token: it says nothing but "up")."""
+        return {"status": "ok"}
 
     @app.get("/v1/health", dependencies=[Depends(auth)])
     async def health() -> Health:
@@ -210,10 +215,10 @@ def _range_file(path: Path, request: Request) -> Response:
         a, _, b = rng[6:].partition("-")
         try:
             start = int(a) if a else max(0, size - int(b))
-            end = int(b) if (a and b) else size - 1
+            end = min(int(b), size - 1) if (a and b) else size - 1
         except ValueError:
             raise HTTPException(416, "bad range") from None
-        if start > end or end >= size:
+        if start > end or start >= size:
             raise HTTPException(416, "range not satisfiable")
         status = 206
 

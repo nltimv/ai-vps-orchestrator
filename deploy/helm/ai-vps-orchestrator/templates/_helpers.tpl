@@ -25,6 +25,30 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: {{ .Values.provider | quote }}
 - name: AIVO_WORKER_IMAGE
   value: {{ .Values.workerImage | quote }}
+{{- if eq .Values.provider "runpod" }}
+{{- with .Values.runpod }}
+{{- with .countries }}
+- name: AIVO_RUNPOD_COUNTRIES
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- with .dataCenters }}
+- name: AIVO_RUNPOD_DATA_CENTERS
+  value: {{ join "," . | quote }}
+{{- end }}
+{{- with .networkVolumeId }}
+- name: AIVO_RUNPOD_NETWORK_VOLUME_ID
+  value: {{ . | quote }}
+{{- end }}
+{{- with .gpuTypes }}
+- name: AIVO_RUNPOD_GPU_TYPES
+  value: {{ join "," . | quote }}
+{{- end }}
+- name: AIVO_RUNPOD_KEEP_WARM_S
+  value: {{ .keepWarmSeconds | quote }}
+- name: AIVO_RUNPOD_REGION
+  value: {{ .region | quote }}
+{{- end }}
+{{- end }}
 - name: AIVO_MEDIA_DIR
   value: /var/lib/aivo/media
 - name: AIVO_SCRATCH_DIR
