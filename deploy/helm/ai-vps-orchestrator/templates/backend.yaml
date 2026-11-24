@@ -31,7 +31,9 @@ spec:
       initContainers:
         - name: migrate
           image: {{ include "aivo.backendImage" $ }}
-          imagePullPolicy: {{ $.Values.image.backend.pullPolicy }}
+          {{- with $.Values.image.backend.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
           command: ["aivo", "migrate"]
           env: {{- include "aivo.backendEnv" $ | nindent 12 }}
           envFrom: {{- include "aivo.backendEnvFrom" $ | nindent 12 }}
@@ -41,7 +43,9 @@ spec:
       containers:
         - name: backend
           image: {{ include "aivo.backendImage" $ }}
-          imagePullPolicy: {{ $.Values.image.backend.pullPolicy }}
+          {{- with $.Values.image.backend.pullPolicy }}
+          imagePullPolicy: {{ . }}
+          {{- end }}
           command: ["aivo", "serve", "--role", "{{ $role }}"]
           env: {{- include "aivo.backendEnv" $ | nindent 12 }}
           envFrom: {{- include "aivo.backendEnvFrom" $ | nindent 12 }}

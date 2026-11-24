@@ -31,6 +31,9 @@ COPY worker /src/worker
 RUN pip install /src/protocol /src/worker
 
 ENV AIVO_COMFY_DIR=/opt/ComfyUI AIVO_WORKER_BOOTSTRAP=/etc/aivo/bootstrap.json
+# Release version, set by the release workflow (last, so a new version doesn't invalidate the big layers)
+ARG AIVO_VERSION=dev
+ENV AIVO_VERSION=$AIVO_VERSION
 EXPOSE 443
 # The agent binds the privileged TLS port inside the container; it runs ComfyUI on 127.0.0.1 only.
 ENTRYPOINT ["aivo-worker"]

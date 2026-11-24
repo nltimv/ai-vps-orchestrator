@@ -10,6 +10,9 @@ on:
       model:
         description: Engine to test
         default: z-image-turbo
+      worker_tag:
+        description: Worker image release to test (e.g. 0.2.57)
+        default: latest
 
 permissions:
   contents: read
@@ -27,7 +30,7 @@ jobs:
       - name: smoke test
         env:
           AIVO_DO_TOKEN: ${{ secrets.DO_TOKEN }}
-          AIVO_WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/aivo-worker:latest
+          AIVO_WORKER_IMAGE: ghcr.io/${{ github.repository_owner }}/aivo-worker:${{ inputs.worker_tag }}
         run: >
           uv run python scripts/do_smoke.py --max-usd "${{ inputs.max_usd }}" --model "${{ inputs.model }}"
           --i-understand-this-costs-money --report smoke-report.json

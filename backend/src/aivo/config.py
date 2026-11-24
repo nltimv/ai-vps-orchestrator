@@ -6,11 +6,12 @@
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 # Lists from the environment may be given comma-separated ("a.com,b.com") or as JSON.
@@ -19,6 +20,16 @@ CsvList = Annotated[list[str], NoDecode]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 Preference = Literal["economy", "balanced", "fast"]
+
+
+RELEASE_VERSION = re.compile(r"^\d+\.\d+\.\d+([-.+][0-9A-Za-z.-]+)?$")
+
+
+def release_tag() -> str:
+    """The image tag of this release (e.g. 0.2.57); "latest" for a source checkout ("dev")."""
+    from aivo import __version__
+
+    return __version__ if RELEASE_VERSION.match(__version__) else "latest"
 
 
 class EnvSettings(BaseSettings):
@@ -86,7 +97,10 @@ class EnvSettings(BaseSettings):
 
     hf_token: SecretStr | None = None  # only used to resolve gated downloads backend-side
 
-    worker_image: str = "ghcr.io/nltimv/aivo-worker:latest"
+    # GPU machines run the worker image of the same release as this backend, so an upgrade
+    # changes both together. Set AIVO_WORKER_IMAGE only to pin another image.
+    worker_image: str = ""
+    worker_image_repository: str = "ghcr.io/nltimv/aivo-worker"
     worker_port: int = 443
 
     admin_email: str | None = None
@@ -146,6 +160,12 @@ class EnvSettings(BaseSettings):
                 return json.loads(v)
             return [x.strip() for x in v.split(",") if x.strip()]
         return v
+
+    @model_validator(mode="after")
+    def _default_worker_image(self) -> EnvSettings:
+        if not self.worker_image:
+            self.worker_image = f"{self.worker_image_repository}:{release_tag()}"
+        return self
 
     @property
     def oidc_enabled(self) -> bool:

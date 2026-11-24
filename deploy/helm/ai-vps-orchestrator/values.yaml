@@ -1,13 +1,19 @@
-# -- Image settings
+# -- Image settings. Tags default to the chart's appVersion: a released chart runs exactly the images
+#    of its own release, so `helm upgrade --version X` moves everything to release X.
+#    pullPolicy "" leaves it to Kubernetes: IfNotPresent for version tags, Always for "latest".
 image:
   backend:
     repository: ghcr.io/nltimv/aivo-backend
     tag: ""          # defaults to the chart appVersion
-    pullPolicy: IfNotPresent
+    pullPolicy: ""
   frontend:
     repository: ghcr.io/nltimv/aivo-frontend
     tag: ""
-    pullPolicy: IfNotPresent
+    pullPolicy: ""
+  # the image GPU machines run (not a pod in this cluster)
+  worker:
+    repository: ghcr.io/nltimv/aivo-worker
+    tag: ""          # defaults to the chart appVersion
 imagePullSecrets: []
 
 # -- Cloud provider: digitalocean | runpod (RunPod Serverless, experimental) | fake
@@ -20,8 +26,8 @@ runpod:
   gpuTypes: []               # only these GPU types (RunPod names); empty = all
   keepWarmSeconds: 120       # keep an idle worker (billed) this long for follow-up creations
   region: eu                 # name shown in aivo for RunPod machines
-# -- Worker image the GPU machines run
-workerImage: ghcr.io/nltimv/aivo-worker:latest
+# -- Pin the worker image GPU machines run (full reference). Empty = image.worker at the release's version.
+workerImage: ""
 
 # -- Secrets. Either let the chart create one from these values, or point at an existing Secret
 #    with keys: AIVO_MEDIA_KEKS, AIVO_DO_TOKEN or AIVO_RUNPOD_API_KEY, [AIVO_DO_WATCHDOG_TOKEN, AIVO_SPACES_KEY, AIVO_SPACES_SECRET,

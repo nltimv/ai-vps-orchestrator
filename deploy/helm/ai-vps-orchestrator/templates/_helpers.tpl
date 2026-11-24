@@ -17,14 +17,26 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "aivo.secretName" -}}{{ .Values.secrets.existingSecret | default (printf "%s-secrets" (include "aivo.fullname" .)) }}{{- end -}}
 {{- define "aivo.backendImage" -}}{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag | default .Chart.AppVersion }}{{- end -}}
 {{- define "aivo.frontendImage" -}}{{ .Values.image.frontend.repository }}:{{ .Values.image.frontend.tag | default .Chart.AppVersion }}{{- end -}}
+{{/* Worker image for GPU machines: pinned, or the same release as the backend. Empty for the development
+     chart ("latest"): the backend then picks the worker of its own baked-in version. */}}
+{{- define "aivo.workerImage" -}}
+{{- if .Values.workerImage -}}{{ .Values.workerImage }}
+{{- else if .Values.image.worker.tag -}}{{ .Values.image.worker.repository }}:{{ .Values.image.worker.tag }}
+{{- else if ne .Chart.AppVersion "latest" -}}{{ .Values.image.worker.repository }}:{{ .Chart.AppVersion }}
+{{- end -}}
+{{- end -}}
 {{- define "aivo.pvcName" -}}{{ .Values.media.persistence.existingClaim | default (printf "%s-media" (include "aivo.fullname" .)) }}{{- end -}}
 
 {{/* Environment shared by every backend pod */}}
 {{- define "aivo.backendEnv" -}}
 - name: AIVO_PROVIDER
   value: {{ .Values.provider | quote }}
+{{- with include "aivo.workerImage" . }}
 - name: AIVO_WORKER_IMAGE
-  value: {{ .Values.workerImage | quote }}
+  value: {{ . | quote }}
+{{- end }}
+- name: AIVO_WORKER_IMAGE_REPOSITORY
+  value: {{ .Values.image.worker.repository | quote }}
 {{- if eq .Values.provider "runpod" }}
 {{- with .Values.runpod }}
 {{- with .countries }}
