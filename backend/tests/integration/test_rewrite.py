@@ -86,3 +86,15 @@ async def test_adult_rules_apply_to_the_improved_description(env):
         assert done["prompt_used"] is None
         ran = prompt_of(h.runpod.workflows[done["id"]])
         assert "teenager" not in ran and "a woman on a beach at sunset" in ran
+
+
+async def test_several_pictures_each_get_their_own_improved_description(env):
+    async with Harness(env) as h:
+        await h.setup_admin()
+        done = await create(h, {**FOX, "count": 3})
+        assert done["state"] == "succeeded" and len(done["outputs"]) == 3, done
+        used = done["prompts_used"]
+        assert len(used) == 3 and len(set(used)) == 3, used  # steered three ways
+        ran = [h.runpod.workflows[done["id"]], *h.runpod.workflows[f"{done['id']}:more"]]
+        assert [prompt_of(w) for w in ran] == used  # each run made with its own
+        assert done["prompt_used"] == used[0]

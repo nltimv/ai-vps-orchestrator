@@ -26,6 +26,7 @@ async def get_settings(
         "provider": app.runpod.name,
         "runpod": {
             "network_volume": bool(app.env.runpod_network_volume_id),
+            "global_volume": bool(app.env.runpod_global_volume_id),
             "countries": app.env.runpod_countries,
             "data_centers": app.env.runpod_data_centers,
             "gpu_types": app.env.runpod_gpu_types,

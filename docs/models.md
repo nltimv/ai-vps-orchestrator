@@ -37,6 +37,10 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 
 - **How many:** up to 16 pictures, 4 videos or 4 songs per creation. aivo makes them in batches the GPU
   can hold (4 pictures, 1 video), one after another in the same job, each batch with its own look number.
+- **Different from each other:** with *Improve my description* on, each picture or video of a creation
+  gets its own description, steered another way (another camera angle, light, composition or mood, where
+  your description leaves that open; what it asks for stays). They're then made one at a time instead of
+  in batches. Without it, only the seed differs, and fast engines such as Z-Image Turbo vary little.
 - **Results as they're done:** each batch shows on the progress card and the creation's page as soon as
   it's made, while the rest is still being made. Stopping a creation keeps what's ready ("Stopped after
   5 of 16"), and so does one that fails partway.

@@ -26,7 +26,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from aivo.providers.base import QuotaError
+from aivo.providers.base import ConfigError, QuotaError
 
 CATALOG = [
     ("NVIDIA RTX 4000 Ada Generation", "RTX 4000 Ada", "AMPERE_16", 20, 0.58, 40),
@@ -87,6 +87,7 @@ class FakeRunPod:
         job_seconds: float = 1.0,
         chaos: list[str] | None = None,
         max_workers_total: int = 5,
+        flashboot_limit: int | None = None,
         tick_s: float = 0.05,
         progress_every_s: float = 0.2,
     ):
@@ -95,6 +96,7 @@ class FakeRunPod:
         self.chaos = list(chaos or [])
         self.workflows: dict[str, Any] = {}  # aivo job id -> the workflow its worker ran (for tests)
         self.max_workers_total = max_workers_total
+        self.flashboot_limit = flashboot_limit  # like RunPod plans: FlashBoot on at most this many endpoints
         self.tick_s = tick_s
         self.progress_every_s = progress_every_s
         self.endpoints: dict[str, FakeEndpoint] = {}
@@ -161,6 +163,16 @@ class FakeRunPod:
         used = sum(e.body["workers"]["max"] for e in self.endpoints.values())
         if used + body["workers"]["max"] > self.max_workers_total:
             raise QuotaError("HTTP 400: max workers limit exceeded for your account", http_status=400)
+        flashbooted = sum(1 for e in self.endpoints.values() if e.body.get("flashboot") == "FLASHBOOT")
+        if (
+            self.flashboot_limit is not None
+            and body.get("flashboot") == "FLASHBOOT"
+            and flashbooted >= self.flashboot_limit
+        ):
+            raise ConfigError(
+                f"HTTP 400: This account's plan allows {self.flashboot_limit} endpoints with FlashBoot; "
+                "turn it off for this endpoint or upgrade the plan."
+            )
         ep = FakeEndpoint(body=dict(body), id=f"fake{next(_ids):04d}")
         ep.no_gpu = self._take_chaos("no_gpu") is not None
         self.endpoints[ep.id] = ep

@@ -50,6 +50,10 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: AIVO_RUNPOD_NETWORK_VOLUME_ID
   value: {{ . | quote }}
 {{- end }}
+{{- with .globalVolumeId }}
+- name: AIVO_RUNPOD_GLOBAL_VOLUME_ID
+  value: {{ . | quote }}
+{{- end }}
 {{- with .gpuTypes }}
 - name: AIVO_RUNPOD_GPU_TYPES
   value: {{ join "," . | quote }}

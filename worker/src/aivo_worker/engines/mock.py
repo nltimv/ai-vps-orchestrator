@@ -87,10 +87,11 @@ class MockEngine:
         )
         m = re.search(r"Description: (.*)", text)
         desc = (m.group(1) if m else text).strip().rstrip(".")
+        steer = re.search(r"different from the obvious take: ([^,.]*)", text)  # a version steered another way
         return (
             f"<think>\n\n</think>\n\n{desc[:1].upper()}{desc[1:]}, shown in rich detail: a clear subject, "
             "natural textures, a balanced composition with depth, soft directional light and a harmonious "
-            "color palette, sharp focus."
+            "color palette, sharp focus" + (f", with {steer.group(1)}." if steer else ".")
         )
 
     async def run(

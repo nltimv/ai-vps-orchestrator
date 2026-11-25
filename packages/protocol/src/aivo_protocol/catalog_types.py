@@ -262,3 +262,6 @@ class Rewriter(BaseModel):
     min_chars: int = 20
     max_chars: int = 2500
     refusals: list[str] = Field(default_factory=list)  # openings that mean the model declined
+    # several results in one creation: each gets its own description, steered by the next of these (the first
+    # is the plain take), so they differ in more than the noise
+    variations: list[str] = Field(default_factory=lambda: [""])

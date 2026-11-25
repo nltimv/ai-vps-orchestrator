@@ -72,7 +72,8 @@ waits between jobs, and the wait after the last one.
 | `AIVO_RUNPOD_COUNTRIES` | NL, BE, DE, FR, CZ, RO, SE, NO, IS, FI, PL, ES, IT, AT, DK, IE, PT | Countries (ISO codes) where workers may run |
 | `AIVO_RUNPOD_DATA_CENTERS` | – | Exact data centers, e.g. `EU-NL-1,EU-RO-1`. Overrides the countries |
 | `AIVO_RUNPOD_GPU_TYPES` | all | Only these GPU types, e.g. `NVIDIA L40S,NVIDIA RTX A5000` |
-| `AIVO_RUNPOD_NETWORK_VOLUME_ID` | – | Keeps model files between workers (see below) |
+| `AIVO_RUNPOD_GLOBAL_VOLUME_ID` | – | Keeps model files for every worker, in any data center (see below) |
+| `AIVO_RUNPOD_NETWORK_VOLUME_ID` | – | Or: keeps them in one data center only (see below) |
 | `AIVO_RUNPOD_DISK_GB` | 150 | Container disk for model files without a network volume |
 | `AIVO_WORKER_API_URL` | `AIVO_PUBLIC_URL` | Where workers reach aivo |
 | `AIVO_WORKER_IMAGE` | the release's `aivo-worker:<version>` | Pin another worker image |
@@ -97,20 +98,47 @@ anymore, so lower *GPUs of one type at the same time* if you hit the limit. Crea
 "Your RunPod account's worker limit is reached". You can raise the limit in the RunPod console once
 your balance qualifies.
 
-## Model files: download each time, or a network volume
+## Model files: download each time, or keep them on a volume
 
-Without a network volume, a new worker downloads its model files from Hugging Face: about 1–3 billed
-minutes for a 20–50 GB video model. A worker that stays on between creations keeps them. For
-occasional use that's usually fine.
+Without a volume, every new worker downloads its model files from Hugging Face. That's billed time: 1–10
+minutes for the 20–55 GB a video engine or FLUX.2 [dev] needs. Hosts get anywhere from about 70 to 400 MB/s
+per file. A worker that stays on between creations keeps its files, so a longer *Keep a GPU waiting for a
+next creation* helps when you make several creations in a row.
 
-With a network volume, files are downloaded once and reused by every later worker:
+A volume keeps them for later workers. RunPod has two kinds:
 
+| | Global volume (recommended) | Network volume |
+|---|---|---|
+| Where workers run | any data center | only the volume's data center: fewer GPUs to choose from |
+| Price | storage per GB, plus reads (a fraction of a cent to load a model) | $0.07/GB-month, sized up front |
+| Setting | `AIVO_RUNPOD_GLOBAL_VOLUME_ID` | `AIVO_RUNPOD_NETWORK_VOLUME_ID` |
+
+Use one or the other, not both: RunPod endpoints mount one kind.
+
+**Global volume.**
+1. In the RunPod console: Storage → New volume → Global volume. It grows by itself.
+2. Set `AIVO_RUNPOD_GLOBAL_VOLUME_ID=<volume id>` (Helm: `runpod.globalVolumeId`). aivo updates its
+   endpoints to mount it.
+
+How it fills:
+- The first worker that needs a file downloads it to its own disk as before and uses it right away.
+- Meanwhile it copies the file onto the volume (about 260 MB/s, so a minute or two once per engine, billed).
+  It finishes those copies before it stops.
+- Every later worker, in any data center, copies the file from the volume to its own disk instead of
+  downloading it. It reads 32 parts at once (about 400 MB/s), so Z-Image's 20 GB take under a minute.
+- A global volume has no atomic rename, so a file only counts once a marker says it was copied whole. A
+  worker that stopped halfway leaves nothing that's used.
+
+Measured on RunPod (November 2026): a fresh worker read Z-Image's files in place from the volume at only
+about 50 MB/s, slower than Hugging Face. That's why workers copy them first, in parallel. The workers
+still need container disk for the files (`AIVO_RUNPOD_DISK_GB`).
+
+**Network volume.**
 1. Create a network volume in the RunPod console, in the data center you want (e.g. EU-NL-1). Size it
-   for the engines you use, e.g. 200 GB at $0.07/GB-month ≈ $14/month.
-2. Set `AIVO_RUNPOD_NETWORK_VOLUME_ID=<volume id>`. aivo updates its endpoints to mount it.
+   for the engines you use, e.g. 200 GB ≈ $14/month.
+2. Set `AIVO_RUNPOD_NETWORK_VOLUME_ID=<volume id>`.
 
-All workers then run in that one data center, so there are fewer GPUs to choose from. Only model
-files are stored on the volume, never creations.
+Only model files are stored on a volume, never creations.
 
 ## Privacy and security
 
@@ -145,6 +173,9 @@ files are stored on the volume, never creations.
 - **401 errors in the backend log about RunPod.** The API key is wrong.
 - **403 "you do not have permission" when submitting a creation**, although endpoints get created: the key
   may not run jobs on the endpoints it creates. Use a key with *All* permissions, or widen it (see Setup).
+- **"This account's plan allows 3 endpoints with FlashBoot"**: aivo turns FlashBoot (quicker cold starts) on
+  for each GPU type's endpoint. When the plan's limit is reached, it makes the next endpoints without it and
+  remembers that; nothing to do.
 - **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
   types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.

@@ -42,11 +42,24 @@ def pick_job_dir(preferred: str, fallback: str = "/tmp/aivo/jobs") -> str:
     return fallback
 
 
+def global_volume() -> bool:
+    """aivo mounted a RunPod global volume (it says so in the endpoint's environment)."""
+    return os.environ.get("AIVO_VOLUME_KIND") == "global" and NETWORK_VOLUME.is_dir()
+
+
 def default_models_dir() -> str:
-    """Model files outlive the worker on a network volume; otherwise they sit on the container disk."""
-    if NETWORK_VOLUME.is_dir():
+    """Model files outlive the worker on a network volume; otherwise they sit on the container disk.
+
+    With a global volume the working copies stay on the container disk too (it's fast and POSIX); finished
+    files on the volume are reused from there (see shared_models_dir).
+    """
+    if NETWORK_VOLUME.is_dir() and not global_volume():
         return str(NETWORK_VOLUME / "aivo" / "models")
     return "/var/lib/aivo/models"
+
+
+def shared_models_dir() -> Path | None:
+    return NETWORK_VOLUME / "aivo" / "models" if global_volume() else None
 
 
 def build_runtime(logs: LogBuffer) -> WorkerRuntime:
@@ -60,7 +73,7 @@ def build_runtime(logs: LogBuffer) -> WorkerRuntime:
     from aivo_worker.engines.comfy import ComfyEngine
 
     engine = ComfyEngine.from_env(models_dir, job_dir)
-    return WorkerRuntime(engine, models_dir=models_dir, job_dir=job_dir, logs=logs)
+    return WorkerRuntime(engine, models_dir=models_dir, job_dir=job_dir, logs=logs, shared_dir=shared_models_dir())
 
 
 def main() -> None:

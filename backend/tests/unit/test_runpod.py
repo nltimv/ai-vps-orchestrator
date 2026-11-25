@@ -127,7 +127,7 @@ async def test_one_queue_endpoint_per_gpu_type_without_secrets():
     assert body["gpu"] == {"pools": ["ADA_48_PRO"], "count": 1, "excludedTypes": ["NVIDIA RTX 6000 Ada Generation"]}
     assert body["workers"] == {"min": 0, "max": 3, "idleTimeout": 45, "initTimeout": 1800}
     assert body["scaling"]["type"] == "QUEUE_DELAY"  # idle timeout isn't allowed with request-count scaling
-    assert body["mounts"] == {"network": [{"volumeId": "vol1"}]} and body["dataCenterIds"] == ["EU-NL-1"]
+    assert body["mounts"] == {"global": [], "network": [{"volumeId": "vol1"}]} and body["dataCenterIds"] == ["EU-NL-1"]
     assert set(body["env"]) == {"AIVO_DEPLOYMENT_ID", "AIVO_GPU_TYPE"}  # no tokens or keys
     assert em.desired("NVIDIA L40S", rs, warm=True)["workers"]["min"] == 1
     assert em.config_hash(body) != em.config_hash(em.desired("NVIDIA L40S", rs, warm=True))
@@ -161,3 +161,33 @@ async def test_worker_refuses_input_that_is_not_a_ticket(tmp_path):
     assert "not an aivo ticket" in (await rt.handle({"input": {"prompt": "hi"}}))["error"]
     old = {"aivo_url": "http://x", "job_id": "j", "token": "t", "protocol": "1.0"}
     assert "protocol" in (await rt.handle({"input": old}))["error"]
+
+
+async def test_a_global_volume_is_mounted_in_any_data_center_and_the_worker_is_told():
+    import pydantic
+
+    env = EnvSettings(_env_file=None, worker_image="ghcr.io/x/aivo-worker:0.2.57", runpod_global_volume_id="gv1")
+    gpus = GpuCatalog(FakeRunPod(), env)
+    await gpus.offers()
+    body = EndpointManager(_App(env, gpus)).desired("NVIDIA L40S", RuntimeSettings(), warm=False)  # type: ignore[arg-type]
+    assert body["mounts"] == {"network": [], "global": [{"volumeId": "gv1"}]}
+    assert body["env"]["AIVO_VOLUME_KIND"] == "global"
+    plain = EnvSettings(_env_file=None, worker_image="ghcr.io/x/aivo-worker:0.2.57")
+    pgpus = GpuCatalog(FakeRunPod(), plain)
+    await pgpus.offers()
+    unpinned = EndpointManager(_App(plain, pgpus)).desired("NVIDIA L40S", RuntimeSettings(), warm=False)  # type: ignore[arg-type]
+    assert body["dataCenterIds"] == unpinned["dataCenterIds"]  # wherever the GPU type is, unlike a network volume
+    with pytest.raises(pydantic.ValidationError):
+        EnvSettings(_env_file=None, runpod_global_volume_id="gv1", runpod_network_volume_id="nv1")
+
+
+def test_worker_keeps_working_copies_on_its_disk_with_a_global_volume(tmp_path, monkeypatch):
+    import aivo_worker.main as wm
+
+    vol = tmp_path / "runpod-volume"
+    vol.mkdir()
+    monkeypatch.setattr(wm, "NETWORK_VOLUME", vol)
+    monkeypatch.delenv("AIVO_VOLUME_KIND", raising=False)
+    assert wm.default_models_dir() == str(vol / "aivo" / "models") and wm.shared_models_dir() is None  # network
+    monkeypatch.setenv("AIVO_VOLUME_KIND", "global")
+    assert wm.default_models_dir() == "/var/lib/aivo/models" and wm.shared_models_dir() == vol / "aivo" / "models"

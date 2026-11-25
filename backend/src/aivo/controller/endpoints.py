@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -24,6 +25,8 @@ from aivo.providers.base import ConfigError, GpuOffer
 from aivo.providers.runpod.catalog import gpu_slug
 
 log = logging.getLogger(__name__)
+# "This account's plan allows 3 endpoints with FlashBoot; turn it off for this endpoint or upgrade the plan."
+FLASHBOOT_LIMIT = re.compile(r"endpoints with flashboot|flashboot.*(plan|limit)", re.IGNORECASE)
 
 ACTIVE = ("assigned", "preparing", "running", "fetching")
 
@@ -36,7 +39,7 @@ class EndpointManager:
     def name_for(self, gpu_type: str) -> str:
         return f"aivo-{str(self.app.deployment_id)[:8]}-{gpu_slug(gpu_type)}"
 
-    def desired(self, gpu_type: str, rs: RuntimeSettings, *, warm: bool) -> dict[str, Any]:
+    def desired(self, gpu_type: str, rs: RuntimeSettings, *, warm: bool, flashboot: bool = True) -> dict[str, Any]:
         env = self.app.env
         gpus = self.app.gpus
         body: dict[str, Any] = {
@@ -59,13 +62,18 @@ class EndpointManager:
             },
             # the longest a job may run on a worker: the creation itself plus downloading the model
             "timeout": (rs.job_timeout_s + 1200) * 1000,
-            "flashboot": "FLASHBOOT",
+            # quicker cold starts; RunPod plans allow it on a few endpoints only (see FLASHBOOT_LIMIT)
+            "flashboot": "FLASHBOOT" if flashboot else "OFF",
         }
         dcs = gpus.data_centers(gpu_type)
         if dcs:
             body["dataCenterIds"] = dcs
-        if env.runpod_network_volume_id:
-            body["mounts"] = {"network": [{"volumeId": env.runpod_network_volume_id}]}
+        if env.runpod_global_volume_id:
+            # any data center; sending both lists switches an endpoint that had a network volume
+            body["mounts"] = {"network": [], "global": [{"volumeId": env.runpod_global_volume_id}]}
+            body["env"]["AIVO_VOLUME_KIND"] = "global"  # the worker keeps working copies on its own disk
+        elif env.runpod_network_volume_id:
+            body["mounts"] = {"global": [], "network": [{"volumeId": env.runpod_network_volume_id}]}
         return body
 
     @staticmethod
@@ -86,34 +94,37 @@ class EndpointManager:
                     await s.execute(select(GpuEndpoint).where(GpuEndpoint.gpu_type == gpu_type).with_for_update())
                 ).scalar_one_or_none()
                 if row is None:
-                    row = GpuEndpoint(gpu_type=gpu_type, gpu_name=offer.gpu_model[:64], status="creating")
+                    row = GpuEndpoint(
+                        gpu_type=gpu_type, gpu_name=offer.gpu_model[:64], status="creating", flashboot=True
+                    )
                     s.add(row)
                 row.gpu_class = offer.gpu_class
                 row.vram_gb = offer.vram_gb
                 row.price_hourly = offer.price_hourly
                 warm = row.keep_warm_until is not None and row.keep_warm_until > utcnow()
-                runpod_id, old_hash = row.runpod_id, row.config_hash
-            body = self.desired(gpu_type, rs, warm=warm)
+                runpod_id, old_hash, flashboot = row.runpod_id, row.config_hash, row.flashboot is not False
+            body = self.desired(gpu_type, rs, warm=warm, flashboot=flashboot)
             h = self.config_hash(body)
             error: str | None = None
             try:
-                if runpod_id and old_hash != h:
-                    if await app.runpod.get_endpoint(runpod_id) is None:
-                        runpod_id = None
-                    else:
-                        await app.runpod.update_endpoint(runpod_id, {k: v for k, v in body.items() if k != "type"})
-                if not runpod_id:
-                    created = await app.runpod.create_endpoint(body)
-                    runpod_id = str(created.get("id") or "")
-                    if not runpod_id:
-                        raise ConfigError(f"RunPod did not return an endpoint id: {created}")
-                    log.info("created RunPod endpoint %s for %s", runpod_id, gpu_type)
+                try:
+                    runpod_id = await self._apply(runpod_id, old_hash, body, h, gpu_type)
+                except Exception as e:
+                    if not (flashboot and FLASHBOOT_LIMIT.search(str(e))):
+                        raise
+                    # the plan's FlashBoot endpoints are taken: this one starts without it
+                    log.info("RunPod allows no more FlashBoot endpoints; %s goes without (%s)", gpu_type, e)
+                    flashboot = False
+                    body = self.desired(gpu_type, rs, warm=warm, flashboot=False)
+                    h = self.config_hash(body)
+                    runpod_id = await self._apply(runpod_id, old_hash, body, h, gpu_type)
             except Exception as e:
                 error = str(e)[:1000]
                 raise
             finally:
                 async with app.sessionmaker() as s, s.begin():
                     row = (await s.execute(select(GpuEndpoint).where(GpuEndpoint.gpu_type == gpu_type))).scalar_one()
+                    row.flashboot = flashboot
                     if error is None:
                         row.runpod_id, row.config_hash, row.status, row.error = runpod_id, h, "ready", None
                         row.last_used_at = utcnow()
@@ -121,6 +132,24 @@ class EndpointManager:
                         row.status, row.error = ("error" if not row.runpod_id else row.status), error
             async with app.sessionmaker() as s:
                 return (await s.execute(select(GpuEndpoint).where(GpuEndpoint.gpu_type == gpu_type))).scalar_one()
+
+    async def _apply(
+        self, runpod_id: str | None, old_hash: str | None, body: dict[str, Any], h: str, gpu_type: str
+    ) -> str:
+        """Create the endpoint, or update it when its configuration changed. Returns its RunPod id."""
+        app = self.app
+        if runpod_id and old_hash != h:
+            if await app.runpod.get_endpoint(runpod_id) is None:
+                runpod_id = None
+            else:
+                await app.runpod.update_endpoint(runpod_id, {k: v for k, v in body.items() if k != "type"})
+        if not runpod_id:
+            created = await app.runpod.create_endpoint(body)
+            runpod_id = str(created.get("id") or "")
+            if not runpod_id:
+                raise ConfigError(f"RunPod did not return an endpoint id: {created}")
+            log.info("created RunPod endpoint %s for %s", runpod_id, gpu_type)
+        return runpod_id
 
     async def set_keep_warm(self, gpu_type: str, minutes: int) -> GpuEndpoint:
         """Keep one worker of this GPU type running (billed continuously) for a while, or stop doing so."""
@@ -159,7 +188,7 @@ class EndpointManager:
                 continue
             warm = row.keep_warm_until is not None and row.keep_warm_until > utcnow()
             try:
-                desired_hash = self.config_hash(self.desired(row.gpu_type, rs, warm=warm))
+                desired_hash = self.config_hash(self.desired(row.gpu_type, rs, warm=warm, flashboot=row.flashboot))
                 if desired_hash != row.config_hash and row.id not in busy:
                     await self.ensure(offer)
                     continue

@@ -69,6 +69,8 @@ class EnvSettings(BaseSettings):
     runpod_gpu_types: CsvList = Field(default_factory=list)
     # Optional network volume that keeps downloaded model files between workers (pins its data center)
     runpod_network_volume_id: str | None = None
+    # ... or a global volume: kept for every worker, in any data center (not both)
+    runpod_global_volume_id: str | None = None
     # Container disk for model files when there is no network volume (GB)
     runpod_disk_gb: int = 150
     # Address workers use to reach aivo (defaults to AIVO_PUBLIC_URL). Only /api/v1/worker/ is used,
@@ -142,6 +144,15 @@ class EnvSettings(BaseSettings):
     def _default_worker_image(self) -> EnvSettings:
         if not self.worker_image:
             self.worker_image = f"{self.worker_image_repository}:{release_tag()}"
+        return self
+
+    @model_validator(mode="after")
+    def _one_kind_of_volume(self) -> EnvSettings:
+        if self.runpod_network_volume_id and self.runpod_global_volume_id:
+            raise ValueError(
+                "set AIVO_RUNPOD_NETWORK_VOLUME_ID or AIVO_RUNPOD_GLOBAL_VOLUME_ID, not both: "
+                "RunPod endpoints can't mount both kinds"
+            )
         return self
 
     @property

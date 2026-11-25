@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -130,11 +131,34 @@ def _fetch(app: AppContext, f: FileSpec) -> FileFetch:
     )
 
 
-def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True, can_batch: bool = True) -> WorkSpec:
+def prompts_used(app: AppContext, job: Job) -> list[str | None]:
+    """The improved descriptions a creation was made with, one per run (None where it kept the user's words)."""
+    if not job.prompt_used_enc:
+        return []
+    raw = app.keyring.open(job.prompt_used_enc, job.id.bytes) or ""
+    try:
+        got = json.loads(raw)
+    except ValueError:
+        return [raw]  # before protocol 2.3: one text
+    return [t if isinstance(t, str) else None for t in got] if isinstance(got, list) else [raw]
+
+
+def keep_prompt_used(app: AppContext, job: Job, index: int, text: str | None) -> None:
+    """Seal the improved description of run ``index`` with the creation (the caller commits)."""
+    texts = prompts_used(app, job)
+    texts += [None] * (index + 1 - len(texts))
+    texts[index] = text
+    job.prompt_used_enc = app.keyring.seal(json.dumps(texts), job.id.bytes) if any(texts) else None
+
+
+def work_spec(
+    app: AppContext, job: Job, *, can_rewrite: bool = True, can_batch: bool = True, can_vary: bool = True
+) -> WorkSpec:
     """What the worker runs.
 
     ``can_rewrite``: the worker knows how to improve the description (protocol 2.1); ``can_batch``: it runs
-    further batches (protocol 2.2). Older workers make the first batch only.
+    further batches (2.2); ``can_vary``: it writes a description per run (2.3). Older workers make the first
+    batch only, or give every run the same description.
     """
     resolved = job.resolved or {}
     cm = app.catalog.get(job.model_id)
@@ -143,38 +167,45 @@ def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True, can_batch:
     variant = mf.variant(resolved["variant_id"])
     files = list(mf.files_for(variant, mode))
     fp = friendly_from_job(app, job)
+    count = OutputSpec.model_validate(resolved["output"]).count
     rid = rewrite_for(app.catalog, mf, mode, fp) if can_rewrite else None
-    used = app.keyring.open(job.prompt_used_enc, job.id.bytes) if job.prompt_used_enc else None
+    # several results with improved descriptions: one result per run, each with its own description, so they
+    # differ in more than the noise
+    vary = bool(rid) and can_vary and can_batch and count > 1
+    batches = [1] * count if vary else runs(mf, count) if can_batch else [resolved["params"].get("batch", 1)]
+    seed = int(resolved["params"].get("seed") or resolved.get("seed") or 0)
+    used = prompts_used(app, job) if rid else []
     rewrite: RewriteSpec | None = None
-    if rid and used:  # improved on an earlier attempt: create with the same words again
-        text = text_params(app.catalog, mf, fp, prompt=used)
+    texts: list[dict[str, Any]]
+    if rid and used and all(used[: len(batches)]) and len(used) >= (len(batches) if vary else 1):
+        # improved on an earlier attempt: create with the same words again
+        texts = [text_params(app.catalog, mf, fp, prompt=used[i if vary else 0]) for i in range(len(batches))]
     elif rid:
         rw = app.catalog.rewriter
         assert rw is not None
-        text = text_params(app.catalog, mf, fp, prompt=PROMPT_MARKER)
+        marked = text_params(app.catalog, mf, fp, prompt=PROMPT_MARKER)
+        texts = [marked] * len(batches)
         have = {f.dest for f in files}
         files = [f for f in rw.files if f.dest not in have] + files  # the language model first
-        rewrite = RewriteSpec(
-            workflow=render_workflow(
+        writers = [
+            render_workflow(
                 app.catalog.rewriter_workflow,
-                {
-                    **rw.params,
-                    "text": rewrite_input(app.catalog, mf, rid, fp),
-                    "seed": int(resolved.get("seed") or 0),
-                },
-            ),
+                {**rw.params, "text": rewrite_input(app.catalog, mf, rid, fp, k), "seed": (seed + k) % 2**32},
+            )
+            for k in range(len(batches) if vary else 1)
+        ]
+        rewrite = RewriteSpec(
+            workflow=writers[0],
+            more=writers[1:],
             output_node=rw.output_node,
             marker=PROMPT_MARKER,
             fallback=describe(app.catalog, mf, fp),
             files=[f.dest for f in rw.files],
         )
     else:
-        text = text_params(app.catalog, mf, fp)
-    params = {**resolved["params"], **text}
-    batches = runs(mf, OutputSpec.model_validate(resolved["output"]).count) if can_batch else [params.get("batch", 1)]
-    seed = int(params.get("seed") or 0)
+        texts = [text_params(app.catalog, mf, fp)] * len(batches)
     workflows = [
-        render_workflow(cm.workflows[mode], {**params, "batch": n, "seed": (seed + i) % 2**32})
+        render_workflow(cm.workflows[mode], {**resolved["params"], **texts[i], "batch": n, "seed": (seed + i) % 2**32})
         for i, n in enumerate(batches)
     ]
     return WorkSpec(
@@ -196,19 +227,25 @@ _LABEL = re.compile(r"^\**\s*(?:improved |detailed |final |video |image )?prompt
 
 
 _QUOTED = re.compile(r'"([^"]{2,})"|“([^”]{2,})”|(?<!\w)\'([^\']{2,}?)\'(?!\w)')
-_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*")  # also after full-width stops
+# Chinese, Japanese and Korean script (and full-width punctuation): Qwen3 sometimes switches language mid-sentence
+_CJK = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
 def _without_invented_text(text: str, original: str) -> str:
-    """Drop sentences that put words in quotes the user never wrote: engines like FLUX.2 render them."""
+    """Drop sentences that put words in quotes the user never wrote (engines like FLUX.2 render them), and
+    sentences that slipped into Chinese, Japanese or Korean when the user didn't write in it."""
     own = " ".join(original.lower().split())
+    foreign = _CJK.search(original) is None
     keep = []
     for sentence in _SENTENCE.split(text):
         quoted = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(sentence)]
         if any(" ".join(q.lower().split()) not in own for q in quoted):
             continue
+        if foreign and _CJK.search(sentence):
+            continue
         keep.append(sentence)
-    return " ".join(keep)
+    return " ".join(k for k in keep if k)
 
 
 def accept_rewrite(

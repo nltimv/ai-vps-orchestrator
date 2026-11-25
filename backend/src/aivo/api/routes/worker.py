@@ -30,6 +30,7 @@ from aivo.controller.jobspec import (
     download_error,
     friendly_from_job,
     job_files,
+    keep_prompt_used,
     work_spec,
 )
 from aivo.controller.lifecycle import job_progress, transition_job
@@ -192,7 +193,9 @@ async def spec(
         await discard_outputs(app, job.id)
     # workers before protocol 2.1 can't improve descriptions: they get the description as written
     version = protocol_tuple(body.protocol)
-    return await asyncio.to_thread(work_spec, app, job, can_rewrite=version >= (2, 1), can_batch=version >= (2, 2))
+    return await asyncio.to_thread(
+        work_spec, app, job, can_rewrite=version >= (2, 1), can_batch=version >= (2, 2), can_vary=version >= (2, 3)
+    )
 
 
 @router.post("/jobs/{job_id}/prompt")
@@ -218,9 +221,10 @@ async def prompt(
     if body.error and text is None:
         why = f"the language model failed: {body.error[:200]}"
     took = f" in {body.seconds:.1f} s" if body.seconds is not None else ""
-    note = f"description improved{took}" if text else f"kept the description as written: {why}"
+    which = f" {body.index + 1}" if body.index else ""
+    note = f"description{which} improved{took}" if text else f"kept the description{which} as written: {why}"
     _append_log(job, [LogLine(seq=0, ts=utcnow().timestamp(), source="aivo", text=note)])
-    job.prompt_used_enc = app.keyring.seal(text, job.id.bytes) if text else None
+    keep_prompt_used(app, job, max(0, min(body.index, 63)), text)
     await s.commit()
     return PromptOut(prompt=text or fallback, rewritten=text is not None)
 

@@ -133,6 +133,7 @@ export interface Job {
   model_name: string;
   prompt: string;
   prompt_used: string | null; // the improved description it was made with
+  prompts_used: (string | null)[]; // per result, when each got its own improved description
   avoid: string | null;
   lyrics: string | null;
   params: Record<string, unknown>;
@@ -272,6 +273,7 @@ export interface SettingsResponse {
   provider: string;
   runpod: {
     network_volume: boolean;
+    global_volume: boolean;
     countries: string[];
     data_centers: string[];
     gpu_types: string[];

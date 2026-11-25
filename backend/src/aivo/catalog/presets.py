@@ -203,8 +203,11 @@ def rewrite_for(catalog: Catalog, mf: ModelManifest, mode: str, p: FriendlyParam
     return rid if rid in catalog.rewriter.instructions else None
 
 
-def rewrite_input(catalog: Catalog, mf: ModelManifest, rid: str, p: FriendlyParams) -> str:
-    """What the language model reads: its instructions, the requested style and the user's description."""
+def rewrite_input(catalog: Catalog, mf: ModelManifest, rid: str, p: FriendlyParams, version: int = 0) -> str:
+    """What the language model reads: its instructions, the requested style and the user's description.
+
+    ``version``: which result of the creation this is for; each is steered differently (``variations``).
+    """
     rw = catalog.rewriter
     assert rw is not None
     style = ""
@@ -212,7 +215,13 @@ def rewrite_input(catalog: Catalog, mf: ModelManifest, rid: str, p: FriendlyPara
         st = catalog.styles[p.style]
         suffix = st.suffix_for(mf.family)
         style = f"Style: {st.label}" + (f" ({suffix})" if suffix else "") + "\n"
-    return rw.template.format(instructions=rw.instructions[rid].strip(), style=style, description=p.prompt.strip())
+    hint = rw.variations[version % len(rw.variations)] if rw.variations else ""
+    return rw.template.format(
+        instructions=rw.instructions[rid].strip(),
+        variation=f"\n{hint}" if hint else "",
+        style=style,
+        description=p.prompt.strip(),
+    )
 
 
 def workflow_params(

@@ -255,3 +255,26 @@ async def test_estimate_when_no_gpu_fits_says_so(env):
         r = await h.client.post("/api/v1/estimate", json=IMG)
         assert r.status_code == 200, r.text
         assert r.json()["machine"] is None and "available" in r.json()["message"]
+
+
+async def test_endpoints_beyond_the_plans_flashboot_limit_go_without_it(env):
+    from aivo.providers.runpod.fake import FakeRunPod
+
+    rp = FakeRunPod(
+        boot_seconds=env.fake_boot_seconds, job_seconds=env.fake_job_seconds, flashboot_limit=1, max_workers_total=20
+    )
+    async with Harness(env, runpod=rp) as h:
+        await h.setup_admin()
+        a = (await h.client.post("/api/v1/jobs", json={"kind": "image", "prompt": "a fox", "quality": "draft"})).json()
+        video = {"kind": "video", "prompt": "waves", "quality": "draft", "model_id": "wan22-a14b", "enhance": False}
+        b = (await h.client.post("/api/v1/jobs", json=video)).json()  # needs a 48 GB GPU type
+        assert (await h.wait_job(a["id"]))["state"] == "succeeded"
+        assert (await h.wait_job(b["id"]))["state"] == "succeeded"
+        modes = sorted(e.body["flashboot"] for e in rp.endpoints.values())
+        assert len(modes) == 2, "the picture and the video need two GPU types"
+        assert modes.count("FLASHBOOT") == 1 and "OFF" in modes, modes
+        rows = await h.sql("SELECT flashboot, status FROM gpu_endpoints ORDER BY created_at")
+        assert sorted(r[0] for r in rows) == [False, True] and all(r[1] == "ready" for r in rows)
+        # the next sync leaves it off instead of trying FlashBoot again
+        await h.ctx.controller.housekeeping.endpoints.sync()
+        assert sorted(e.body["flashboot"] for e in rp.endpoints.values()) == modes

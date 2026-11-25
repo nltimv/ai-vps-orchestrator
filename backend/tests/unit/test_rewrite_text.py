@@ -169,8 +169,38 @@ def test_text_the_user_never_wrote_is_dropped(cat):
     assert accept_rewrite(rw, sign, adult=False, original='a shop with a sign saying "open late"')[0] == sign
 
 
+def test_sentences_that_slip_into_another_script_are_dropped(cat):
+    """Seen on RunPod: Qwen3-4B wrote "The floor is covered in deep burgundy绒布, and ..." in an English description."""
+    rw = cat.rewriter
+    text = (
+        "A cozy coffee shop on a rainy evening, warm golden light spilling from the windowsill. "
+        "The floor is covered in deep burgundy绒布, and the air smells of coffee. "
+        "Raindrops run down the glass."
+    )
+    out, _ = accept_rewrite(rw, text, adult=False, original="a cozy coffee shop on a rainy evening")
+    assert (
+        out == "A cozy coffee shop on a rainy evening, warm golden light spilling from the windowsill. "
+        "Raindrops run down the glass."
+    )
+    numbers = "A portrait at f/1.8 with a 3.5 second exposure, soft rim light and a dark grey background."
+    assert accept_rewrite(rw, numbers, adult=False, original="a portrait")[0] == numbers
+    # all of it in Chinese: nothing usable is left, so the description is kept as written
+    assert (
+        accept_rewrite(
+            rw,
+            "一家雨夜里温馨的咖啡馆，温暖的灯光洒在木桌上，窗外雨滴滑落。",  # noqa: RUF001
+            adult=False,
+            original="a cozy coffee shop on a rainy evening",
+        )[0]
+        is None
+    )
+    # a user who writes in Chinese gets Chinese back
+    zh = "一家雨夜里温馨的咖啡馆，温暖的灯光洒在木桌上，窗外雨滴顺着玻璃滑落，店里飘着咖啡的香气。"  # noqa: RUF001
+    assert accept_rewrite(rw, zh, adult=False, original="雨夜里的咖啡馆")[0] == zh
+
+
 def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat):
-    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6)
+    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6, enhance=False)
     job = _job(cat, app.keyring, fp)
     spec = work_spec(app, job)
 
@@ -180,6 +210,34 @@ def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat)
         return latent["batch_size"], sampler["seed"]
 
     assert [batch_and_seed(w) for w in [spec.workflow, *spec.more]] == [(4, 42), (2, 43)]
-    assert PROMPT_MARKER in str(spec.more[0])  # the worker fills the improved description in every run
+    assert spec.rewrite is None
     old = work_spec(app, job, can_batch=False)  # a worker before protocol 2.2 makes the first batch
     assert old.more == [] and batch_and_seed(old.workflow) == (4, 42)
+
+
+def test_several_results_each_get_their_own_description_steered_differently(app, cat):
+    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=3)
+    job = _job(cat, app.keyring, fp)
+    spec = work_spec(app, job)
+    assert len(spec.more) == 2  # one result per run, so each can have its own description
+    for w in [spec.workflow, *spec.more]:
+        assert (
+            PROMPT_MARKER in str(w)
+            and next(n["inputs"]["batch_size"] for n in w.values() if n["class_type"] == "EmptySD3LatentImage") == 1
+        )
+    asks = [w["2"]["inputs"]["prompt"] for w in [spec.rewrite.workflow, *spec.rewrite.more]]
+    assert len(asks) == 3 and len(set(asks)) == 3
+    assert "several versions" not in asks[0] and "camera angle" in asks[1] and "light" in asks[2]
+    assert [w["2"]["inputs"]["sampling_mode.seed"] for w in [spec.rewrite.workflow, *spec.rewrite.more]] == [42, 43, 44]
+    # a worker before protocol 2.3 gets one description for the batch, as before
+    old = work_spec(app, job, can_vary=False)
+    assert old.rewrite.more == [] and old.more == []
+    # a retry creates with the same descriptions again
+    app.keyring
+    from aivo.controller.jobspec import keep_prompt_used, prompts_used
+
+    for i, t in enumerate(["A fox, version one.", "A fox, version two.", "A fox, version three."]):
+        keep_prompt_used(app, job, i, t)
+    assert prompts_used(app, job)[2] == "A fox, version three."
+    again = work_spec(app, job)
+    assert again.rewrite is None and "version two" in str(again.more[0])

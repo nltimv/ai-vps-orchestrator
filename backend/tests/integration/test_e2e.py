@@ -196,6 +196,7 @@ async def test_flexible_counts_lengths_and_shapes(env):
                 "model_id": "z-image-turbo",
                 "count": 6,
                 "aspect": "9x16",
+                "enhance": False,
             },
         )
         assert r.status_code == 201, r.text
