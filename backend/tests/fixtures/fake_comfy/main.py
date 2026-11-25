@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import uuid
 from pathlib import Path
@@ -87,6 +88,8 @@ async def run(pid, wf, ws):
             json.dumps({"type": "progress_state", "data": {"prompt_id": pid, "nodes": {node: {"state": "running"}}}})
         )
         if wf[node]["class_type"] == "KSampler":
+            if wf[node]["inputs"].get("steps") == 777:  # killed for using too much memory
+                os.kill(os.getpid(), signal.SIGKILL)
             if wf[node]["inputs"].get("steps") == 999:
                 await ws.send_text(
                     json.dumps(

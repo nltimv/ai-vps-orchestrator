@@ -208,6 +208,28 @@ class ComfyEngine:
         await self._proc.wait()
         self._ready = False
         log.error("ComfyUI exited (code %s)", self._proc.returncode)
+        if self.logs is not None:
+            self.logs.emit("engine", f"ComfyUI stopped (exit code {self._proc.returncode})", "error")
+
+    async def _crashed(self, e: Exception) -> EngineError:
+        """The error for a lost connection to ComfyUI: says so if the process died, and why if known."""
+        proc = self._proc
+        if proc is not None:
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(proc.wait(), 5)
+        rc = proc.returncode if proc is not None else None
+        if rc is None:
+            return EngineError(f"lost the connection to the AI engine: {type(e).__name__}: {e}")
+        self._ready = False
+        self._loaded = []
+        if rc in (-9, 137):  # SIGKILL: almost always the container's memory limit
+            return EngineError(
+                "The AI engine was stopped while creating, most likely for running out of memory", code="oom"
+            )
+        tail = " | ".join(list(self.recent)[-3:])
+        return EngineError(
+            f"The AI engine stopped while creating (exit code {rc})" + (f": {_short(tail, 300)}" if tail else "")
+        )
 
     async def stop(self) -> None:
         self._ready = False
@@ -249,7 +271,10 @@ class ComfyEngine:
                 staged.append(dst)
         tracker = _ProgressTracker(job.workflow, progress)
         try:
-            prompt_id, hist = await self._execute(job.workflow, tracker)
+            try:
+                prompt_id, hist = await self._execute(job.workflow, tracker)
+            except (OSError, websockets.exceptions.WebSocketException, httpx.TransportError) as e:
+                raise await self._crashed(e) from e
             files = _collect_outputs(hist.get("outputs", {}))
             if not files:
                 raise EngineError("the workflow produced no output files")
@@ -271,7 +296,10 @@ class ComfyEngine:
     async def generate_text(self, workflow: dict[str, Any], output_node: str) -> str:
         if not self._ready:
             raise EngineError("engine not ready")
-        prompt_id, hist = await self._execute(workflow, None)
+        try:
+            prompt_id, hist = await self._execute(workflow, None)
+        except (OSError, websockets.exceptions.WebSocketException, httpx.TransportError) as e:
+            raise await self._crashed(e) from e
         await self._forget(prompt_id)
         shown = (hist.get("outputs", {}).get(output_node) or {}).get("text") or []
         if not shown or not isinstance(shown[0], str):

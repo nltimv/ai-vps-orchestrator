@@ -97,3 +97,33 @@ async def test_engine_generates_text_with_the_rewriter_workflow(engine):
     assert "Style: Photo (photorealistic" in gen["prompt"]
     text = await engine.generate_text(wf, rw.output_node)
     assert "</think>" in text and "a lighthouse at dusk" in text
+
+
+async def test_a_crashed_engine_reports_it_and_starts_again(tmp_path):
+    """ComfyUI killed mid-job (the container's memory limit): the job fails as out of memory, and the
+    worker starts ComfyUI again for its next job instead of failing every later one."""
+    from aivo_worker.logbuf import LogBuffer
+    from aivo_worker.runtime import WorkerRuntime
+
+    engine = ComfyEngine(FAKE, tmp_path / "models", tmp_path / "jobs" / "comfy", port=free_port())
+    rt = WorkerRuntime(engine, models_dir=tmp_path / "models", job_dir=tmp_path / "jobs", logs=LogBuffer())
+    try:
+        rt._start_engine()
+        await rt._engine_task
+        assert engine.ready
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        job = JobIn(
+            job_id="k", model_id="z-image-turbo", workflow=zimage_workflow(steps=777), output=OutputSpec(kind="image")
+        )
+        with pytest.raises(EngineError) as ei:
+            await engine.run(job, tmp_path, out_dir, lambda p, s: None)
+        assert ei.value.code == "oom" and not engine.ready
+        rt._start_engine()  # the next job
+        await rt._engine_task
+        assert engine.ready
+        ok = JobIn(job_id="k2", model_id="z-image-turbo", workflow=zimage_workflow(), output=OutputSpec(kind="image"))
+        assert len(await engine.run(ok, tmp_path, out_dir, lambda p, s: None)) == 1
+        assert any("starting it again" in ln.text for ln in rt.logs.read(since=0).lines)
+    finally:
+        await engine.stop()

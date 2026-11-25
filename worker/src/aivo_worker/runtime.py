@@ -108,9 +108,15 @@ class WorkerRuntime:
         )
 
     def _start_engine(self) -> None:
-        """The AI engine starts with the first job, while the model files download."""
+        """The AI engine starts with the first job, while the model files download.
+
+        If it has stopped since (ComfyUI crashed, e.g. killed for using too much memory), it starts again:
+        otherwise every later job on this worker would fail at once.
+        """
         if self._engine_task is not None:
-            return
+            if not self._engine_task.done() or self.engine.ready or self.engine_error:
+                return
+            self.logs.emit("agent", "the AI engine had stopped; starting it again", "warning")
 
         async def start() -> None:
             self.logs.emit("agent", f"worker {__version__} up; starting the AI engine ({self.engine.name})")
