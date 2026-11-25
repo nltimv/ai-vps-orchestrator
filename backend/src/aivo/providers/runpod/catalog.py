@@ -59,10 +59,21 @@ def dc_country(dc_id: str) -> str | None:
     return parts[0] if len(parts[0]) == 2 else None
 
 
+SLUG_MAX = 40
+
+
 def gpu_slug(type_id: str) -> str:
-    """Short name for endpoint names: "NVIDIA RTX 6000 Ada Generation" -> "rtx-6000-ada-generation"."""
+    """Short name for endpoint names: "NVIDIA RTX 6000 Ada Generation" -> "rtx-6000-ada-generation".
+
+    Too long a name loses middle words, longest first, rather than its end: cutting it off gave both
+    "RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb" and "... MIG 2g.48gb" the same name.
+    """
     s = re.sub(r"^nvidia\s+(geforce\s+)?", "", type_id.lower())
-    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:40] or "gpu"
+    words = [w for w in re.split(r"[^a-z0-9]+", s) if w]
+    while len("-".join(words)) > SLUG_MAX and len(words) > 4:
+        middle = range(2, len(words) - 2)
+        words.pop(max(middle, key=lambda i: (len(words[i]), i)))
+    return "-".join(words)[:SLUG_MAX].strip("-") or "gpu"
 
 
 CATALOG_MAX_AGE_S = 3600  # the full GPU list and the data center list change rarely

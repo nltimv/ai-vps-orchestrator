@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
+from sqlalchemy import text
+
 from aivo.controller.common import get_offers
 from tests.integration.harness import Harness
 
@@ -33,3 +35,41 @@ async def test_stock_moving_between_data_centers_changes_nothing_and_keep_ready_
         assert rp.updates == [(ep.id, ["workers"])] and ep.body["workers"]["min"] == 1
         await sync()
         assert len(rp.updates) == 1
+
+
+async def test_an_endpoint_deleted_at_runpod_is_made_again_under_a_free_name(env):
+    """RunPod keeps a deleted endpoint's name taken ("endpoint template names must be unique")."""
+    async with Harness(env) as h:
+        await h.setup_admin()
+        body = {"kind": "image", "prompt": "a fox", "quality": "draft"}
+        a = (await h.client.post("/api/v1/jobs", json=body)).json()
+        assert (await h.wait_job(a["id"]))["state"] == "succeeded"
+        rp = h.runpod
+        [first] = rp.endpoints.values()
+        name = first.body["name"]
+        assert (await h.sql("SELECT name FROM gpu_endpoints"))[0][0] == name
+        rp.endpoints.pop(first.id)  # deleted in the RunPod console
+        await h.ctx.controller.housekeeping.endpoints.sync()
+        b = (await h.client.post("/api/v1/jobs", json=body)).json()
+        assert (await h.wait_job(b["id"]))["state"] == "succeeded", "the name being taken must not fail creations"
+        [again] = rp.endpoints.values()
+        assert again.body["name"] == f"{name}-2"
+        assert (await h.sql("SELECT name FROM gpu_endpoints"))[0][0] == f"{name}-2"
+
+
+async def test_an_existing_endpoint_keeps_its_name(env):
+    """Endpoints made before aivo kept names (or under an older naming) aren't renamed."""
+    async with Harness(env) as h:
+        await h.setup_admin()
+        a = (await h.client.post("/api/v1/jobs", json={"kind": "image", "prompt": "a fox", "quality": "draft"})).json()
+        assert (await h.wait_job(a["id"]))["state"] == "succeeded"
+        rp = h.runpod
+        [ep] = rp.endpoints.values()
+        ep.body["name"] = "aivo-older-name-cut-off-at-forty-charact"
+        async with h.ctx.sessionmaker() as s, s.begin():
+            await s.execute(text("UPDATE gpu_endpoints SET name = NULL, config_hash = 'from an older version'"))
+        await h.ctx.controller.housekeeping.endpoints.sync()
+        assert all("name" not in fields for _, fields in rp.updates), rp.updates
+        assert (await h.sql("SELECT name FROM gpu_endpoints"))[0][0] == "aivo-older-name-cut-off-at-forty-charact"
+        await h.ctx.controller.housekeeping.endpoints.sync()
+        assert len(rp.updates) <= 1  # settled: the next sync sends nothing

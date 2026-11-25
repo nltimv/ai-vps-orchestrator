@@ -156,6 +156,13 @@ async def test_endpoint_settings_do_not_follow_stock():
     assert egpus.data_centers("NVIDIA L40S") == ["EU-NL-1", "EU-RO-1"]
 
 
+def test_long_gpu_names_stay_distinct():
+    mig1 = gpu_slug("NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 1g.24gb")
+    mig2 = gpu_slug("NVIDIA RTX PRO 6000 Blackwell Server Edition MIG 2g.48gb")
+    assert mig1 == "rtx-pro-6000-server-edition-mig-1g-24gb" and mig1 != mig2 and len(mig2) <= 40
+    assert gpu_slug("NVIDIA RTX PRO 6000 Blackwell Server Edition") == "rtx-pro-6000-blackwell-server-edition"
+
+
 def test_data_center_countries():
     from aivo.providers.runpod.catalog import dc_country
 

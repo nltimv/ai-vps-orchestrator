@@ -27,6 +27,9 @@ from aivo.providers.runpod.catalog import gpu_slug
 log = logging.getLogger(__name__)
 # "This account's plan allows 3 endpoints with FlashBoot; turn it off for this endpoint or upgrade the plan."
 FLASHBOOT_LIMIT = re.compile(r"endpoints with flashboot|flashboot.*(plan|limit)", re.IGNORECASE)
+# "endpoint template names must be unique. check that you do not already have an endpoint with a similar
+# template." RunPod never frees a name: not when the endpoint is renamed, nor when it's deleted.
+NAME_TAKEN = re.compile(r"names? must be unique|similar template", re.IGNORECASE)
 
 ACTIVE = ("assigned", "preparing", "running", "fetching")
 
@@ -55,11 +58,13 @@ class EndpointManager:
     def name_for(self, gpu_type: str) -> str:
         return f"aivo-{str(self.app.deployment_id)[:8]}-{gpu_slug(gpu_type)}"
 
-    def desired(self, gpu_type: str, rs: RuntimeSettings, *, warm: bool, flashboot: bool = True) -> dict[str, Any]:
+    def desired(
+        self, gpu_type: str, rs: RuntimeSettings, *, warm: bool, flashboot: bool = True, name: str | None = None
+    ) -> dict[str, Any]:
         env = self.app.env
         gpus = self.app.gpus
         body: dict[str, Any] = {
-            "name": self.name_for(gpu_type),
+            "name": name or self.name_for(gpu_type),
             "type": "QUEUE",
             "image": env.worker_image,
             "gpu": gpus.gpu_selection(gpu_type),
@@ -119,7 +124,8 @@ class EndpointManager:
                 row.price_hourly = offer.price_hourly
                 warm = row.keep_warm_until is not None and row.keep_warm_until > utcnow()
                 runpod_id, old_hash, flashboot = row.runpod_id, row.config_hash, row.flashboot is not False
-            body = self.desired(gpu_type, rs, warm=warm, flashboot=flashboot)
+                name = row.name
+            body = self.desired(gpu_type, rs, warm=warm, flashboot=flashboot, name=name)
             h = self.config_hash(body)
             error: str | None = None
             try:
@@ -131,9 +137,10 @@ class EndpointManager:
                     # the plan's FlashBoot endpoints are taken: this one starts without it
                     log.info("RunPod allows no more FlashBoot endpoints; %s goes without (%s)", gpu_type, e)
                     flashboot = False
-                    body = self.desired(gpu_type, rs, warm=warm, flashboot=False)
+                    body = self.desired(gpu_type, rs, warm=warm, flashboot=False, name=name)
                     h = self.config_hash(body)
                     runpod_id = await self._apply(runpod_id, old_hash, body, h, gpu_type)
+                h = self.config_hash(body)  # with the name the endpoint has at RunPod
             except Exception as e:
                 error = str(e)[:1000]
                 raise
@@ -143,6 +150,7 @@ class EndpointManager:
                     row.flashboot = flashboot
                     if error is None:
                         row.runpod_id, row.config_hash, row.status, row.error = runpod_id, h, "ready", None
+                        row.name = body["name"]
                         row.last_used_at = utcnow()
                     else:
                         row.status, row.error = ("error" if not row.runpod_id else row.status), error
@@ -152,10 +160,11 @@ class EndpointManager:
     async def _apply(
         self, runpod_id: str | None, old_hash: str | None, body: dict[str, Any], h: str, gpu_type: str
     ) -> str:
-        """Create the endpoint, or update it when its configuration changed. Returns its RunPod id.
+        """Create the endpoint, or update it when its configuration changed. Returns its RunPod id; ``body["name"]``
+        ends up as the name the endpoint has at RunPod.
 
         An update sends only the settings that differ from the live endpoint: each update makes a new RunPod
-        release, and its workers start over.
+        release, and its workers start over. The name is never changed (a rename frees nothing at RunPod).
         """
         app = self.app
         if runpod_id and old_hash != h:
@@ -163,16 +172,29 @@ class EndpointManager:
             if live is None:
                 runpod_id = None
             else:
-                changed = {k: v for k, v in body.items() if k != "type" and differs(v, live.get(k))}
+                body["name"] = live.get("name") or body["name"]
+                changed = {k: v for k, v in body.items() if k not in ("type", "name") and differs(v, live.get(k))}
                 if changed:
                     log.info("updating RunPod endpoint %s for %s: %s", runpod_id, gpu_type, ", ".join(sorted(changed)))
                     await app.runpod.update_endpoint(runpod_id, changed)
         if not runpod_id:
-            created = await app.runpod.create_endpoint(body)
+            base = self.name_for(gpu_type)  # a kept name belonged to an endpoint that's gone; RunPod keeps it taken
+            for n in range(1, 10):
+                body["name"] = base if n == 1 else f"{base}-{n}"
+                try:
+                    created = await app.runpod.create_endpoint(body)
+                    break
+                except Exception as e:
+                    if not NAME_TAKEN.search(str(e)):
+                        raise
+                    # an endpoint of that name existed once (deleted or renamed since): RunPod keeps the name
+                    log.info("RunPod endpoint name %s is taken; trying another", body["name"])
+            else:
+                raise ConfigError(f"RunPod refused every endpoint name tried for {gpu_type} (all taken)")
             runpod_id = str(created.get("id") or "")
             if not runpod_id:
                 raise ConfigError(f"RunPod did not return an endpoint id: {created}")
-            log.info("created RunPod endpoint %s for %s", runpod_id, gpu_type)
+            log.info("created RunPod endpoint %s (%s) for %s", runpod_id, body["name"], gpu_type)
         return runpod_id
 
     async def set_keep_warm(self, gpu_type: str, minutes: int) -> GpuEndpoint:
@@ -216,7 +238,7 @@ class EndpointManager:
                 continue
             warm = row.keep_warm_until is not None and row.keep_warm_until > utcnow()
             try:
-                want = self.desired(row.gpu_type, rs, warm=warm, flashboot=row.flashboot)
+                want = self.desired(row.gpu_type, rs, warm=warm, flashboot=row.flashboot, name=row.name)
                 desired_hash = self.config_hash(want)
                 if desired_hash != row.config_hash and row.id not in busy:
                     await self.ensure(offer)
@@ -226,6 +248,7 @@ class EndpointManager:
                     async with app.sessionmaker() as s, s.begin():
                         r = (await s.execute(select(GpuEndpoint).where(GpuEndpoint.id == row.id))).scalar_one()
                         r.runpod_id, r.config_hash, r.status = None, None, "creating"
+                        r.name = None  # a new one gets the usual name if RunPod still has it free, or a numbered one
                     continue
                 if int((live.get("workers") or {}).get("max", 0)) < max(1, rs.max_workers_per_gpu):
                     # the whole block, so nothing else in it changes; worker settings alone make no new release

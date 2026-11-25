@@ -114,6 +114,7 @@ class FakeRunPod:
         self.deleted: list[str] = []
         self.stock: dict[str, list[str]] | None = None  # GPU type -> data centers with stock (default EU-NL-1)
         self.updates: list[tuple[str, list[str]]] = []  # (endpoint id, fields sent): each is a RunPod release
+        self.names_used: set[str] = set()
         self.transport: Any = None  # httpx transport to aivo, set by attach()
         self._root = Path(tempfile.mkdtemp(prefix="aivo-fake-runpod-"))
         self._loop: asyncio.Task[None] | None = None
@@ -197,6 +198,12 @@ class FakeRunPod:
                 f"HTTP 400: This account's plan allows {self.flashboot_limit} endpoints with FlashBoot; "
                 "turn it off for this endpoint or upgrade the plan."
             )
+        if body["name"] in self.names_used:  # RunPod never frees a name: not on rename, not on delete
+            raise ConfigError(
+                "HTTP 400: endpoint template names must be unique. check that you do not already have an endpoint "
+                "with a similar template."
+            )
+        self.names_used.add(body["name"])
         ep = FakeEndpoint(body=dict(body), id=f"fake{next(_ids):04d}")
         ep.no_gpu = self._take_chaos("no_gpu") is not None
         self.endpoints[ep.id] = ep

@@ -186,6 +186,10 @@ Only model files are stored on a volume, never creations.
 - **"This account's plan allows 3 endpoints with FlashBoot"**: aivo turns FlashBoot (quicker cold starts) on
   for each GPU type's endpoint. When the plan's limit is reached, it makes the next endpoints without it and
   remembers that; nothing to do.
+- **"endpoint template names must be unique"**: RunPod never frees an endpoint's name, not even after the
+  endpoint is deleted. aivo then gives the new endpoint a numbered name (`…-2`) and keeps it; nothing to do.
+  Older aivo versions could also cut two long GPU type names to the same endpoint name, so the second one
+  failed with this error (e.g. music on an RTX PRO 6000 MIG slice).
 - **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
   types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.
