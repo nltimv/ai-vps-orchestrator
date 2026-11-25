@@ -45,8 +45,13 @@ waits between jobs, and the wait after the last one.
 
 ## Setup
 
-1. **Create an API key** in the RunPod console (Settings → API keys) with read/write access to
-   Serverless. It can manage everything in your RunPod account, so keep it as secret as any cloud token.
+1. **Create an API key** in the RunPod console (Credentials → API Keys). It can manage everything in
+   your RunPod account, so keep it as secret as any cloud token.
+   - **All** works.
+   - With **Restricted**, give it **Read/Write** for the REST API *and* **Read/Write** for Serverless
+     endpoints. A per-endpoint ("Restricted") Serverless setting doesn't work: aivo creates its
+     endpoints itself, and RunPod answers "403: you do not have permission" for jobs on endpoints
+     the key wasn't given.
 2. **Add credit.** RunPod is prepaid; with $0 balance, workers stop.
 3. **Make aivo reachable for the workers.** They call `https://<your aivo>/api/v1/worker/...`.
    - Set `AIVO_PUBLIC_URL`, or `AIVO_WORKER_API_URL` if workers should use another address. It must be
@@ -138,7 +143,9 @@ files are stored on the volume, never creations.
   - The worker can't reach `AIVO_PUBLIC_URL`. Check the endpoint's worker logs in the RunPod console
     (Serverless → `aivo-…` endpoint → Workers): look for "aivo unreachable" or "HTTP 401/413".
   - A 413 means the ingress refuses large uploads.
-- **401 errors in the backend log about RunPod.** The API key is wrong or lacks Serverless access.
+- **401 errors in the backend log about RunPod.** The API key is wrong.
+- **403 "you do not have permission" when submitting a creation**, although endpoints get created: the key
+  is *Restricted* without Read/Write for all Serverless endpoints. Edit the key's permissions (see Setup).
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.
 
 ## Limits
