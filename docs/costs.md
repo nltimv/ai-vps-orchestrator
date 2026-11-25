@@ -16,7 +16,7 @@
   | Two Draft images (Z-Image Turbo, cold start) | 16–24 GB, ~$0.58–0.68/h | ~$0.02–0.04 |
   | Two Standard images (FLUX.2 [dev], cold start, model download) | 48 GB, ~$1.91/h | ~$0.10–0.20 |
   | A 5 s Standard video with sound (LTX-2, cold start, model download) | 48 GB, ~$1.91/h | ~$0.15–0.30 |
-  | A 5 s Standard video with Wan 2.2 (full model, ~4 min of creating on an H100) | 80 GB, ~$4.18/h | ~$0.35–0.55 |
+  | A 5 s Standard video with Wan 2.2 (full model: ~13 min of creating on an RTX PRO 6000, ~7 min on an H100) | 80–96 GB, ~$3.69–5.89/h | ~$0.90–1.10 |
   | A follow-up creation on a GPU that's still waiting | — | only its own time |
 
   *Improve my description* adds about 10–30 s per creation (a small language model on the same GPU).

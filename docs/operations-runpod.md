@@ -48,10 +48,9 @@ waits between jobs, and the wait after the last one.
 1. **Create an API key** in the RunPod console (Credentials → API Keys). It can manage everything in
    your RunPod account, so keep it as secret as any cloud token.
    - **All** works.
-   - With **Restricted**, give it **Read/Write** for the REST API *and* **Read/Write** for Serverless
-     endpoints. A per-endpoint ("Restricted") Serverless setting doesn't work: aivo creates its
-     endpoints itself, and RunPod answers "403: you do not have permission" for jobs on endpoints
-     the key wasn't given.
+   - A **Restricted** key must be allowed to create, change and delete Serverless endpoints *and
+     their templates*, and to run jobs on endpoints it creates. A key that can create endpoints but not
+     run jobs gets "403: you do not have permission to perform this action" from `api.runpod.ai`.
 2. **Add credit.** RunPod is prepaid; with $0 balance, workers stop.
 3. **Make aivo reachable for the workers.** They call `https://<your aivo>/api/v1/worker/...`.
    - Set `AIVO_PUBLIC_URL`, or `AIVO_WORKER_API_URL` if workers should use another address. It must be
@@ -145,11 +144,16 @@ files are stored on the volume, never creations.
   - A 413 means the ingress refuses large uploads.
 - **401 errors in the backend log about RunPod.** The API key is wrong.
 - **403 "you do not have permission" when submitting a creation**, although endpoints get created: the key
-  is *Restricted* without Read/Write for all Serverless endpoints. Edit the key's permissions (see Setup).
+  may not run jobs on the endpoints it creates. Use a key with *All* permissions, or widen it (see Setup).
+- **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
+  types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.
 
 ## Limits
 
 - Only NVIDIA GPUs: the worker image is built for CUDA.
-- RunPod's API was implemented from its documentation (API v2, November 2026). It's tested against
-  a simulated RunPod, not yet against RunPod itself. Please report anything that behaves differently.
+- RunPod's API was implemented from its documentation (API v2, November 2026) and is tested against a
+  simulated RunPod. Against RunPod itself (November 2026), these were tried: the GPU catalog, creating
+  and deleting endpoints, submitting jobs and reading their status, and the worker image running
+  every engine. The whole loop, with workers calling a deployed aivo back, hasn't been tried yet.
+  Please report anything that behaves differently.

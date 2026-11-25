@@ -59,7 +59,7 @@ quality:
     sizes: {square: [1536, 1536], portrait: [1216, 1792], landscape: [1792, 1216], wide: [1920, 1088]}
 bench:
   unit: image
-  seconds: {l40s: 55, rtx6000ada: 55, h100: 20, h200: 18}
+  seconds: {l40s: 55, rtx6000ada: 55, rtxpro6000: 23, h100: 20, h200: 18}  # rtxpro6000 measured, Nov 2026
   quality_factor: {draft: 0.6, standard: 1.0, best: 4.0}  # Best: 50 steps at 1536 px
   model_init_s: 60
 output_mb: 2.0

@@ -102,8 +102,9 @@ video:
   max_seconds: 8
 bench:
   unit: video_second
-  # seconds per second of video at Standard (full model, 20 steps, 720p); Draft is the 4-step speed-up
-  seconds: {l40s: 110, rtx6000ada: 110, h100: 45, h200: 42}
+  # seconds per second of video at Standard (full model, 20 steps, 720p); Draft is the 4-step speed-up.
+  # Measured on RunPod, Nov 2026: RTX PRO 6000 154 s (4-step speed-up: 17 s); the others scaled from it.
+  seconds: {l40s: 220, rtx6000ada: 220, rtxpro6000: 154, h100: 90, h200: 85}
   quality_factor: {draft: 0.07, standard: 1.0, best: 2.0}
   model_init_s: 60
 defaults:
