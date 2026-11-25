@@ -34,11 +34,11 @@ RANGE_SIZE = 64 * 1024 * 1024
 PARALLEL_RANGES = 16
 PARALLEL_FILES = 4
 SHARED_MARKER = ".aivo-complete"  # next to a file on the shared volume: {"bytes": n} once it's whole
-# Object-backed volumes serve one reader slowly (~50 MB/s measured on RunPod) and many at once quickly, so files
-# are read in parallel ranges onto the local disk; reading them in place (mmap through the mount) was slower than
-# downloading from Hugging Face.
+# Object-backed volumes serve one reader slowly and many at once quickly. Measured on RunPod (Nov 2026): ComfyUI
+# loading in place through the mount ~50 MB/s, one stream 140 MB/s, 32 parallel ranges ~400 MB/s (also when
+# copying to local disk). So files are copied to the worker's disk in parallel ranges before use.
 SHARED_READERS = int(os.environ.get("AIVO_SHARED_READERS", "32"))
-SHARED_BLOCK = 16 * 1024 * 1024
+SHARED_BLOCK = 32 * 1024 * 1024
 
 
 class FileManager:
