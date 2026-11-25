@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.server
+import os
 import threading
 from functools import partial
 
@@ -60,7 +61,41 @@ async def test_the_first_worker_downloads_and_keeps_it_the_next_reuses_it(tmp_pa
     assert await ready(second, url) == "volume"
     assert len(hits) == downloads  # nothing downloaded
     local = tmp_path / "w2" / DEST
-    assert local.is_symlink() and local.read_bytes() == kept.read_bytes()
+    # copied onto the worker's own disk (reading in place through the mount was slow), in parallel ranges
+    assert not local.is_symlink() and local.read_bytes() == kept.read_bytes()
+    assert not local.with_name(local.name + ".part").exists()
+    assert second.timings[-1].source == "volume" and second.timings[-1].bytes == 350_000
+
+
+def test_parallel_ranges_copy_every_byte_in_order(tmp_path, monkeypatch):
+    import aivo_worker.weights as w
+    from aivo_protocol.worker_api import FileState
+
+    monkeypatch.setattr(w, "SHARED_BLOCK", 4096)
+    data = os.urandom(4096 * 37 + 123)  # not a whole number of ranges
+    src, dst = tmp_path / "src.bin", tmp_path / "out" / "dst.bin"
+    src.write_bytes(data)
+    st = FileState(dest="x")
+    w._copy_ranges(src, dst, len(data), 8, st)
+    assert dst.read_bytes() == data and st.bytes_done == len(data)
+
+
+async def test_a_failed_copy_from_the_volume_falls_back_to_a_download(tmp_path, hf, monkeypatch):
+    import aivo_worker.weights as w
+
+    url, hits = hf
+    shared = tmp_path / "shared"
+    first = FileManager(tmp_path / "w1", shared=shared)
+    await ready(first, url)
+    await first.settle(30)
+    downloads = len(hits)
+
+    def broken(*a, **k):
+        raise OSError("transport endpoint is not connected")
+
+    monkeypatch.setattr(w, "_copy_ranges", broken)
+    second = FileManager(tmp_path / "w2", shared=shared)
+    assert await ready(second, url) == "hf" and len(hits) > downloads
 
 
 async def test_a_copy_without_its_marker_is_not_trusted(tmp_path, hf):

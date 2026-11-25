@@ -2,9 +2,10 @@
 
 Resolution order per file (first that works wins):
   1. already present locally with the expected size
-  2. attached cache volume (read-only) -> symlinked, zero copy
-  3. presigned object-storage URL (DO Spaces mirror) -> parallel ranged download
-  4. Hugging Face (revision pinned) -> parallel ranged download
+  2. a RunPod global volume (shared): a whole, marked copy -> copied to local disk in parallel ranges
+  3. attached cache volume (read-only) -> symlinked, zero copy
+  4. presigned object-storage URL (DO Spaces mirror) -> parallel ranged download
+  5. Hugging Face (revision pinned) -> parallel ranged download
 
 Weights are public model files; user content never goes through here.
 """
@@ -33,6 +34,11 @@ RANGE_SIZE = 64 * 1024 * 1024
 PARALLEL_RANGES = 16
 PARALLEL_FILES = 4
 SHARED_MARKER = ".aivo-complete"  # next to a file on the shared volume: {"bytes": n} once it's whole
+# Object-backed volumes serve one reader slowly (~50 MB/s measured on RunPod) and many at once quickly, so files
+# are read in parallel ranges onto the local disk; reading them in place (mmap through the mount) was slower than
+# downloading from Hugging Face.
+SHARED_READERS = int(os.environ.get("AIVO_SHARED_READERS", "32"))
+SHARED_BLOCK = 16 * 1024 * 1024
 
 
 class FileManager:
@@ -97,13 +103,7 @@ class FileManager:
                     self.logs.emit("agent", f"{f.dest}: already on this machine")
                     return
                 kept = self._shared_copy(f)
-                if kept is not None:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if dest.is_symlink() or dest.exists():
-                        dest.unlink()
-                    dest.symlink_to(kept)
-                    st.state, st.source, st.bytes_done = "ready", "volume", kept.stat().st_size
-                    self.logs.emit("agent", f"{f.dest}: on the shared volume (no download)")
+                if kept is not None and await self._from_shared(kept, dest, f, st):
                     return
                 errors: list[str] = []
                 for src in f.sources:
@@ -158,6 +158,27 @@ class FileManager:
         if size != marked or (f.bytes is not None and size != f.bytes):
             return None
         return p
+
+    async def _from_shared(self, kept: Path, dest: Path, f: FileFetch, st: FileState) -> bool:
+        """Copy a file from the shared volume to this worker's disk, in parallel ranges. False: download it instead."""
+        t0 = time.monotonic()
+        size = kept.stat().st_size
+        st.state, st.source, st.bytes_done = "downloading", "volume", 0
+        self.logs.emit("agent", f"{f.dest}: copying from the shared volume (no download)")
+        try:
+            await asyncio.to_thread(_copy_ranges, kept, dest, size, SHARED_READERS, st)
+        except Exception as e:
+            self.logs.emit(
+                "agent", f"{f.dest}: copy from the shared volume failed ({e}); downloading instead", "warning"
+            )
+            dest.with_name(dest.name + ".part").unlink(missing_ok=True)
+            return False
+        secs = time.monotonic() - t0
+        st.state, st.bytes_done, st.seconds = "ready", size, secs
+        rate = f", {size / 1e6 / secs:,.0f} MB/s" if secs > 0.5 else ""
+        self.logs.emit("agent", f"{f.dest}: ready from the shared volume ({size / 1e6:,.0f} MB in {secs:.0f} s{rate})")
+        self.timings.append(PhaseTiming(phase="file_fetch", seconds=secs, source="volume", bytes=size))
+        return True
 
     async def _publish(self, local: Path, rel: str) -> None:
         """Copy a downloaded file onto the shared volume for later workers: whole, then marked complete."""
@@ -220,6 +241,43 @@ class FileManager:
             self.logs.emit("agent", f"{path.name}: checksum mismatch, file discarded", "error")
             path.rename(path.with_suffix(path.suffix + ".bad"))
             st.state, st.error = "failed", "checksum mismatch"
+
+
+def _copy_ranges(src: Path, dst: Path, size: int, readers: int, st: FileState) -> None:
+    """Copy ``src`` to ``dst`` with ``readers`` parallel range reads; ``dst`` appears only once it's whole."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Lock
+
+    part = dst.with_name(dst.name + ".part")
+    part.parent.mkdir(parents=True, exist_ok=True)
+    if dst.is_symlink() or dst.exists():
+        dst.unlink()
+    lock = Lock()
+    fi = os.open(src, os.O_RDONLY)
+    fo = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+
+    def one(offset: int) -> None:
+        end = min(offset + SHARED_BLOCK, size)
+        while offset < end:
+            block = os.pread(fi, end - offset, offset)
+            if not block:
+                raise OSError(f"the volume returned less than {size} bytes")
+            view = memoryview(block)
+            while view:
+                n = os.pwrite(fo, view, offset)
+                view, offset = view[n:], offset + n
+            with lock:
+                st.bytes_done = (st.bytes_done or 0) + len(block)
+
+    try:
+        os.ftruncate(fo, size)
+        with ThreadPoolExecutor(max(1, readers)) as ex:
+            list(ex.map(one, range(0, size, SHARED_BLOCK)))
+        os.fsync(fo)
+    finally:
+        os.close(fi)
+        os.close(fo)
+    part.replace(dst)
 
 
 def _copy_whole(src: Path, dst: Path) -> None:
