@@ -227,19 +227,25 @@ _LABEL = re.compile(r"^\**\s*(?:improved |detailed |final |video |image )?prompt
 
 
 _QUOTED = re.compile(r'"([^"]{2,})"|“([^”]{2,})”|(?<!\w)\'([^\']{2,}?)\'(?!\w)')
-_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+_SENTENCE = re.compile(r"(?<=[.!?])\s+|(?<=[\u3002\uff01\uff1f])\s*")  # also after full-width stops
+# Chinese, Japanese and Korean script (and full-width punctuation): Qwen3 sometimes switches language mid-sentence
+_CJK = re.compile(r"[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
 def _without_invented_text(text: str, original: str) -> str:
-    """Drop sentences that put words in quotes the user never wrote: engines like FLUX.2 render them."""
+    """Drop sentences that put words in quotes the user never wrote (engines like FLUX.2 render them), and
+    sentences that slipped into Chinese, Japanese or Korean when the user didn't write in it."""
     own = " ".join(original.lower().split())
+    foreign = _CJK.search(original) is None
     keep = []
     for sentence in _SENTENCE.split(text):
         quoted = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(sentence)]
         if any(" ".join(q.lower().split()) not in own for q in quoted):
             continue
+        if foreign and _CJK.search(sentence):
+            continue
         keep.append(sentence)
-    return " ".join(keep)
+    return " ".join(k for k in keep if k)
 
 
 def accept_rewrite(

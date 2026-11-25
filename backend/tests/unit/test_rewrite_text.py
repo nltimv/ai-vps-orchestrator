@@ -169,6 +169,36 @@ def test_text_the_user_never_wrote_is_dropped(cat):
     assert accept_rewrite(rw, sign, adult=False, original='a shop with a sign saying "open late"')[0] == sign
 
 
+def test_sentences_that_slip_into_another_script_are_dropped(cat):
+    """Seen on RunPod: Qwen3-4B wrote "The floor is covered in deep burgundy绒布, and ..." in an English description."""
+    rw = cat.rewriter
+    text = (
+        "A cozy coffee shop on a rainy evening, warm golden light spilling from the windowsill. "
+        "The floor is covered in deep burgundy绒布, and the air smells of coffee. "
+        "Raindrops run down the glass."
+    )
+    out, _ = accept_rewrite(rw, text, adult=False, original="a cozy coffee shop on a rainy evening")
+    assert (
+        out == "A cozy coffee shop on a rainy evening, warm golden light spilling from the windowsill. "
+        "Raindrops run down the glass."
+    )
+    numbers = "A portrait at f/1.8 with a 3.5 second exposure, soft rim light and a dark grey background."
+    assert accept_rewrite(rw, numbers, adult=False, original="a portrait")[0] == numbers
+    # all of it in Chinese: nothing usable is left, so the description is kept as written
+    assert (
+        accept_rewrite(
+            rw,
+            "一家雨夜里温馨的咖啡馆，温暖的灯光洒在木桌上，窗外雨滴滑落。",  # noqa: RUF001
+            adult=False,
+            original="a cozy coffee shop on a rainy evening",
+        )[0]
+        is None
+    )
+    # a user who writes in Chinese gets Chinese back
+    zh = "一家雨夜里温馨的咖啡馆，温暖的灯光洒在木桌上，窗外雨滴顺着玻璃滑落，店里飘着咖啡的香气。"  # noqa: RUF001
+    assert accept_rewrite(rw, zh, adult=False, original="雨夜里的咖啡馆")[0] == zh
+
+
 def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat):
     fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6, enhance=False)
     job = _job(cat, app.keyring, fp)
