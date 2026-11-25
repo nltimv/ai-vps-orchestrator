@@ -19,7 +19,22 @@ Quality = Literal["draft", "standard", "high", "best"]
 # engine has one): an engine without it uses its standard preset.
 QUALITIES: tuple[Quality, ...] = ("draft", "standard", "high", "best")
 REQUIRED_QUALITIES: tuple[Quality, ...] = ("draft", "standard", "best")
-Aspect = Literal["square", "portrait", "landscape", "wide"]
+# The first four are the original shapes (manifests give tuned sizes for them); sizes for the others are
+# worked out from the engine's pixel budget (see presets._size).
+Aspect = Literal["square", "portrait", "landscape", "wide", "9x16", "3x4", "4x5", "4x3", "21x9"]
+ASPECT_RATIO: dict[str, tuple[int, int]] = {
+    "9x16": (9, 16),
+    "portrait": (2, 3),
+    "3x4": (3, 4),
+    "4x5": (4, 5),
+    "square": (1, 1),
+    "4x3": (4, 3),
+    "landscape": (3, 2),
+    "wide": (16, 9),
+    "21x9": (21, 9),
+}
+# Most a creation may have, per kind (an engine may allow fewer); larger counts run in several batches.
+MAX_COUNT: dict[str, int] = {"image": 8, "video": 4, "music": 4}
 OutputKind = Literal["image", "video", "audio"]
 Vendor = Literal["nvidia", "amd"]
 
@@ -102,8 +117,10 @@ class VideoTiming(BaseModel):
     def out_fps(self) -> int:
         return self.fps * self.interpolate
 
+    min_seconds: float = 2.0
+
     def frames_for(self, seconds: float) -> int:
-        seconds = max(0.5, min(seconds, self.max_seconds))
+        seconds = max(self.min_seconds, min(seconds, self.max_seconds))
         raw = round(seconds * self.fps)
         n = max(1, round((raw - self.frame_offset) / self.frame_multiple))
         return n * self.frame_multiple + self.frame_offset
@@ -112,6 +129,10 @@ class VideoTiming(BaseModel):
 class MusicTiming(BaseModel):
     durations: dict[str, float] = Field(default_factory=lambda: {"30s": 30.0, "1min": 60.0, "3min": 180.0})
     max_seconds: float = 240.0
+    min_seconds: float = 10.0
+
+    def clamp(self, seconds: float) -> float:
+        return max(self.min_seconds, min(seconds, self.max_seconds))
 
 
 class Bench(BaseModel):
@@ -140,7 +161,11 @@ class ModelManifest(BaseModel):
     music: MusicTiming | None = None
     bench: Bench
     defaults: dict[str, Any] = Field(default_factory=dict)
-    max_count: int = 4
+    # how many one run of the workflow makes at once (GPU memory); a creation may have more, made in
+    # several runs one after another (up to max_count, default MAX_COUNT for the kind)
+    max_batch: int = Field(default=4, ge=1)
+    max_count: int | None = None
+    size_multiple: int = 16  # width and height are multiples of this (worked-out sizes)
     output_mb: float = 2.0  # rough per-output size estimate (for transfer time)
     tags: list[str] = Field(default_factory=list)
     enabled_by_default: bool = True
@@ -177,6 +202,10 @@ class ModelManifest(BaseModel):
             if mode not in {m.mode for m in self.modes}:
                 raise ValueError(f"{self.id}: rewrite for mode {mode!r}, which the engine doesn't have")
         return self
+
+    @property
+    def count_limit(self) -> int:
+        return min(self.max_count or MAX_COUNT[self.kind], MAX_COUNT[self.kind])
 
     def level(self, quality: str) -> Quality:
         """The preset this engine uses for ``quality``: that one, or the nearest lower one it has."""

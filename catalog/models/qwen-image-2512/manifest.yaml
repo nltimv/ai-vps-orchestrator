@@ -47,15 +47,15 @@ quality:
   draft:
     label: Draft
     params: {steps: 8, cfg: 1.0, lora_strength: 1.0}
-    sizes: {square: [1024, 1024], portrait: [864, 1152], landscape: [1152, 864], wide: [1280, 720]}
+    sizes: {"3x4": [864, 1152], square: [1024, 1024], "4x3": [1152, 864], wide: [1280, 720]}
   standard:
     label: Standard
     params: {steps: 25, cfg: 3.5, lora_strength: 0.0}
-    sizes: {square: [1328, 1328], portrait: [1140, 1472], landscape: [1472, 1140], wide: [1664, 928]}
+    sizes: {"3x4": [1140, 1472], square: [1328, 1328], "4x3": [1472, 1140], wide: [1664, 928]}
   best:
     label: Best
     params: {steps: 40, cfg: 4.0, lora_strength: 0.0}
-    sizes: {square: [1328, 1328], portrait: [1140, 1472], landscape: [1472, 1140], wide: [1664, 928]}
+    sizes: {"3x4": [1140, 1472], square: [1328, 1328], "4x3": [1472, 1140], wide: [1664, 928]}
 bench:
   unit: image
   seconds: {l40s: 45, rtx6000ada: 45, h100: 18, h200: 16}

@@ -85,7 +85,7 @@ In **Settings → GPUs**:
 | Keep a GPU waiting for a next creation | 60 s | The endpoint's idle timeout: billed, but the next creation starts without a cold start |
 | Try another GPU type if none is free after | 5 min | Moves a waiting job to the next GPU type |
 | Give up waiting for a free GPU after | 30 min | Then the creation fails with "No GPU became available" |
-| Longest a single creation may take | 60 min | RunPod's execution timeout gets an extra 20 min for model downloads |
+| Longest a single creation may take | 60 min | Per picture batch or video: a creation of 4 videos may take 4× as long. RunPod's execution timeout gets an extra 20 min for model downloads |
 | Never use these GPU types | – | RunPod GPU type names |
 
 **GPUs → Keep one ready 30 min** sets that GPU type's minimum workers to 1 for half an hour. One

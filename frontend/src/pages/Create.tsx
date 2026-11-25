@@ -8,8 +8,8 @@ import { useActiveJobs, useCatalog, useEstimate, useRecentJobs } from "@/api/que
 import type { Asset, Aspect, CatalogModel, CreateRequest, Job, Kind, Preference, Quality } from "@/api/types";
 import { JobCard, KindIcon } from "@/components/JobCard";
 import { LicenseBadge } from "@/components/LicenseBadge";
-import { Badge, Button, Card, Chips, ErrorNote, Label, Modal, Textarea, Toggle } from "@/components/ui";
-import { cn, duration, money, newIdempotencyKey } from "@/lib/format";
+import { Badge, Button, Card, Chips, ErrorNote, Label, Modal, Slider, Textarea, Toggle } from "@/components/ui";
+import { cn, duration, lengthLabel, money, newIdempotencyKey } from "@/lib/format";
 
 const KIND_TABS: { id: Kind; label: string; placeholder: string }[] = [
   { id: "image", label: "Image", placeholder: "A cozy cabin in a snowy forest at dusk, warm light in the windows" },
@@ -45,7 +45,8 @@ export function CreatePage() {
   // two pictures by default: one of them is usually clearly better
   const defaultCount = (k: Kind) => (k === "image" ? 2 : 1);
   const [count, setCount] = useState<number>((p.count as number) ?? defaultCount(prefill.kind ?? "image"));
-  const [durationKey, setDurationKey] = useState<string | null>((p.duration as string) ?? null);
+  // seconds; null = the engine's usual length. Older creations may hold a preset key ("short").
+  const [seconds, setSeconds] = useState<number | null>(typeof p.duration === "number" ? p.duration : null);
   const [sound, setSound] = useState<boolean>((p.sound as boolean) ?? true);
   const [lyrics, setLyrics] = useState(prefill.lyrics ?? "");
   const [instrumental, setInstrumental] = useState<boolean>((p.instrumental as boolean) ?? false);
@@ -75,7 +76,8 @@ export function CreatePage() {
   };
   const [routedId, setRoutedId] = useState<string | null>(null);
   const routed = selected ?? usable.find((m) => m.id === routedId) ?? usable[0];
-  const durations = routed?.durations ?? [];
+  const length = routed?.length ?? null;
+  const lengthValue = length ? Math.min(length.max, Math.max(length.min, seconds ?? length.default)) : 0;
   const maxCount = routed?.max_count ?? 1;
 
   useEffect(() => {
@@ -95,7 +97,7 @@ export function CreatePage() {
   const body: CreateRequest = {
     kind, mode, model_id: modelId === "auto" ? null : modelId, prompt: fullPrompt.trim() || "preview",
     avoid: supports.avoid && avoid ? avoid : null, style: kind === "music" ? null : style,
-    aspect: kind === "music" ? null : aspect, quality, duration: kind === "image" ? null : durationKey,
+    aspect: kind === "music" ? null : aspect, quality, duration: kind === "image" || !length ? null : lengthValue,
     count, sound, lyrics: kind === "music" && !instrumental ? lyrics || null : null, instrumental,
     seed, reference_asset_id: reference?.id ?? null, enhance, preference,
     placement: { mode: "auto", allow_fallback: true },
@@ -147,7 +149,7 @@ export function CreatePage() {
         <div className="mb-5 inline-flex rounded-xl panel p-1" role="tablist">
           {KIND_TABS.map((t) => (
             <button key={t.id} role="tab" aria-selected={kind === t.id}
-              onClick={() => { setKind(t.id); setCount(defaultCount(t.id)); setDurationKey(null); if (t.id === "music") setReference(null); }}
+              onClick={() => { setKind(t.id); setCount(defaultCount(t.id)); setSeconds(null); if (t.id === "music") setReference(null); }}
               className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors cursor-pointer",
                 kind === t.id ? "brand-gradient text-white" : "hover:bg-[var(--panel-2)]")}>
               <KindIcon kind={t.id} className="size-4" /> {t.label}
@@ -214,15 +216,15 @@ export function CreatePage() {
                 <Chips name="Style" allowNone value={style} onChange={setStyle} options={catalog.data.styles} /></div>
               {!(kind === "image" && reference) && (
                 <div><Label>Shape</Label>
-                  <Chips name="Shape" value={aspect ?? (kind === "video" ? "landscape" : "square")} onChange={(v) => setAspect(v)}
+                  <Chips name="Shape" value={aspect ?? (kind === "video" ? "wide" : "square")} onChange={(v) => setAspect(v)}
                     options={catalog.data.aspects.map((a) => ({ id: a.id, label: `${a.label} ${a.ratio}` }))} /></div>
               )}
             </>
           )}
-          {kind !== "image" && durations.length > 0 && (
-            <div><Label>Length</Label>
-              <Chips name="Length" value={durationKey ?? durations[0].id} onChange={setDurationKey}
-                options={durations.map((d) => ({ id: d.id, label: d.label }))} /></div>
+          {kind !== "image" && length && (
+            <div><Label hint={`${lengthLabel(length.min)} to ${lengthLabel(length.max)} with this engine`}>Length</Label>
+              <Slider name="Length" value={lengthValue} onChange={setSeconds} min={length.min} max={length.max}
+                step={length.step} format={lengthLabel} /></div>
           )}
           {kind === "video" && supports.sound && (
             <Toggle checked={sound} onChange={setSound} label="Include sound (only some engines can)" />
@@ -272,7 +274,15 @@ export function CreatePage() {
               )}
               <div className="flex items-center gap-3 text-sm">
                 <Toggle checked={seed !== null} onChange={(v) => setSeed(v ? Math.floor(Math.random() * 2 ** 31) : null)} label="Keep this look" />
-                <span className="text-xs text-muted">{seed !== null ? `Look #${seed}: same settings give the same result` : "Each creation is different"}</span>
+                {seed !== null ? (
+                  <span className="flex items-center gap-2 text-xs text-muted">
+                    Look #
+                    <input type="number" aria-label="Look number" min={0} max={2 ** 32 - 1} value={seed}
+                      onChange={(e) => setSeed(Math.max(0, Math.min(2 ** 32 - 1, Math.floor(Number(e.target.value) || 0))))}
+                      className="panel h-8 w-32 rounded-md px-2 text-sm tabular-nums" />
+                    same settings and number give the same result
+                  </span>
+                ) : <span className="text-xs text-muted">Each creation is different</span>}
               </div>
             </div>
           )}

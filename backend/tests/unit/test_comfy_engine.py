@@ -127,3 +127,21 @@ async def test_a_crashed_engine_reports_it_and_starts_again(tmp_path):
         assert any("starting it again" in ln.text for ln in rt.logs.read(since=0).lines)
     finally:
         await engine.stop()
+
+
+async def test_further_batches_run_one_after_another(engine, tmp_path):
+    out_dir = tmp_path / "out-more"
+    out_dir.mkdir()
+    seen: list[tuple[float, str]] = []
+    job = JobIn(
+        job_id="m",
+        model_id="z-image-turbo",
+        workflow=zimage_workflow(),
+        more=[zimage_workflow(), zimage_workflow()],
+        output=OutputSpec(kind="image", count=3),
+    )
+    files = await engine.run(job, tmp_path, out_dir, lambda p, s: seen.append((p, s)))
+    assert [f.name for f in files] == ["output_00.png", "output_01.png", "output_02.png"]
+    values = [p for p, _ in seen]
+    assert values == sorted(values) and values[-1] > 0.66  # progress moves through the runs in turn
+    assert "loading_model" not in [s for p, s in seen if p > 0.34]

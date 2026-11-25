@@ -97,6 +97,7 @@ class MockEngine:
         self._cancel.clear()
         if self.seen is not None:
             self.seen[job.job_id] = job.workflow
+            self.seen[f"{job.job_id}:more"] = job.more
         self._say("got prompt")
         t0 = asyncio.get_running_loop().time()
         if self.fail_next:

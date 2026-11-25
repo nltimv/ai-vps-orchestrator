@@ -33,6 +33,15 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 | **Image · Unrestricted (18+)** | **Chroma1-HD** 8.9B (FLUX.1 [schnell] based) | Trained without content filtering; realistic and illustrated; fits 20 GB in fp8 | Apache-2.0 |
 | **Video · Animate (18+)** | **Wan 2.2 A14B** image-to-video + a community adult add-on | Animates a picture made here; the add-on is the most-used general one for Wan 2.2 | Wan: Apache-2.0; add-on: no license stated, personal use only |
 
+## Choices
+
+- **How many:** up to 8 pictures, 4 videos or 4 songs per creation. aivo makes them in batches the GPU
+  can hold, one after another in the same job, each batch with its own look number.
+- **Length:** any length in whole seconds, from 2 s up to what the engine can do (8–10 s for videos), and
+  10 s to 4 min for music.
+- **Shape:** 9:16, 2:3, 3:4, 4:5, 1:1, 4:3, 3:2, 16:9 and 21:9.
+- **Look number:** with *Keep this look* on, type a number to repeat or share a look.
+
 ## How aivo gets better results
 
 Open models can come close to hosted ones like Gemini, but only with the right settings and a
@@ -139,6 +148,11 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
    - **Quality presets**: map Draft/Standard/Best to concrete parameters and sizes. *High* is optional:
      a middle way between Standard and Best, offered only where an engine has one.
    - **Benchmark seconds** per GPU class: priors that measured timings replace over time.
+   - **Sizes** for the shapes the engine was tuned for. Other shapes (there are nine, 9:16 to 21:9) are
+     worked out from the preset's pixel budget, in multiples of `size_multiple` (default 16).
+   - **How many at once:** `max_batch` is what one run makes (GPU memory). A creation may have more,
+     up to 8 pictures or 4 videos or songs (`max_count` can lower that), made one batch after another.
+   - **Length:** videos and music take any length from `min_seconds` to `max_seconds`.
    - **License** and a user-facing **tagline**.
 2. Export the ComfyUI workflow in **API format** to `workflows/<mode>.json`. Replace the
    values you want to control with placeholders such as `"$prompt"`, `"$seed"`, `"$width"`,

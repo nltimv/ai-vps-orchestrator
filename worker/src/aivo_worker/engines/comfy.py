@@ -269,25 +269,31 @@ class ComfyEngine:
                 dst = comfy_in / name
                 shutil.copyfile(src, dst)
                 staged.append(dst)
-        tracker = _ProgressTracker(job.workflow, progress)
+        workflows = [job.workflow, *job.more]
+        out: list[Path] = []
         try:
-            try:
-                prompt_id, hist = await self._execute(job.workflow, tracker)
-            except (OSError, websockets.exceptions.WebSocketException, httpx.TransportError) as e:
-                raise await self._crashed(e) from e
-            files = _collect_outputs(hist.get("outputs", {}))
-            if not files:
-                raise EngineError("the workflow produced no output files")
-            out: list[Path] = []
-            base = (self.work_dir / "output").resolve()
-            for i, (sub, fname) in enumerate(files):
-                src = (base / sub / fname).resolve()
-                if base not in src.parents or not src.exists():
-                    continue
-                dst = out_dir / f"output_{i:02d}{src.suffix.lower()}"
-                shutil.move(str(src), dst)
-                out.append(dst)
-            await self._forget(prompt_id)
+            for k, workflow in enumerate(workflows):
+                # one run per batch: progress moves through the runs in turn
+                def scaled(p: float, stage: str, k: int = k) -> None:
+                    progress((k + p) / len(workflows), stage if k == 0 or stage != "loading_model" else "generating")
+
+                tracker = _ProgressTracker(workflow, scaled if len(workflows) > 1 else progress)
+                try:
+                    prompt_id, hist = await self._execute(workflow, tracker)
+                except (OSError, websockets.exceptions.WebSocketException, httpx.TransportError) as e:
+                    raise await self._crashed(e) from e
+                files = _collect_outputs(hist.get("outputs", {}))
+                if not files:
+                    raise EngineError("the workflow produced no output files")
+                base = (self.work_dir / "output").resolve()
+                for sub, fname in files:
+                    src = (base / sub / fname).resolve()
+                    if base not in src.parents or not src.exists():
+                        continue
+                    dst = out_dir / f"output_{len(out):02d}{src.suffix.lower()}"
+                    shutil.move(str(src), dst)
+                    out.append(dst)
+                await self._forget(prompt_id)
             return out
         finally:
             for p in staged:

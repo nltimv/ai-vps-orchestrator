@@ -152,7 +152,8 @@ async def spec(
     if retry:  # RunPod gave the job to a new worker: results of the old one don't count
         await discard_outputs(app, job.id)
     # workers before protocol 2.1 can't improve descriptions: they get the description as written
-    return await asyncio.to_thread(work_spec, app, job, can_rewrite=protocol_tuple(body.protocol) >= (2, 1))
+    version = protocol_tuple(body.protocol)
+    return await asyncio.to_thread(work_spec, app, job, can_rewrite=version >= (2, 1), can_batch=version >= (2, 2))
 
 
 @router.post("/jobs/{job_id}/prompt")

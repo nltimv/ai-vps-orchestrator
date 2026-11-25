@@ -1,4 +1,4 @@
-PROTOCOL_VERSION = "2.1"
+PROTOCOL_VERSION = "2.2"
 
 
 def protocol_tuple(v: str | None) -> tuple[int, int]:

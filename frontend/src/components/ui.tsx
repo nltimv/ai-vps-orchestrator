@@ -117,6 +117,36 @@ export function Chips<T extends string>({
   );
 }
 
+/** A range slider with its value shown next to it (``format`` turns the number into words). */
+export function Slider({
+  name, value, onChange, min, max, step = 1, format = String,
+}: {
+  name: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  step?: number;
+  format?: (v: number) => string;
+}) {
+  return (
+    <div className="flex items-center gap-4">
+      <input
+        type="range"
+        aria-label={name}
+        aria-valuetext={format(value)}
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-2 w-full max-w-md cursor-pointer accent-[var(--color-brand-500,#8b5cf6)]"
+      />
+      <span className="min-w-20 text-sm tabular-nums">{format(value)}</span>
+    </div>
+  );
+}
+
 export function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
   return (
     <label className="inline-flex cursor-pointer items-center gap-3 text-sm">

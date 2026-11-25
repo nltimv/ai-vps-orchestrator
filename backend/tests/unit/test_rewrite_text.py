@@ -167,3 +167,19 @@ def test_text_the_user_never_wrote_is_dropped(cat):
     assert accept_rewrite(rw, cat_text, adult=False, original="a cat on a windowsill")[0] == cat_text
     sign = 'A shop front with a neon sign that says "OPEN LATE" glowing in the rain at night.'
     assert accept_rewrite(rw, sign, adult=False, original='a shop with a sign saying "open late"')[0] == sign
+
+
+def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat):
+    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6)
+    job = _job(cat, app.keyring, fp)
+    spec = work_spec(app, job)
+
+    def batch_and_seed(wf):
+        latent = next(n["inputs"] for n in wf.values() if n["class_type"] == "EmptySD3LatentImage")
+        sampler = next(n["inputs"] for n in wf.values() if n["class_type"] == "KSampler")
+        return latent["batch_size"], sampler["seed"]
+
+    assert [batch_and_seed(w) for w in [spec.workflow, *spec.more]] == [(4, 42), (2, 43)]
+    assert PROMPT_MARKER in str(spec.more[0])  # the worker fills the improved description in every run
+    old = work_spec(app, job, can_batch=False)  # a worker before protocol 2.2 makes the first batch
+    assert old.more == [] and batch_and_seed(old.workflow) == (4, 42)

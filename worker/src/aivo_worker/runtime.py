@@ -256,7 +256,7 @@ class WorkerRuntime:
                 return await self._fail(aivo, "engine", f"The AI engine could not start: {self.engine_error}", t0)
 
             # 2b) the improved description
-            workflow = spec.workflow
+            workflow, more = spec.workflow, spec.more
             if spec.rewrite:
                 if rewriting is None:
                     rewriting = asyncio.create_task(self._rewrite(aivo, spec.rewrite), name="rewrite")
@@ -265,7 +265,9 @@ class WorkerRuntime:
                         await self.engine.cancel()
                         return await self._fail(aivo, "cancelled", "cancelled while improving the description", t0)
                     await asyncio.wait({rewriting}, timeout=self.progress_every_s)
-                workflow = _fill(workflow, spec.rewrite.marker, rewriting.result())
+                text = rewriting.result()
+                workflow = _fill(workflow, spec.rewrite.marker, text)
+                more = [_fill(w, spec.rewrite.marker, text) for w in more]
         finally:
             if rewriting is not None and not rewriting.done():
                 rewriting.cancel()
@@ -278,6 +280,7 @@ class WorkerRuntime:
                 job_id=spec.job_id,
                 model_id=spec.model_id,
                 workflow=workflow,
+                more=more,
                 inputs=spec.inputs,
                 required_files=dests,
                 output=spec.output,

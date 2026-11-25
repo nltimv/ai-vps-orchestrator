@@ -21,6 +21,7 @@ from aivo.catalog.presets import (
     render_workflow,
     rewrite_for,
     rewrite_input,
+    runs,
     text_params,
     workflow_params,
 )
@@ -97,7 +98,8 @@ async def resolve(
         "units": pl.units,
         "inputs": inputs,
         "seed": params.get("seed"),
-        "timeout_s": rs.job_timeout_s,
+        # the time limit is per run (one batch of pictures, one video): a creation of 4 videos gets 4x
+        "timeout_s": rs.job_timeout_s * len(runs(pl.model.manifest, pl.output.count)),
     }
 
 
@@ -128,8 +130,12 @@ def _fetch(app: AppContext, f: FileSpec) -> FileFetch:
     )
 
 
-def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True) -> WorkSpec:
-    """What the worker runs. ``can_rewrite``: the worker knows how to improve the description (protocol 2.1)."""
+def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True, can_batch: bool = True) -> WorkSpec:
+    """What the worker runs.
+
+    ``can_rewrite``: the worker knows how to improve the description (protocol 2.1); ``can_batch``: it runs
+    further batches (protocol 2.2). Older workers make the first batch only.
+    """
     resolved = job.resolved or {}
     cm = app.catalog.get(job.model_id)
     mf = cm.manifest
@@ -164,10 +170,18 @@ def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True) -> WorkSpe
         )
     else:
         text = text_params(app.catalog, mf, fp)
+    params = {**resolved["params"], **text}
+    batches = runs(mf, OutputSpec.model_validate(resolved["output"]).count) if can_batch else [params.get("batch", 1)]
+    seed = int(params.get("seed") or 0)
+    workflows = [
+        render_workflow(cm.workflows[mode], {**params, "batch": n, "seed": (seed + i) % 2**32})
+        for i, n in enumerate(batches)
+    ]
     return WorkSpec(
         job_id=str(job.id),
         model_id=job.model_id,
-        workflow=render_workflow(cm.workflows[mode], {**resolved["params"], **text}),
+        workflow=workflows[0],
+        more=workflows[1:],
         files=[_fetch(app, f) for f in files],
         inputs=[i["name"] for i in resolved.get("inputs", [])],
         output=OutputSpec.model_validate(resolved["output"]),

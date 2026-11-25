@@ -2,7 +2,7 @@
 
 export type Kind = "image" | "video" | "music";
 export type Quality = "draft" | "standard" | "high" | "best";
-export type Aspect = "square" | "portrait" | "landscape" | "wide";
+export type Aspect = "square" | "portrait" | "landscape" | "wide" | "9x16" | "3x4" | "4x5" | "4x3" | "21x9";
 export type Preference = "economy" | "balanced" | "fast";
 
 export interface AuthStatus {
@@ -39,7 +39,7 @@ export interface CatalogModel {
   supports: { avoid: boolean; seed: boolean; sound: boolean; lyrics: boolean; instrumental: boolean };
   improves: string[]; // modes in which "Improve my description" applies
   qualities: Quality[]; // the quality levels this engine has (without "high", High uses Standard)
-  durations: { id: string; label: string; seconds: number }[];
+  length: { min: number; max: number; step: number; default: number } | null; // seconds; null for pictures
   max_count: number;
   min_vram_gb: number;
   tags: string[];
@@ -65,7 +65,7 @@ export interface CreateRequest {
   style?: string | null;
   aspect?: Aspect | null;
   quality: Quality;
-  duration?: string | null;
+  duration?: string | number | null; // seconds (or a preset key)
   count: number;
   sound?: boolean;
   lyrics?: string | null;

@@ -84,23 +84,23 @@ quality:
     label: Draft
     # the 4-step speed-up (Lightx2v) at 480p
     params: {steps: 4, guided_steps: 1, split_step: 2, cfg_guided: 1.0, cfg: 1.0, guided_lora: 1.0, lora_strength: 1.0}
-    sizes: {square: [640, 640], portrait: [480, 832], landscape: [832, 480], wide: [832, 480]}
+    sizes: {"9x16": [480, 832], square: [640, 640], wide: [832, 480]}
   standard:
     label: Standard
     # the 4-step speed-up at 720p: quick and cheap, but motion can be timid
     params: {steps: 4, guided_steps: 1, split_step: 2, cfg_guided: 1.0, cfg: 1.0, guided_lora: 1.0, lora_strength: 1.0}
-    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+    sizes: {"9x16": [720, 1280], square: [960, 960], wide: [1280, 720]}
   high:
     label: High
     # middle way: the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest.
     # ~10 model passes instead of 4 (speed-up) or 40 (full model)
     params: {steps: 8, guided_steps: 2, split_step: 4, cfg_guided: 3.5, cfg: 1.0, guided_lora: 0.0, lora_strength: 1.0}
-    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+    sizes: {"9x16": [720, 1280], square: [960, 960], wide: [1280, 720]}
   best:
     label: Best
     # the full model, as in ComfyUI's official Wan 2.2 template: 20 steps with CFG
     params: {steps: 20, guided_steps: 5, split_step: 10, cfg_guided: 3.5, cfg: 3.5, guided_lora: 0.0, lora_strength: 0.0}
-    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+    sizes: {"9x16": [720, 1280], square: [960, 960], wide: [1280, 720]}
 video:
   fps: 16
   interpolate: 2  # FILM doubles it to 32 fps after creating: smoother motion
@@ -118,6 +118,6 @@ bench:
 defaults:
   shift: 5.0
   negative: "blurry, low quality, static, distorted, jpeg artifacts, watermark, text, ugly"
-max_count: 1
+max_batch: 1  # per run; a creation may have more (made one batch after another)
 output_mb: 8
 tags: [video, cinematic]

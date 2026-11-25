@@ -85,6 +85,7 @@ class JobIn(BaseModel):
     workflow: dict = Field(default_factory=dict)
     inputs: list[str] = Field(default_factory=list)  # names of starting files in the inputs directory
     required_files: list[str] = Field(default_factory=list)  # dests that must be ready
+    more: list[dict] = Field(default_factory=list)  # further runs (next batches), one after another
     output: OutputSpec
     timeout_s: int = 3600
 
@@ -202,8 +203,11 @@ class WorkSpec(BaseModel):
     files: list[FileFetch] = Field(default_factory=list)  # model files, with where to get them
     inputs: list[str] = Field(default_factory=list)  # starting files to fetch from aivo
     output: OutputSpec
-    timeout_s: int = 3600
+    timeout_s: int = 3600  # for all runs together
     rewrite: RewriteSpec | None = None
+    # protocol 2.2: further runs of the same workflow (the next batches of a creation with more pictures or
+    # videos than one run makes), each with its own seed; their outputs are numbered on after the first's
+    more: list[dict] = Field(default_factory=list)
 
 
 class PromptIn(BaseModel):

@@ -49,13 +49,13 @@ files:
 quality:
   draft:
     label: Draft
-    sizes: {square: [640, 640], portrait: [512, 768], landscape: [768, 512], wide: [1024, 576]}
+    sizes: {portrait: [512, 768], square: [640, 640], landscape: [768, 512], wide: [1024, 576]}
   standard:
     label: Standard
-    sizes: {square: [960, 960], portrait: [704, 1280], landscape: [1280, 704], wide: [1280, 704]}
+    sizes: {"9x16": [704, 1280], square: [960, 960], wide: [1280, 704]}
   best:
     label: Best
-    sizes: {square: [1088, 1088], portrait: [832, 1472], landscape: [1472, 832], wide: [1920, 1088]}
+    sizes: {"9x16": [832, 1472], square: [1088, 1088], wide: [1472, 832]}
 video:
   fps: 24
   frame_multiple: 8
@@ -68,7 +68,8 @@ bench:
   model_init_s: 45
 defaults:
   negative: "blurry, low quality, distorted, watermark, static"
-max_count: 1
+max_batch: 1  # per run; a creation may have more (made one batch after another)
+size_multiple: 64  # the first stage runs at half size, in multiples of 32
 output_mb: 8
 tags: [video, sound, fast]
 notes: >

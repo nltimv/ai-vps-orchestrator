@@ -104,9 +104,11 @@ class JobRunner:
             )
         if not ok:
             return
+        # the job's own limit (several runs for a creation with many videos), plus time to download models
+        limit_s = int((job.resolved or {}).get("timeout_s") or rs.job_timeout_s)
         policy = {
-            "executionTimeout": (rs.job_timeout_s + 1200) * 1000,
-            "ttl": (rs.capacity_wait_max_s + rs.job_timeout_s + 1800) * 1000,
+            "executionTimeout": (limit_s + 1200) * 1000,
+            "ttl": (rs.capacity_wait_max_s + limit_s + 1800) * 1000,
         }
         rp_id = await app.runpod.run(str(ep.runpod_id), ticket.model_dump(), policy)
         async with app.sessionmaker() as s, s.begin():

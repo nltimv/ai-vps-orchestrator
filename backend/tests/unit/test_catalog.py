@@ -249,3 +249,64 @@ def test_every_model_file_lands_in_a_folder_comfyui_is_told_about():
     files = [f for m in CAT.models.values() for f in m.manifest.files] + list(CAT.rewriter.files)
     for f in files:
         assert f.dest.split("/", 1)[0] in MODEL_FOLDERS, f.dest
+
+
+def test_every_shape_gets_a_size_the_engine_can_make():
+    from aivo_protocol.catalog_types import ASPECT_RATIO
+
+    for m in CAT.models.values():
+        if m.manifest.kind == "music":
+            continue
+        mult = m.manifest.size_multiple
+        for aspect, (rw, rh) in ASPECT_RATIO.items():
+            for q in m.manifest.quality:
+                mode = next(iter(m.workflows))
+                fp = FriendlyParams(
+                    kind=m.manifest.kind,
+                    prompt="p",
+                    model_id=m.id,
+                    mode=mode,
+                    quality=q,
+                    aspect=aspect,
+                    reference_asset_id=uuid.uuid4() if mode in ("edit", "i2v") else None,
+                )
+                o = plan(CAT, fp, ALL).output
+                if aspect not in m.manifest.quality[q].sizes:  # worked out by aivo (tuned ones are the makers')
+                    assert o.width % mult == 0 and o.height % mult == 0, (m.id, aspect, q, o.width, o.height)
+                assert abs(o.width / o.height - rw / rh) < 0.12 * rw / rh, (m.id, aspect, q, o.width, o.height)
+    # the tuned sizes stay for the original shapes; new ones keep the preset's pixel budget
+    z = lambda a: plan(CAT, FriendlyParams(kind="image", prompt="p", model_id="z-image-turbo", aspect=a), ALL).output  # noqa: E731
+    assert (z("square").width, z("square").height) == (1024, 1024)
+    tall = z("9x16")
+    assert tall.height > tall.width and 0.9 < tall.width * tall.height / 1024**2 < 1.1
+    ltx = plan(CAT, FriendlyParams(kind="video", prompt="p", model_id="ltx2", aspect="21x9"), ALL).output
+    assert ltx.width % 64 == 0 and ltx.height % 64 == 0
+
+
+def test_any_count_up_to_the_limit_runs_in_batches():
+    from aivo.catalog.presets import runs
+
+    z = CAT.get("z-image-turbo").manifest
+    assert z.count_limit == 8 and runs(z, 8) == [4, 4] and runs(z, 6) == [4, 2] and runs(z, 3) == [3]
+    wan = CAT.get("wan22-a14b").manifest
+    assert wan.count_limit == 4 and runs(wan, 3) == [1, 1, 1]
+    pl = plan(CAT, FriendlyParams(kind="image", prompt="p", model_id="z-image-turbo", count=8), ALL)
+    assert pl.output.count == 8 and pl.units == 8
+    params = workflow_params(CAT, pl, FriendlyParams(kind="image", prompt="p", count=8), z.variants[0], seed=1)
+    assert params["batch"] == 4  # the first run
+    pl = plan(CAT, FriendlyParams(kind="video", prompt="p", model_id="wan22-a14b", count=4), ALL)
+    assert pl.output.count == 4
+    with pytest.raises(ValueError):
+        FriendlyParams(kind="image", prompt="p", count=9)
+
+
+def test_any_length_within_the_engines_limits():
+    def secs(model, kind, d):
+        return plan(CAT, FriendlyParams(kind=kind, prompt="p", model_id=model, duration=d), ALL).output.duration_s
+
+    assert abs(secs("ltx2", "video", 7) - 7) < 0.2  # 7 s: 169 frames at 24 fps (8n+1)
+    assert abs(secs("wan22-a14b", "video", 3) - 3) < 0.2
+    assert secs("ltx2", "video", 60) <= 10.1 and secs("ltx2", "video", 0.2) >= 1.9  # clamped to 2..10 s
+    assert secs("ace-step-15", "music", 95) == 95
+    assert secs("ace-step-15", "music", 1) == 10 and secs("ace-step-15", "music", 999) == 240
+    assert secs("ltx2", "video", "short") == secs("ltx2", "video", 5)  # older creations' preset keys still work

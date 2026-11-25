@@ -8,6 +8,7 @@ from aivo.api.deps import current_user, get_app
 from aivo.context import AppContext
 from aivo.db.models import User
 from aivo.safety import adult_ok
+from aivo_protocol.catalog_types import ASPECT_RATIO, ModelManifest
 
 router = APIRouter(tags=["catalog"])
 
@@ -18,19 +19,28 @@ QUALITY_LABELS = {
     "high": ("High", "Between Standard and Best: livelier motion, takes about 2 to 3 times as long"),
     "best": ("Best", "Highest quality — slower and costs more"),
 }
-ASPECTS = [
-    {"id": "square", "label": "Square", "ratio": "1:1"},
-    {"id": "portrait", "label": "Portrait", "ratio": "2:3"},
-    {"id": "landscape", "label": "Landscape", "ratio": "3:2"},
-    {"id": "wide", "label": "Wide", "ratio": "16:9"},
-]
-DURATION_LABELS = {
-    "short": "Short (~5 s)",
-    "medium": "Longer (~10 s)",
-    "30s": "30 seconds",
-    "1min": "1 minute",
-    "3min": "3 minutes",
+ASPECT_LABELS = {
+    "9x16": "Tall",
+    "portrait": "Portrait",
+    "3x4": "Portrait",
+    "4x5": "Portrait",
+    "square": "Square",
+    "4x3": "Landscape",
+    "landscape": "Landscape",
+    "wide": "Wide",
+    "21x9": "Cinema",
 }
+ASPECTS = [{"id": k, "label": ASPECT_LABELS[k], "ratio": f"{w}:{h}"} for k, (w, h) in ASPECT_RATIO.items()]
+
+
+def _length(mf: ModelManifest) -> dict[str, float] | None:
+    """The lengths one may pick, in seconds (videos and music)."""
+    t = mf.video or mf.music
+    if t is None:
+        return None
+    default = next(iter(t.durations.values()), t.min_seconds)
+    step = 1.0 if mf.video else 5.0
+    return {"min": t.min_seconds, "max": t.max_seconds, "step": step, "default": default}
 
 
 @router.get("/catalog")
@@ -42,11 +52,6 @@ async def catalog(user: User = Depends(current_user), app: AppContext = Depends(
         mf = m.manifest
         if mf.adult and not adult_ok(user, rs):
             continue  # never shown to accounts without adult content
-        durations: dict[str, float] = {}
-        if mf.video:
-            durations = mf.video.durations
-        elif mf.music:
-            durations = mf.music.durations
         models.append(
             {
                 "id": mf.id,
@@ -60,11 +65,9 @@ async def catalog(user: User = Depends(current_user), app: AppContext = Depends(
                 "supports": mf.supports.model_dump(),
                 # modes in which "Improve my description" applies
                 "improves": [m for m in mf.rewrite if app.catalog.rewriter is not None],
-                "durations": [
-                    {"id": k, "label": DURATION_LABELS.get(k, f"{v:.0f} s"), "seconds": v} for k, v in durations.items()
-                ],
+                "length": _length(mf),  # seconds: min, max, step, default (None for pictures)
                 "qualities": [q for q in QUALITY_LABELS if q in mf.quality],
-                "max_count": mf.max_count,
+                "max_count": mf.count_limit,
                 "min_vram_gb": min(v.min_vram_gb for v in mf.variants),
                 "tags": mf.tags,
                 "adult": mf.adult,

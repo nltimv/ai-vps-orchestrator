@@ -46,6 +46,11 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.getByRole("tab", { name: "Video" }).click();
   await page.waitForTimeout(300);
   assert.deepEqual(await levels(), ["Draft", "Standard", "High", "Best"], "video quality levels");
+  // any length within the engine's limits, nine shapes, up to 4 videos
+  const length = page.getByRole("slider", { name: "Length" });
+  await length.fill("7");
+  assert.equal(await length.getAttribute("aria-valuetext"), "7 s", "length slider");
+  assert.equal(await page.getByRole("radiogroup", { name: "Shape" }).getByRole("radio").count(), 9, "nine shapes");
   await shot("create-video");
   await page.getByLabel("Description", { exact: true }).fill("Waves crashing on black volcanic rocks, drone shot");
   await page.getByRole("button", { name: "Create", exact: true }).click();

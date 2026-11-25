@@ -69,7 +69,7 @@ defaults:
   negative: >-
     low quality, ugly, unfinished, out of focus, deformed, disfigured, blurry, smudged,
     restricted palette, flat colors, child, minor, teen, childlike, young-looking
-max_count: 4
+max_batch: 4  # per run; a creation may have more (made one batch after another)
 output_mb: 2.0
 tags: [adult]
 notes: >

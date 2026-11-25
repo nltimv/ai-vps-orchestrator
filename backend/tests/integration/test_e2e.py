@@ -164,3 +164,63 @@ async def test_unauthenticated_and_csrf(env):
             "/api/v1/auth/setup", json={"email": "x@example.com", "display_name": "X", "password": "another password"}
         )
         assert r.status_code == 403
+
+
+async def test_flexible_counts_lengths_and_shapes(env):
+    async with Harness(env) as h:
+        await h.setup_admin()
+        cat = (await h.client.get("/api/v1/catalog")).json()
+        assert [a["ratio"] for a in cat["aspects"]] == [
+            "9:16",
+            "2:3",
+            "3:4",
+            "4:5",
+            "1:1",
+            "4:3",
+            "3:2",
+            "16:9",
+            "21:9",
+        ]
+        ltx = next(m for m in cat["models"] if m["id"] == "ltx2")
+        assert ltx["length"] == {"min": 2.0, "max": 10.0, "step": 1.0, "default": 5.0} and ltx["max_count"] == 4
+        z = next(m for m in cat["models"] if m["id"] == "z-image-turbo")
+        assert z["length"] is None and z["max_count"] == 8
+
+        # 6 pictures: a batch of 4, then one of 2, in one job
+        r = await h.client.post(
+            "/api/v1/jobs",
+            json={
+                "kind": "image",
+                "prompt": "a red fox in snow",
+                "quality": "draft",
+                "model_id": "z-image-turbo",
+                "count": 6,
+                "aspect": "9x16",
+            },
+        )
+        assert r.status_code == 201, r.text
+        done = await h.wait_job(r.json()["id"])
+        assert done["state"] == "succeeded" and len(done["outputs"]) == 6, done
+        assert done["outputs"][0]["height"] > done["outputs"][0]["width"]
+        more = h.runpod.workflows[f"{done['id']}:more"]
+        assert len(more) == 1
+
+        # 2 videos of 7 seconds: one run each, with twice the time limit
+        r = await h.client.post(
+            "/api/v1/jobs",
+            json={
+                "kind": "video",
+                "prompt": "waves on rocks",
+                "quality": "draft",
+                "model_id": "ltx2",
+                "count": 2,
+                "duration": 7,
+                "enhance": False,
+            },
+        )
+        assert r.status_code == 201, r.text
+        done = await h.wait_job(r.json()["id"], timeout=60)
+        assert done["state"] == "succeeded" and len(done["outputs"]) == 2, done
+        assert abs(done["outputs"][0]["duration_s"] - 7) < 0.5
+        limit = (await h.sql("SELECT resolved->>'timeout_s' FROM jobs WHERE id = :i", i=done["id"]))[0][0]
+        assert int(limit) == 2 * 3600
