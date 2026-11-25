@@ -78,7 +78,8 @@ quality:
   high:
     label: High
     # middle way: the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest.
-    # ~10 model passes instead of 4 (speed-up) or 40 (full model)
+    # ~10 model passes instead of 4 (speed-up) or 40 (full model). Measured on RunPod (RTX PRO 6000, Nov 2026):
+    # 203 s for 5 s of video, vs 84 s at Standard and 774 s at Best
     params: {steps: 8, guided_steps: 2, split_step: 4, cfg_guided: 3.5, cfg: 1.0, guided_lora: 0.0, lora_strength: 1.0, adult_strength: 1.0}
     sizes: {"9x16": [720, 1280], square: [960, 960], wide: [1280, 720]}
   best:
@@ -98,7 +99,7 @@ bench:
   # seconds per second of video at Standard (4-step speed-up, 720p). Measured on RunPod, Nov 2026, on an
   # RTX PRO 6000: Standard 17 s, the full model 154 s; the others scaled from it.
   seconds: {l40s: 24, rtx6000ada: 24, rtxpro6000: 17, h100: 10, h200: 9.5}
-  quality_factor: {draft: 0.35, standard: 1.0, high: 2.5, best: 9.0}
+  quality_factor: {draft: 0.35, standard: 1.0, high: 2.4, best: 9.0}  # High measured: 203 s vs 84 s
   model_init_s: 60
 # the add-on's trigger word
 prompt_prefix: nsfwsks

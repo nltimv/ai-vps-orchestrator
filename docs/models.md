@@ -73,8 +73,11 @@ prompt in the form they were trained on. aivo does four things:
      |---|---|---|
      | Draft | 4-step speed-up, 480p | < 1 min |
      | Standard | 4-step speed-up, 720p | ~1.5 min |
-     | High | the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest | ~3–4 min |
+     | High | the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest | ~3.5 min |
      | Best | the full model, 20 steps (ComfyUI's template) | ~13 min |
+
+     In a test on RunPod (same prompt and seed), High gave clearly better light and composition than
+     Standard, and looked at least as good as Best in a quarter of its time.
 
      High is only offered where an engine has a middle way (Wan 2.2 now). Elsewhere it isn't shown,
      and an engine without it uses its Standard settings.
