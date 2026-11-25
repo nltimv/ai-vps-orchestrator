@@ -287,7 +287,7 @@ def test_any_count_up_to_the_limit_runs_in_batches():
     from aivo.catalog.presets import runs
 
     z = CAT.get("z-image-turbo").manifest
-    assert z.count_limit == 8 and runs(z, 8) == [4, 4] and runs(z, 6) == [4, 2] and runs(z, 3) == [3]
+    assert z.count_limit == 16 and runs(z, 16) == [4, 4, 4, 4] and runs(z, 6) == [4, 2] and runs(z, 3) == [3]
     wan = CAT.get("wan22-a14b").manifest
     assert wan.count_limit == 4 and runs(wan, 3) == [1, 1, 1]
     pl = plan(CAT, FriendlyParams(kind="image", prompt="p", model_id="z-image-turbo", count=8), ALL)
@@ -297,7 +297,7 @@ def test_any_count_up_to_the_limit_runs_in_batches():
     pl = plan(CAT, FriendlyParams(kind="video", prompt="p", model_id="wan22-a14b", count=4), ALL)
     assert pl.output.count == 4
     with pytest.raises(ValueError):
-        FriendlyParams(kind="image", prompt="p", count=9)
+        FriendlyParams(kind="image", prompt="p", count=17)
 
 
 def test_any_length_within_the_engines_limits():

@@ -244,9 +244,14 @@ export function CreatePage() {
               <Chips name="Quality" value={quality} onChange={(v) => setQuality(v ?? "standard")} options={qualities} /></div>
           )}
           {maxCount > 1 && (
-            <div><Label>How many</Label>
-              <Chips name="How many" value={String(count)} onChange={(v) => setCount(Number(v ?? 1))}
-                options={Array.from({ length: maxCount }, (_, i) => ({ id: String(i + 1), label: String(i + 1) }))} /></div>
+            <div><Label hint="they show as they're done">How many</Label>
+              {maxCount > 4 ? (
+                <Slider name="How many" value={count} onChange={setCount} min={1} max={maxCount}
+                  format={(n) => (n === 1 ? "1 picture" : `${n} pictures`)} />
+              ) : (
+                <Chips name="How many" value={String(count)} onChange={(v) => setCount(Number(v ?? 1))}
+                  options={Array.from({ length: maxCount }, (_, i) => ({ id: String(i + 1), label: String(i + 1) }))} />
+              )}</div>
           )}
 
           <button type="button" onClick={() => setMore(!more)} className="flex items-center gap-1 text-sm text-muted hover:text-[var(--text)] cursor-pointer">

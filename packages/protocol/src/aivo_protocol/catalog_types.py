@@ -34,7 +34,7 @@ ASPECT_RATIO: dict[str, tuple[int, int]] = {
     "21x9": (21, 9),
 }
 # Most a creation may have, per kind (an engine may allow fewer); larger counts run in several batches.
-MAX_COUNT: dict[str, int] = {"image": 8, "video": 4, "music": 4}
+MAX_COUNT: dict[str, int] = {"image": 16, "video": 4, "music": 4}
 OutputKind = Literal["image", "video", "audio"]
 Vendor = Literal["nvidia", "amd"]
 

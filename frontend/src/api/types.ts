@@ -151,6 +151,7 @@ export interface Job {
   created_at: string;
   finished_at: string | null;
   outputs: Asset[];
+  expected: number | null; // how many results it makes (they show as each batch is done)
   reference: Asset | null;
 }
 

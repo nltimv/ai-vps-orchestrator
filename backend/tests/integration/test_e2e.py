@@ -184,7 +184,7 @@ async def test_flexible_counts_lengths_and_shapes(env):
         ltx = next(m for m in cat["models"] if m["id"] == "ltx2")
         assert ltx["length"] == {"min": 2.0, "max": 10.0, "step": 1.0, "default": 5.0} and ltx["max_count"] == 4
         z = next(m for m in cat["models"] if m["id"] == "z-image-turbo")
-        assert z["length"] is None and z["max_count"] == 8
+        assert z["length"] is None and z["max_count"] == 16
 
         # 6 pictures: a batch of 4, then one of 2, in one job
         r = await h.client.post(
@@ -224,3 +224,38 @@ async def test_flexible_counts_lengths_and_shapes(env):
         assert abs(done["outputs"][0]["duration_s"] - 7) < 0.5
         limit = (await h.sql("SELECT resolved->>'timeout_s' FROM jobs WHERE id = :i", i=done["id"]))[0][0]
         assert int(limit) == 2 * 3600
+
+
+async def test_results_show_while_the_rest_is_made_and_stopping_keeps_them(env):
+    from aivo.providers.runpod.fake import FakeRunPod
+
+    slow = FakeRunPod(boot_seconds=env.fake_boot_seconds, job_seconds=6.0)
+    async with Harness(env, runpod=slow) as h:
+        await h.setup_admin()
+        body = {
+            "kind": "image",
+            "prompt": "a red fox",
+            "quality": "draft",
+            "model_id": "z-image-turbo",
+            "count": 6,
+            "enhance": False,
+        }
+        jid = (await h.client.post("/api/v1/jobs", json=body)).json()["id"]
+
+        async def partly_there():
+            j = (await h.client.get(f"/api/v1/jobs/{jid}")).json()
+            return j if j["state"] in ("preparing", "running") and 1 <= len(j["outputs"]) < 6 else None
+
+        j = await h.wait_for(partly_there, timeout=30, interval=0.05)
+        assert j["expected"] == 6
+        first = j["outputs"][0]
+        assert (await h.client.get(first["url"])).content[:4] == b"\x89PNG"  # viewable right away
+
+        # stop it: what arrived is kept, the creation is done with fewer
+        assert (await h.client.post(f"/api/v1/jobs/{jid}/cancel")).status_code in (200, 202, 204)
+        done = await h.wait_job(jid)
+        assert done["state"] == "succeeded", done
+        assert 1 <= len(done["outputs"]) < 6
+        assert done["error"].startswith(f"Stopped after {len(done['outputs'])} of 6")
+        names = [o["url"] for o in done["outputs"]]
+        assert len(set(names)) == len(names)

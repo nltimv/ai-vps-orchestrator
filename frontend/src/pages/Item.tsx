@@ -32,9 +32,12 @@ export function ItemPage() {
       </Link>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div>
-          {isActive(j.state) || !out ? <JobCard job={j} /> : <MediaView asset={out} />}
+          {/* while it's being made, what's ready already shows; the progress card says how far the rest is */}
+          {isActive(j.state) && <div className="mb-3"><JobCard job={j} /></div>}
+          {out ? <MediaView asset={out} /> : !isActive(j.state) && <JobCard job={j} />}
+          {j.state === "succeeded" && j.error && <p className="mt-2 text-sm text-muted">{j.error}</p>}
           {j.outputs.length > 1 && (
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {j.outputs.map((o, i) => (
                 <button key={o.id} onClick={() => setIdx(i)} className={`overflow-hidden rounded-lg border-2 ${i === idx ? "border-brand-500" : "border-transparent"}`}>
                   <img src={o.thumb_url ?? o.url} alt={`Version ${i + 1}`} className="size-16 object-cover" />

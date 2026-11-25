@@ -31,8 +31,9 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.getByText(/ready in/).waitFor({ timeout: 20000 });
   const improve = page.getByRole("switch", { name: "Improve my description" });
   assert.equal(await improve.getAttribute("aria-checked"), "true", "descriptions are improved by default");
-  const howMany = page.getByRole("radiogroup", { name: "How many" });
-  assert.equal(await howMany.getByRole("radio", { name: "2", exact: true }).getAttribute("aria-checked"), "true", "two pictures by default");
+  const howMany = page.getByRole("slider", { name: "How many" });
+  assert.equal(await howMany.getAttribute("aria-valuetext"), "2 pictures", "two pictures by default");
+  assert.equal(await howMany.getAttribute("max"), "16", "up to 16 pictures");
   await shot("create");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByText(/Starting a GPU|Loading the AI model|Creating/).first().waitFor({ timeout: 20000 });

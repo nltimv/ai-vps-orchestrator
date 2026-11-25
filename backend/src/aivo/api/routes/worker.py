@@ -35,6 +35,7 @@ from aivo.controller.jobspec import (
 from aivo.controller.lifecycle import job_progress, transition_job
 from aivo.controller.workers import job_cost, worker_done, worker_session
 from aivo.db.models import Asset, GpuEndpoint, Instance, Job
+from aivo.events.bus import emit
 from aivo.storage.thumbnails import make_thumbnail
 from aivo_protocol import PROTOCOL_VERSION, protocol_compatible, protocol_tuple
 from aivo_protocol.worker_api import (
@@ -108,6 +109,44 @@ async def discard_outputs(app: AppContext, job_id: uuid.UUID) -> None:
         for a in assets:
             await asyncio.to_thread(app.store.delete, a.storage_path)
         await s.execute(delete(Asset).where(Asset.job_id == job_id, Asset.role.in_(("output", "thumb"))))
+
+
+async def finish_partly(
+    s: AsyncSession, job: Job, code: str, worker: WorkerInfo | None = None, finished_at: float | None = None
+) -> bool:
+    """A creation stopped or failed after some of its results arrived: keep those, and say why there are fewer.
+
+    Returns False (nothing done) when none arrived. The caller commits.
+    """
+    ready = (await s.execute(select(Asset).where(Asset.job_id == job.id, Asset.role == "output"))).scalars().all()
+    if not ready:
+        return False
+    expected = int(((job.resolved or {}).get("output") or {}).get("count") or len(ready))
+    if code == "cancelled":
+        note = f"Stopped after {len(ready)} of {expected}, as you asked."
+    else:
+        note = f"Made {len(ready)} of {expected}: {FRIENDLY_ERRORS.get(code, FRIENDLY_ERRORS['engine'])}"
+    cost = None
+    if worker is not None and finished_at is not None and job.instance_id:
+        inst = (await s.execute(select(Instance).where(Instance.id == job.instance_id))).scalar_one_or_none()
+        cost = job_cost(float(inst.price_hourly), worker, finished_at) if inst else None
+    if job.state != "fetching":
+        await transition_job(s, job.id, job.state, "fetching", stage="saving", progress=1.0)
+    await transition_job(
+        s,
+        job.id,
+        "fetching",
+        "succeeded",
+        stage="done",
+        progress=1.0,
+        eta_s=0,
+        error_message=note,
+        attributed_cost_usd=cost,
+        ticket_hash=None,
+        reserved_usd=0,
+        event_payload={"outputs": [str(a.id) for a in ready], "partial": True},
+    )
+    return True
 
 
 @router.post("/jobs/{job_id}/spec")
@@ -299,8 +338,10 @@ async def upload_output(
                     content_mac=tstored.content_mac,
                 )
             )
-        if row.state in ("assigned", "preparing", "running"):
-            await transition_job(s2, job_id, row.state, "fetching", stage="saving", progress=1.0)
+        # results arrive as each batch is done, while the next one is being made: the job keeps its state,
+        # and the dashboard shows them right away
+        ready = len((await s2.execute(select(Asset.id).where(Asset.job_id == job_id, Asset.role == "output"))).all())
+        await emit(s2, scope="job", type="job.output", ref_id=job_id, user_id=owner, payload={"ready": ready})
     return UploadOut(bytes=size, sha256=digest)
 
 
@@ -380,6 +421,11 @@ async def fail(
     finished = datetime.fromtimestamp(body.finished_at, UTC) if body.finished_at else utcnow()
     log.warning("job %s failed on the worker (%s): %s", job.id, body.code, body.message[:300])
     common: dict[str, Any] = {"ticket_hash": None, "reserved_usd": 0}
+    if await finish_partly(s, job, body.code, body.worker, body.finished_at):
+        await worker_done(s, job.instance_id, finished)
+        await s.commit()
+        await _wake(app)
+        return {"ok": True}
     if body.code == "cancelled" and job.cancel_requested:
         await transition_job(s, job.id, job.state, "cancelled", stage="cancelled", **common)
     elif body.code == "oom" and job.attempt + 1 < job.max_attempts:

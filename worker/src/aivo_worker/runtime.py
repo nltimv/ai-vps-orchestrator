@@ -27,6 +27,7 @@ from aivo_protocol.worker_api import (
     JobIn,
     JobState,
     LogLine,
+    OutputMeta,
     ProgressIn,
     ProgressOut,
     PromptIn,
@@ -287,33 +288,47 @@ class WorkerRuntime:
                 timeout_s=spec.timeout_s,
             )
         )
-        while True:
-            status = await self.executor.wait(spec.job_id, self.progress_every_s)
-            if status is None:
-                return await self._fail(aivo, "engine", "the job disappeared from the worker", t0)
-            if status.state.terminal:
-                break
-            stage = {"loading_model": "loading_model", "saving": "saving"}.get(status.stage, "generating")
-            if (await self._push(aivo, stage, status.progress, status.eta_s)).cancel:
-                await self.executor.cancel(spec.job_id)
-        if status.state != JobState.succeeded:
-            self.executor.delete(spec.job_id)
-            code = "cancelled" if status.state == JobState.cancelled else (status.error_code or "engine")
-            return await self._fail(aivo, code, status.error or "the AI engine failed", t0)
+        sent: set[str] = set()
+        t_up = 0.0
 
-        # 4) results go straight to aivo, then nothing of them stays here
-        await self._push(aivo, "saving", 1.0)
-        t_up = time.monotonic()
-        try:
-            for o in status.outputs:
+        async def deliver(outputs: list[OutputMeta]) -> None:
+            """Upload the results not yet with aivo: each batch as soon as it's done."""
+            nonlocal t_up
+            for o in outputs:
+                if o.name in sent:
+                    continue
                 path = self.executor.output_path(spec.job_id, o.name)
                 if path is None:
                     raise RuntimeError(f"output {o.name} is missing")
+                t = time.monotonic()
                 await aivo.upload(o.name, path, o.media_type)
+                t_up += time.monotonic() - t
+                sent.add(o.name)
+
+        try:
+            while True:
+                status = await self.executor.wait(spec.job_id, self.progress_every_s)
+                if status is None:
+                    return await self._fail(aivo, "engine", "the job disappeared from the worker", t0)
+                if status.state.terminal:
+                    break
+                if status.state == JobState.running and len(status.outputs) > len(sent):
+                    await deliver(list(status.outputs))
+                stage = {"loading_model": "loading_model", "saving": "saving"}.get(status.stage, "generating")
+                if (await self._push(aivo, stage, status.progress, status.eta_s)).cancel:
+                    await self.executor.cancel(spec.job_id)
+            if status.state != JobState.succeeded:
+                # what was delivered already stays with aivo (the creation keeps it)
+                code = "cancelled" if status.state == JobState.cancelled else (status.error_code or "engine")
+                return await self._fail(aivo, code, status.error or "the AI engine failed", t0)
+
+            # 4) the rest of the results go straight to aivo, then nothing of them stays here
+            await self._push(aivo, "saving", 1.0)
+            await deliver(status.outputs)
             phases = [*self.files.timings, *self.executor.timings]
             self.files.timings, self.executor.timings = [], []
             size = sum(o.bytes for o in status.outputs) / 1e6
-            self.logs.emit("agent", f"job {sid}: {size:.1f} MB delivered in {time.monotonic() - t_up:.1f} s")
+            self.logs.emit("agent", f"job {sid}: {size:.1f} MB delivered ({t_up:.1f} s uploading)")
             await aivo.complete(
                 CompleteIn(
                     outputs=status.outputs,

@@ -115,15 +115,25 @@ class Executor:
                     src = self.inputs_dir / name
                     if src.exists():
                         shutil.move(str(src), inputs_dir / name)
+                done: set[Path] = set()
+
+                async def ready(paths: list[Path]) -> None:
+                    """Results of one batch: made deliverable at once, while the engine goes on."""
+                    for path in paths:
+                        if path not in done:
+                            done.add(path)
+                            rec.status.outputs.append(await postprocess(path))
+                    rec.touch()
+
                 paths = await asyncio.wait_for(
-                    self.engine.run(job, inputs_dir, rec.dir / "out", progress), timeout=job.timeout_s
+                    self.engine.run(job, inputs_dir, rec.dir / "out", progress, ready), timeout=job.timeout_s
                 )
                 self.timings.append(
                     PhaseTiming(phase="inference", seconds=time.monotonic() - t0, model_id=job.model_id)
                 )
                 rec.status.state, rec.status.stage = JobState.postprocessing, "saving"
                 rec.touch()
-                rec.status.outputs = [await postprocess(p) for p in paths]
+                await ready(paths)  # whatever the engine didn't hand over along the way
                 rec.status.state, rec.status.progress, rec.status.stage = JobState.succeeded, 1.0, "done"
                 rec.status.eta_s = 0
                 rec.touch()
@@ -193,8 +203,9 @@ class Executor:
         return rec.status
 
     def output_path(self, job_id: str, name: str) -> Path | None:
+        """A result ready to deliver: also while the job still makes its next batches."""
         rec = self.jobs.get(job_id)
-        if rec is None or rec.status.state != JobState.succeeded:
+        if rec is None or rec.status.state in (JobState.cancelled, JobState.queued):
             return None
         if name not in {o.name for o in rec.status.outputs}:
             return None

@@ -19,7 +19,7 @@ from typing import Any
 from PIL import Image, ImageDraw
 
 from aivo_protocol.worker_api import GpuInfo, JobIn
-from aivo_worker.engines.base import EngineError, ProgressCb
+from aivo_worker.engines.base import EngineError, OutputsCb, ProgressCb
 from aivo_worker.logbuf import LogBuffer
 
 
@@ -93,7 +93,14 @@ class MockEngine:
             "color palette, sharp focus."
         )
 
-    async def run(self, job: JobIn, inputs_dir: Path, out_dir: Path, progress: ProgressCb) -> list[Path]:
+    async def run(
+        self,
+        job: JobIn,
+        inputs_dir: Path,
+        out_dir: Path,
+        progress: ProgressCb,
+        on_outputs: OutputsCb | None = None,
+    ) -> list[Path]:
         self._cancel.clear()
         if self.seen is not None:
             self.seen[job.job_id] = job.workflow
@@ -113,29 +120,34 @@ class MockEngine:
             await asyncio.sleep(min(0.3, self.job_seconds / 4))
             self._loaded = [job.model_id]
             self._say(f"loaded completely; {job.model_id}")
+        # one output at a time, like batches of one: each is handed over as soon as it's made
+        out = job.output
+        n_out = max(1, out.count)
+        seed = int(hashlib.sha256(job.job_id.encode()).hexdigest()[:8], 16)
         steps = 10
-        for i in range(steps):
-            if self._cancel.is_set():
-                self._say("Processing interrupted")
-                raise EngineError("cancelled", code="cancelled")
-            progress(i / steps, "generating")
-            if i % 3 == 0:
-                bar = "█" * i + " " * (steps - i)
-                self._say(f"{i * 10:3d}%|{bar}| {i}/{steps} [00:0{i}<00:0{steps - i}]")
-            await asyncio.sleep(self.job_seconds / steps)
-        self._say(f"100%|{'█' * steps}| {steps}/{steps}")
+        paths: list[Path] = []
+        for k in range(n_out):
+            for i in range(steps):
+                if self._cancel.is_set():
+                    self._say("Processing interrupted")
+                    raise EngineError("cancelled", code="cancelled")
+                progress((k + i / steps) / n_out, "generating")
+                if i % 3 == 0:
+                    bar = "█" * i + " " * (steps - i)
+                    self._say(f"{i * 10:3d}%|{bar}| {i}/{steps} [00:0{i}<00:0{steps - i}]")
+                await asyncio.sleep(self.job_seconds / steps / n_out)
+            self._say(f"100%|{'█' * steps}| {steps}/{steps}")
+            if out.kind == "image":
+                path = await asyncio.to_thread(_image, out_dir / f"output_{k:02d}.png", out, seed + k)
+            elif out.kind == "video":
+                path = await _video(out_dir / f"output_{k:02d}.mp4", out, seed + k)
+            else:
+                path = await _audio(out_dir / f"output_{k:02d}", out, seed + k)
+            paths.append(path)
+            if on_outputs is not None:
+                await on_outputs([path])
         self._say(f"Prompt executed in {asyncio.get_running_loop().time() - t0:.2f} seconds")
         progress(1.0, "saving")
-        out = job.output
-        seed = int(hashlib.sha256(job.job_id.encode()).hexdigest()[:8], 16)
-        paths: list[Path] = []
-        for n in range(max(1, out.count)):
-            if out.kind == "image":
-                paths.append(await asyncio.to_thread(_image, out_dir / f"output_{n:02d}.png", out, seed + n))
-            elif out.kind == "video":
-                paths.append(await _video(out_dir / f"output_{n:02d}.mp4", out, seed + n))
-            else:
-                paths.append(await _audio(out_dir / f"output_{n:02d}", out, seed + n))
         return paths
 
 

@@ -25,7 +25,7 @@ import httpx
 import websockets
 
 from aivo_protocol.worker_api import GpuInfo, JobIn
-from aivo_worker.engines.base import EngineError, ProgressCb
+from aivo_worker.engines.base import EngineError, OutputsCb, ProgressCb
 from aivo_worker.logbuf import LogBuffer
 
 log = logging.getLogger(__name__)
@@ -257,7 +257,14 @@ class ComfyEngine:
                 await self._http.post("/free", json={"unload_models": True, "free_memory": True})
         self._loaded = [model_id]
 
-    async def run(self, job: JobIn, inputs_dir: Path, out_dir: Path, progress: ProgressCb) -> list[Path]:
+    async def run(
+        self,
+        job: JobIn,
+        inputs_dir: Path,
+        out_dir: Path,
+        progress: ProgressCb,
+        on_outputs: OutputsCb | None = None,
+    ) -> list[Path]:
         if not self._ready:
             raise EngineError("engine not ready")
         await self._free_if_switching(job.model_id)
@@ -286,6 +293,7 @@ class ComfyEngine:
                 if not files:
                     raise EngineError("the workflow produced no output files")
                 base = (self.work_dir / "output").resolve()
+                batch: list[Path] = []
                 for sub, fname in files:
                     src = (base / sub / fname).resolve()
                     if base not in src.parents or not src.exists():
@@ -293,7 +301,10 @@ class ComfyEngine:
                     dst = out_dir / f"output_{len(out):02d}{src.suffix.lower()}"
                     shutil.move(str(src), dst)
                     out.append(dst)
+                    batch.append(dst)
                 await self._forget(prompt_id)
+                if on_outputs is not None and batch:
+                    await on_outputs(batch)  # delivered while the next batch is made
             return out
         finally:
             for p in staged:

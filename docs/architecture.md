@@ -41,7 +41,8 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
      and sends the result to aivo (`/prompt`), which checks it and answers with the words to use;
    - fetches the starting picture, if any;
    - runs ComfyUI, reporting progress and log lines (`/progress`, relayed to browsers as SSE);
-   - uploads each result (`PUT /outputs/<name>`, checked against its SHA-256);
+   - uploads each batch's results as soon as they're done, while it makes the next batch
+     (`PUT /outputs/<name>`, checked against its SHA-256); the dashboard shows them right away;
    - says it's done (`/complete`).
 5. **Store.** Each upload is encrypted onto the media volume as it arrives, and thumbnails are made
    (also encrypted). On `/complete` the job succeeds, the ticket is cleared, and the worker deletes its
@@ -60,6 +61,8 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
   a bigger GPU type.
 - **The worker fails** (engine error, model files missing): the job fails with a plain message; the
   worker's log is kept with it for admins.
+- **Stopped or failed after some results arrived:** those are kept, and the creation is done with fewer
+  and a note saying why (e.g. "Stopped after 5 of 16, as you asked").
 - **RunPod reports the job failed or timed out** without the worker telling aivo: the runner fails the
   job.
 - **Cancel:** a job still waiting is cancelled at RunPod; a worker that has it learns at its next

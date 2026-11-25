@@ -35,8 +35,11 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 
 ## Choices
 
-- **How many:** up to 8 pictures, 4 videos or 4 songs per creation. aivo makes them in batches the GPU
-  can hold, one after another in the same job, each batch with its own look number.
+- **How many:** up to 16 pictures, 4 videos or 4 songs per creation. aivo makes them in batches the GPU
+  can hold (4 pictures, 1 video), one after another in the same job, each batch with its own look number.
+- **Results as they're done:** each batch shows on the progress card and the creation's page as soon as
+  it's made, while the rest is still being made. Stopping a creation keeps what's ready ("Stopped after
+  5 of 16"), and so does one that fails partway.
 - **Length:** any length in whole seconds, from 2 s up to what the engine can do (8–10 s for videos), and
   10 s to 4 min for music.
 - **Shape:** 9:16, 2:3, 3:4, 4:5, 1:1, 4:3, 3:2, 16:9 and 21:9.
@@ -151,7 +154,7 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
    - **Sizes** for the shapes the engine was tuned for. Other shapes (there are nine, 9:16 to 21:9) are
      worked out from the preset's pixel budget, in multiples of `size_multiple` (default 16).
    - **How many at once:** `max_batch` is what one run makes (GPU memory). A creation may have more,
-     up to 8 pictures or 4 videos or songs (`max_count` can lower that), made one batch after another.
+     up to 16 pictures or 4 videos or songs (`max_count` can lower that), made one batch after another.
    - **Length:** videos and music take any length from `min_seconds` to `max_seconds`.
    - **License** and a user-facing **tagline**.
 2. Export the ComfyUI workflow in **API format** to `workflows/<mode>.json`. Replace the

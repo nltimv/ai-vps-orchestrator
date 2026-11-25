@@ -235,10 +235,14 @@ class JobRunner:
         await self._finish(job.id, "cancelled", "cancelled", None)
 
     async def _finish(self, job_id: uuid.UUID, state: str, code: str, message: str | None) -> None:
+        from aivo.api.routes.worker import discard_outputs, finish_partly
+
         async with self.app.sessionmaker() as s, s.begin():
             row = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
             if row is None or row.state in TERMINAL_JOB_STATES:
                 return
+            if await finish_partly(s, row, "cancelled" if state == "cancelled" else code):
+                return  # some results had arrived: they're kept
             await transition_job(
                 s,
                 job_id,
@@ -250,6 +254,4 @@ class JobRunner:
                 ticket_hash=None,
                 reserved_usd=0,
             )
-        from aivo.api.routes.worker import discard_outputs
-
         await discard_outputs(self.app, job_id)
