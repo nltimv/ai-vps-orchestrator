@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from aivo_protocol.catalog_types import MODE_NEEDS_REFERENCE, ModelManifest, Rewriter
+from aivo_protocol.catalog_types import MODE_NEEDS_REFERENCE, QUALITIES, ModelManifest, Rewriter
 
 
 class CatalogError(Exception):
@@ -130,6 +130,8 @@ class Catalog:
         for kind, modes in self.routing.items():
             for mode, qualities in modes.items():
                 for q, ids in qualities.items():
+                    if q not in QUALITIES:
+                        raise CatalogError(f"routing {kind}/{mode}: unknown quality {q!r}")
                     for mid in ids:
                         m = self.models.get(mid)
                         if m is None:
@@ -168,7 +170,9 @@ class Catalog:
 
     def route(self, kind: str, mode: str, quality: str, enabled: set[str]) -> CatalogModel:
         """Pick the model for "Auto": first enabled model listed for kind/mode/quality."""
-        candidates = self.routing.get(kind, {}).get(mode, {}).get(quality, [])
+        by_quality = self.routing.get(kind, {}).get(mode, {})
+        # a level without its own routing (e.g. "high" for pictures) routes like standard
+        candidates = by_quality.get(quality) or by_quality.get("standard", [])
         for mid in candidates:
             if mid in enabled:
                 return self.models[mid]

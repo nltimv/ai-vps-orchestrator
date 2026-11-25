@@ -38,8 +38,15 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.getByText(/Starting a GPU|Loading the AI model|Creating/).first().waitFor({ timeout: 20000 });
   await shot("progress");
 
+  // pictures have three quality levels; videos also offer High (Wan 2.2's middle way)
+  const levels = async () => page.getByRole("radiogroup", { name: "Quality" }).getByRole("radio").allInnerTexts();
+  assert.deepEqual(await levels(), ["Draft", "Standard", "Best"], "picture quality levels");
+
   // video + music each go to their GPU type's queue
   await page.getByRole("tab", { name: "Video" }).click();
+  await page.waitForTimeout(300);
+  assert.deepEqual(await levels(), ["Draft", "Standard", "High", "Best"], "video quality levels");
+  await shot("create-video");
   await page.getByLabel("Description", { exact: true }).fill("Waves crashing on black volcanic rocks, drone shot");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByRole("tab", { name: "Music" }).click();

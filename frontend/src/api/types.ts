@@ -1,7 +1,7 @@
 // Mirrors backend/src/aivo/api/schemas.py
 
 export type Kind = "image" | "video" | "music";
-export type Quality = "draft" | "standard" | "best";
+export type Quality = "draft" | "standard" | "high" | "best";
 export type Aspect = "square" | "portrait" | "landscape" | "wide";
 export type Preference = "economy" | "balanced" | "fast";
 
@@ -38,6 +38,7 @@ export interface CatalogModel {
   license: License;
   supports: { avoid: boolean; seed: boolean; sound: boolean; lyrics: boolean; instrumental: boolean };
   improves: string[]; // modes in which "Improve my description" applies
+  qualities: Quality[]; // the quality levels this engine has (without "high", High uses Standard)
   durations: { id: string; label: string; seconds: number }[];
   max_count: number;
   min_vram_gb: number;
@@ -50,7 +51,7 @@ export interface Catalog {
   models: CatalogModel[];
   styles: { id: string; label: string }[];
   aspects: { id: Aspect; label: string; ratio: string }[];
-  qualities: { id: Quality; label: string; hint: string }[];
+  qualities: { id: Quality; label: string; hint: string; kinds: Kind[] }[]; // kinds: where the level is offered
   preferences: { id: Preference; label: string; hint: string }[];
   default_preference: Preference;
 }

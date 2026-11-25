@@ -15,6 +15,7 @@ KIND_LABELS = {"image": "Image", "video": "Video", "music": "Music"}
 QUALITY_LABELS = {
     "draft": ("Draft", "Quick and cheap — good for trying ideas"),
     "standard": ("Standard", "Good quality for most things"),
+    "high": ("High", "Between Standard and Best: livelier motion, takes about 2 to 3 times as long"),
     "best": ("Best", "Highest quality — slower and costs more"),
 }
 ASPECTS = [
@@ -62,6 +63,7 @@ async def catalog(user: User = Depends(current_user), app: AppContext = Depends(
                 "durations": [
                     {"id": k, "label": DURATION_LABELS.get(k, f"{v:.0f} s"), "seconds": v} for k, v in durations.items()
                 ],
+                "qualities": [q for q in QUALITY_LABELS if q in mf.quality],
                 "max_count": mf.max_count,
                 "min_vram_gb": min(v.min_vram_gb for v in mf.variants),
                 "tags": mf.tags,
@@ -73,7 +75,20 @@ async def catalog(user: User = Depends(current_user), app: AppContext = Depends(
         "models": models,
         "styles": [{"id": s.id, "label": s.label} for s in app.catalog.styles.values()],
         "aspects": ASPECTS,
-        "qualities": [{"id": k, "label": v[0], "hint": v[1]} for k, v in QUALITY_LABELS.items()],
+        # which kinds offer each level: "high" only where an engine has a middle way (Wan 2.2 videos)
+        "qualities": [
+            {
+                "id": k,
+                "label": v[0],
+                "hint": v[1],
+                "kinds": [
+                    kd
+                    for kd in KIND_LABELS
+                    if any(m["kind"] == kd and m["enabled"] and k in m["qualities"] for m in models)
+                ],
+            }
+            for k, v in QUALITY_LABELS.items()
+        ],
         "preferences": [
             {"id": "economy", "label": "Save money", "hint": "Cheapest machine, may take longer"},
             {"id": "balanced", "label": "Balanced", "hint": "Good mix of speed and price"},

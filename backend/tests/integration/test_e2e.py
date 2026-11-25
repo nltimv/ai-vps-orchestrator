@@ -9,6 +9,11 @@ async def test_image_job_end_to_end(env):
         assert me["role"] == "admin"
         cat = (await h.client.get("/api/v1/catalog")).json()
         assert {m["id"] for m in cat["models"]} >= {"z-image-turbo", "wan22-a14b", "ace-step-15"}
+        levels = {q["id"]: q["kinds"] for q in cat["qualities"]}
+        assert list(levels) == ["draft", "standard", "high", "best"]
+        assert levels["high"] == ["video"] and levels["standard"] == ["image", "video", "music"]
+        wan = next(m for m in cat["models"] if m["id"] == "wan22-a14b")
+        assert wan["qualities"] == ["draft", "standard", "high", "best"]
 
         est = (
             await h.client.post(

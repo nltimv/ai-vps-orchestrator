@@ -27,7 +27,7 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 | **Image · Text & posters** | **Qwen-Image-2512** 20B (+ Lightning speed-up for Draft) | Best text rendering and complex layouts | Apache-2.0 |
 | **Edit an image** | **Qwen-Image-Edit-2511**; quick: **FLUX.2 [klein] 4B** | Instruction-based edits that keep the rest intact | Apache-2.0 |
 | **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled, two stages with a 2× upscaler) | Very fast, generates matching audio; 32–48 GB | LTX community license (free < $10M revenue) |
-| **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** (full model; Lightx2v 4-step at Draft), smoothed to 32 fps | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
+| **Video · Cinematic** (Auto for High and Best) | **Wan 2.2 A14B** (Lightx2v 4-step at Draft/Standard, a middle way at High, the full model at Best), smoothed to 32 fps | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
 | **Video · Budget** (Auto for Draft) | **Wan 2.2 TI2V-5B** | 720p on the cheapest GPU | Apache-2.0 |
 | **Music · Song** | **ACE-Step 1.5** (turbo) | Full songs with vocals/lyrics or instrumentals in seconds; tiny VRAM | MIT |
 | **Image · Unrestricted (18+)** | **Chroma1-HD** 8.9B (FLUX.1 [schnell] based) | Trained without content filtering; realistic and illustrated; fits 20 GB in fp8 | Apache-2.0 |
@@ -52,10 +52,20 @@ prompt in the form they were trained on. aivo does four things:
    - Edits and music use the words as written: an edit instruction isn't a picture description.
    - Qwen3-4B is the same file Z-Image and FLUX.2 [klein] use as their text encoder (8 GB). Other
      engines download it once per worker, or once to the network volume.
-2. **No shortcuts at Standard.**
+2. **Stronger engines and settings.**
    - Pictures at Standard and Best go to FLUX.2 [dev].
-   - Wan 2.2 runs its full model at Standard (20 steps, as in ComfyUI's template) and Best (40 steps,
-     as in the reference code). Only Draft uses the 4-step speed-up.
+   - Wan 2.2 videos have four quality levels. A 4-step speed-up makes it quick, but its motion can be
+     timid; the full model moves better but takes about 9× as long. **High** is the middle way.
+
+     | Level | Wan 2.2 | Time for 5 s (RTX PRO 6000) |
+     |---|---|---|
+     | Draft | 4-step speed-up, 480p | < 1 min |
+     | Standard | 4-step speed-up, 720p | ~1.5 min |
+     | High | the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest | ~3–4 min |
+     | Best | the full model, 20 steps (ComfyUI's template) | ~13 min |
+
+     High is only offered where an engine has a middle way (Wan 2.2 now). Elsewhere it isn't shown,
+     and an engine without it uses its Standard settings.
    - LTX-2 uses its official two-stage pipeline: 8 steps at half size, Lightricks' 2× latent
      upscaler, then 3 refining steps at full size.
 3. **Finishing.** Wan 2.2 makes 16 frames per second, which stutters. ComfyUI's built-in frame
@@ -126,7 +136,8 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
 1. Create `catalog/models/<id>/manifest.yaml`. Copy an existing one and edit it.
    - **Files**: Hugging Face repo, path, destination folder and size.
    - **Variants**: memory needs, with optional per-variant workflow parameters.
-   - **Quality presets**: map Draft/Standard/Best to concrete parameters and sizes.
+   - **Quality presets**: map Draft/Standard/Best to concrete parameters and sizes. *High* is optional:
+     a middle way between Standard and Best, offered only where an engine has one.
    - **Benchmark seconds** per GPU class: priors that measured timings replace over time.
    - **License** and a user-facing **tagline**.
 2. Export the ComfyUI workflow in **API format** to `workflows/<mode>.json`. Replace the

@@ -167,7 +167,7 @@ def catalog_check(
     n = 0
     for m in cat.models.values():
         for mode in m.workflows:
-            for q in ("draft", "standard", "best"):
+            for q in m.manifest.quality:
                 fp = FriendlyParams(
                     kind=m.manifest.kind,
                     prompt="test",

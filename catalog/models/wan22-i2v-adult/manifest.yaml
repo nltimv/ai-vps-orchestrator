@@ -64,19 +64,27 @@ files:
   - {id: interp, repo: Comfy-Org/Frame-Interpolation, path: frame_interpolation/film_net_fp16.safetensors,
      dest: frame_interpolation/film_net_fp16.safetensors, bytes: 68882302}
 quality:
+  # One workflow, three passes (see workflows/): the presets set where each pass ends.
   draft:
     label: Draft
-    params: {steps: 4, split_step: 2, cfg: 1.0, lora_strength: 1.0, adult_strength: 1.0}
+    # the 4-step speed-up (Lightx2v) at 480p
+    params: {steps: 4, guided_steps: 1, split_step: 2, cfg_guided: 1.0, cfg: 1.0, guided_lora: 1.0, lora_strength: 1.0, adult_strength: 1.0}
     sizes: {square: [640, 640], portrait: [480, 832], landscape: [832, 480], wide: [832, 480]}
   standard:
     label: Standard
-    # the full model, as in ComfyUI's official Wan 2.2 template (no 4-step speed-up: better motion and detail)
-    params: {steps: 20, split_step: 10, cfg: 3.5, lora_strength: 0.0, adult_strength: 1.0}
+    # the 4-step speed-up at 720p: quick and cheap, but motion can be timid
+    params: {steps: 4, guided_steps: 1, split_step: 2, cfg_guided: 1.0, cfg: 1.0, guided_lora: 1.0, lora_strength: 1.0, adult_strength: 1.0}
+    sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
+  high:
+    label: High
+    # middle way: the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest.
+    # ~10 model passes instead of 4 (speed-up) or 40 (full model)
+    params: {steps: 8, guided_steps: 2, split_step: 4, cfg_guided: 3.5, cfg: 1.0, guided_lora: 0.0, lora_strength: 1.0, adult_strength: 1.0}
     sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
   best:
     label: Best
-    # 40 steps like the Wan 2.2 reference code
-    params: {steps: 40, split_step: 20, cfg: 3.5, lora_strength: 0.0, adult_strength: 1.0}
+    # the full model, as in ComfyUI's official Wan 2.2 template: 20 steps with CFG
+    params: {steps: 20, guided_steps: 5, split_step: 10, cfg_guided: 3.5, cfg: 3.5, guided_lora: 0.0, lora_strength: 0.0, adult_strength: 1.0}
     sizes: {square: [960, 960], portrait: [720, 1280], landscape: [1280, 720], wide: [1280, 720]}
 video:
   fps: 16
@@ -87,10 +95,10 @@ video:
   max_seconds: 8
 bench:
   unit: video_second
-  # seconds per second of video at Standard (full model, 20 steps, 720p); Draft is the 4-step speed-up.
-  # Measured on RunPod, Nov 2026: RTX PRO 6000 154 s (4-step speed-up: 17 s); the others scaled from it.
-  seconds: {l40s: 220, rtx6000ada: 220, rtxpro6000: 154, h100: 90, h200: 85}
-  quality_factor: {draft: 0.07, standard: 1.0, best: 2.0}
+  # seconds per second of video at Standard (4-step speed-up, 720p). Measured on RunPod, Nov 2026, on an
+  # RTX PRO 6000: Standard 17 s, the full model 154 s; the others scaled from it.
+  seconds: {l40s: 24, rtx6000ada: 24, rtxpro6000: 17, h100: 10, h200: 9.5}
+  quality_factor: {draft: 0.35, standard: 1.0, high: 2.5, best: 9.0}
   model_init_s: 60
 # the add-on's trigger word
 prompt_prefix: nsfwsks

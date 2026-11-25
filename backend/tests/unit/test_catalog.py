@@ -13,7 +13,7 @@ ALL = set(CAT.models)
 def test_every_model_mode_quality_variant_renders():
     for m in CAT.models.values():
         for mode, wf in m.workflows.items():
-            for q in ("draft", "standard", "best"):
+            for q in ("draft", "standard", "high", "best"):  # "high" falls back to standard where missing
                 ref = uuid.uuid4() if mode in ("edit", "i2v") else None
                 fp = FriendlyParams(
                     kind=m.manifest.kind, prompt="p", model_id=m.id, quality=q, mode=mode, reference_asset_id=ref
@@ -166,11 +166,74 @@ def test_wan_videos_are_interpolated_to_32_fps():
         assert interp["inputs"]["multiplier"] == 2 and video["inputs"]["fps"] == 32
 
 
-def test_standard_wan_uses_the_full_model_and_draft_the_speed_up():
+def _wan_passes(quality: str, model_id: str = "wan22-a14b", mode: str = "t2v") -> list[tuple]:
+    """(model chain, start, end, total, cfg, speed-up strength) for each sampler pass, in order."""
+    m = CAT.get(model_id)
+    fp = FriendlyParams(
+        kind="video",
+        prompt="p",
+        model_id=model_id,
+        mode=mode,
+        quality=quality,
+        reference_asset_id=uuid.uuid4() if mode == "i2v" else None,
+    )
+    pl = plan(CAT, fp, ALL)
+    wf = render_workflow(m.workflows[mode], workflow_params(CAT, pl, fp, m.manifest.variants[0], seed=1))
+
+    def lora(node: str) -> float:  # the speed-up strength on a model chain
+        while wf[node]["class_type"] != "UNETLoader":
+            n = wf[node]
+            if n["class_type"] == "LoraLoaderModelOnly" and "lightx2v" in n["inputs"]["lora_name"]:
+                return n["inputs"]["strength_model"]
+            node = n["inputs"]["model"][0]
+        return 0.0
+
+    passes = sorted(
+        (n["inputs"] for n in wf.values() if n.get("class_type") == "KSamplerAdvanced"),
+        key=lambda i: i["start_at_step"],
+    )
+    assert len(passes) == 3
+    return [
+        (i["model"][0], i["start_at_step"], i["end_at_step"], i["steps"], i["cfg"], lora(i["model"][0])) for i in passes
+    ]
+
+
+def test_wan_quality_ladder_from_speed_up_to_full_model():
     q = CAT.get("wan22-a14b").manifest.quality
-    assert q["draft"].params["lora_strength"] == 1.0 and q["draft"].params["steps"] == 4
-    assert q["standard"].params["lora_strength"] == 0.0 and q["standard"].params["steps"] == 20
-    assert q["best"].params["steps"] == 40
+    assert list(q) == ["draft", "standard", "high", "best"]
+    for level in ("draft", "standard"):  # the 4-step speed-up everywhere, no guidance
+        assert [(s, e, t, c, sp) for _, s, e, t, c, sp in _wan_passes(level)] == [
+            (0, 1, 4, 1.0, 1.0),
+            (1, 2, 4, 1.0, 1.0),
+            (2, 10000, 4, 1.0, 1.0),
+        ]
+    # High: the full model guides the first 2 of 8 steps, then the speed-up
+    assert [(s, e, t, c, sp) for _, s, e, t, c, sp in _wan_passes("high")] == [
+        (0, 2, 8, 3.5, 0.0),
+        (2, 4, 8, 1.0, 1.0),
+        (4, 10000, 8, 1.0, 1.0),
+    ]
+    # Best: the full model all the way, as in ComfyUI's template (20 steps, the experts switch at 10)
+    assert [(s, e, t, c, sp) for _, s, e, t, c, sp in _wan_passes("best")] == [
+        (0, 5, 20, 3.5, 0.0),
+        (5, 10, 20, 3.5, 0.0),
+        (10, 10000, 20, 3.5, 0.0),
+    ]
+    # the same ladder for animating a picture, and for the 18+ engine
+    assert _wan_passes("high", mode="i2v")[0][4:] == (3.5, 0.0)
+    assert _wan_passes("high", "wan22-i2v-adult", "i2v")[1][4:] == (1.0, 1.0)
+
+
+def test_high_quality_falls_back_where_an_engine_has_no_middle_way():
+    assert CAT.get("ltx2").manifest.level("high") == "standard"
+    assert CAT.get("wan22-a14b").manifest.level("high") == "high"
+    assert CAT.route("video", "t2v", "high", ALL).id == "wan22-a14b"
+    assert CAT.route("video", "i2v", "high", ALL - {"wan22-a14b"}).id == "ltx2"
+    # pictures have no High: it routes and renders like Standard
+    pl = plan(CAT, FriendlyParams(kind="image", prompt="p", quality="high"), ALL)
+    assert pl.model.id == "flux2-dev" and pl.quality == "standard"
+    pl = plan(CAT, FriendlyParams(kind="video", prompt="p", model_id="ltx2", quality="high"), ALL)
+    assert pl.quality == "standard" and (pl.output.width, pl.output.height) == (1280, 704)
 
 
 def test_standard_and_best_pictures_go_to_flux2_first():

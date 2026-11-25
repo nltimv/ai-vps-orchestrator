@@ -82,6 +82,11 @@ export function CreatePage() {
     // only once the engine list is there: a preselected engine (e.g. "Animate this") must survive loading
     if (catalog.data && modelId !== "auto" && !usable.some((m) => m.id === modelId)) setModelId("auto");
   }, [catalog.data, usable, modelId]);
+  // the levels on offer: the chosen engine's, or (Auto) those any engine of this kind has
+  const qualities = (catalog.data?.qualities ?? []).filter((q) =>
+    selected ? selected.qualities.includes(q.id) : q.kinds.includes(kind));
+  const qualityOffered = !catalog.data || qualities.some((q) => q.id === quality);
+  useEffect(() => { if (!qualityOffered) setQuality("standard"); }, [qualityOffered]);
   const haveEngine = !!routed;
   // only once the engines are known: before that maxCount is 1 and would undo the default of two pictures
   useEffect(() => { if (haveEngine) setCount((c) => Math.min(c, maxCount)); }, [maxCount, haveEngine]);
@@ -234,7 +239,7 @@ export function CreatePage() {
           )}
           {catalog.data && (
             <div><Label>Quality</Label>
-              <Chips name="Quality" value={quality} onChange={(v) => setQuality(v ?? "standard")} options={catalog.data.qualities} /></div>
+              <Chips name="Quality" value={quality} onChange={(v) => setQuality(v ?? "standard")} options={qualities} /></div>
           )}
           {maxCount > 1 && (
             <div><Label>How many</Label>

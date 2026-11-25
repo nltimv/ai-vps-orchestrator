@@ -14,7 +14,11 @@ from pydantic import BaseModel, Field, model_validator
 Kind = Literal["image", "video", "music"]
 Mode = Literal["t2i", "edit", "t2v", "i2v", "t2m"]
 Precision = Literal["bf16", "fp16", "fp8", "q8", "q4"]
-Quality = Literal["draft", "standard", "best"]
+Quality = Literal["draft", "standard", "high", "best"]
+# lowest to highest. Every engine has draft, standard and best; "high" is optional (a middle way where an
+# engine has one): an engine without it uses its standard preset.
+QUALITIES: tuple[Quality, ...] = ("draft", "standard", "high", "best")
+REQUIRED_QUALITIES: tuple[Quality, ...] = ("draft", "standard", "best")
 Aspect = Literal["square", "portrait", "landscape", "wide"]
 OutputKind = Literal["image", "video", "audio"]
 Vendor = Literal["nvidia", "amd"]
@@ -166,13 +170,21 @@ class ModelManifest(BaseModel):
             raise ValueError(f"{self.id}: video models need a `video` timing block")
         if self.kind == "music" and self.music is None:
             raise ValueError(f"{self.id}: music models need a `music` timing block")
-        for q in ("draft", "standard", "best"):
+        for q in REQUIRED_QUALITIES:
             if q not in self.quality:
                 raise ValueError(f"{self.id}: missing quality preset {q!r}")
         for mode in self.rewrite:
             if mode not in {m.mode for m in self.modes}:
                 raise ValueError(f"{self.id}: rewrite for mode {mode!r}, which the engine doesn't have")
         return self
+
+    def level(self, quality: str) -> Quality:
+        """The preset this engine uses for ``quality``: that one, or the nearest lower one it has."""
+        i = QUALITIES.index(quality) if quality in QUALITIES else QUALITIES.index("standard")
+        for q in reversed(QUALITIES[: i + 1]):
+            if q in self.quality:
+                return q
+        return "standard"
 
     def variant(self, variant_id: str) -> Variant:
         for v in self.variants:

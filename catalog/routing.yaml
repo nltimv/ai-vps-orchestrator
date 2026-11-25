@@ -14,10 +14,12 @@ video:
   t2v:
     draft: [wan22-ti2v-5b, ltx2]
     standard: [ltx2, wan22-a14b]
+    high: [wan22-a14b, ltx2]  # Wan 2.2's middle way (the full model guides the first steps)
     best: [wan22-a14b, ltx2]
   i2v:
     draft: [wan22-ti2v-5b, ltx2]
     standard: [ltx2, wan22-a14b]
+    high: [wan22-a14b, ltx2]  # Wan 2.2's middle way (the full model guides the first steps)
     best: [wan22-a14b, ltx2]
 music:
   t2m:

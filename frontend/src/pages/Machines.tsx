@@ -81,7 +81,7 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
         <p className="mb-4 text-sm text-muted">How well each GPU type fits a typical creation. Availability changes often.</p>
         <Card className="mb-4 grid gap-4 p-4 md:grid-cols-4">
           <div><Label>For</Label>
-            <Chips name="Kind" value={kind} onChange={(v) => { setKind(v ?? "image"); setModelId(""); }}
+            <Chips name="Kind" value={kind} onChange={(v) => { setKind(v ?? "image"); setModelId(""); if (quality === "high") setQuality("standard"); }}
               options={[{ id: "image", label: "Images" }, { id: "video", label: "Videos" }, { id: "music", label: "Music" }]} /></div>
           <div><Label>Engine</Label>
             <select value={modelId} onChange={(e) => setModelId(e.target.value)} className="panel h-9 w-full rounded-lg px-2 text-sm">
@@ -90,7 +90,7 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
             </select></div>
           <div><Label>Quality</Label>
             <Chips name="Quality" value={quality} onChange={(v) => setQuality(v ?? "standard")}
-              options={(catalog.data?.qualities ?? []).map((q) => ({ id: q.id, label: q.label }))} /></div>
+              options={(catalog.data?.qualities ?? []).filter((q) => q.kinds.includes(kind)).map((q) => ({ id: q.id, label: q.label }))} /></div>
           <div><Label>Priority</Label>
             <Chips name="Priority" value={preference} onChange={(v) => setPreference(v ?? "balanced")}
               options={(catalog.data?.preferences ?? []).map((p) => ({ id: p.id, label: p.label, hint: p.hint }))} /></div>

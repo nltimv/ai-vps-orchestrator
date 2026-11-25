@@ -119,7 +119,7 @@ def plan(catalog: Catalog, p: FriendlyParams, enabled: set[str]) -> Plan:
         secs = min(_duration(mf.music.durations, p.duration, "30s"), mf.music.max_seconds)
         units = secs * count
         out = OutputSpec(kind="audio", count=count, duration_s=secs)
-    return Plan(model=m, mode=mode, quality=p.quality, units=units, output=out)
+    return Plan(model=m, mode=mode, quality=mf.level(p.quality), units=units, output=out)
 
 
 def _duration(table: dict[str, float], key: str | None, default_key: str) -> float:
@@ -137,7 +137,7 @@ def _duration(table: dict[str, float], key: str | None, default_key: str) -> flo
 
 def _size(m: CatalogModel, p: FriendlyParams) -> tuple[int, int]:
     aspect = p.aspect or DEFAULT_ASPECT[m.manifest.kind]
-    q = m.manifest.quality[p.quality]
+    q = m.manifest.quality[m.manifest.level(p.quality)]
     if aspect in q.sizes:
         return tuple(q.sizes[aspect])  # type: ignore[return-value]
     std = m.manifest.quality["standard"]
