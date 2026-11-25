@@ -134,6 +134,54 @@ async def test_one_queue_endpoint_per_gpu_type_without_secrets():
     assert gpu_slug("NVIDIA GeForce RTX 4090") == "rtx-4090"
 
 
+async def test_endpoint_settings_do_not_follow_stock():
+    """Stock changes all the time; every endpoint change is a RunPod release that restarts its workers."""
+    env = EnvSettings(_env_file=None, worker_image="ghcr.io/x/aivo-worker:0.2.57")
+    rp = FakeRunPod()
+    rp.stock = {"NVIDIA RTX 6000 Ada Generation": []}  # none in stock in the allowed countries right now
+    gpus = GpuCatalog(rp, env)
+    await gpus.offers()
+    em = EndpointManager(_App(env, gpus))  # type: ignore[arg-type]
+    rs = RuntimeSettings()
+    body = em.desired("NVIDIA L40S", rs, warm=False)
+    # the pool's other type is excluded although the filtered catalog doesn't list it now
+    assert body["gpu"]["excludedTypes"] == ["NVIDIA RTX 6000 Ada Generation"]
+    assert body["dataCenterIds"] == ["EU-NL-1", "EU-RO-1", "EUR-IS-1"]  # the allowed countries, stock or not
+    rp.stock = {"NVIDIA L40S": ["EUR-IS-1"], "NVIDIA H100 80GB HBM3": []}
+    await gpus.offers()
+    assert em.config_hash(em.desired("NVIDIA L40S", rs, warm=False)) == em.config_hash(body)
+    exact = EnvSettings(_env_file=None, worker_image="x", runpod_data_centers=["EU-RO-1", "EU-NL-1"])
+    egpus = GpuCatalog(FakeRunPod(), exact)
+    await egpus.offers()
+    assert egpus.data_centers("NVIDIA L40S") == ["EU-NL-1", "EU-RO-1"]
+
+
+def test_data_center_countries():
+    from aivo.providers.runpod.catalog import dc_country
+
+    cases = {"EU-NL-1": "NL", "EUR-IS-2": "IS", "US-CA-2": "US", "CA-MTL-1": "CA", "AP-JP-1": "JP", "OC-AU-1": "AU"}
+    assert {d: dc_country(d) for d in cases} == cases
+
+
+def test_only_settings_that_differ_from_the_live_endpoint_count():
+    from aivo.controller.endpoints import differs
+
+    want = {"pools": ["ADA_48_PRO"], "count": 1, "excludedTypes": ["B", "A"]}
+    live = {
+        "allowedCudaVersions": [],
+        "minCudaVersion": "12.0",
+        "pools": ["ADA_48_PRO"],
+        "count": 1,
+        "excludedTypes": ["A", "B"],
+    }
+    assert not differs(want, live)  # RunPod's own fields, and the order of names, don't matter
+    assert differs({**want, "excludedTypes": ["A"]}, live)
+    assert not differs(["EU-RO-1", "EU-NL-1"], ["EU-NL-1", "EU-RO-1"])
+    assert differs({"min": 1, "max": 2}, {"min": 0, "max": 2, "idleTimeout": 60})
+    assert not differs(3600000, 3600000.0) and differs("FLASHBOOT", "OFF") and differs({"a": 1}, None)
+    assert differs({"network": [], "global": [{"volumeId": "gv"}]}, {"network": [], "global": []})
+
+
 def test_worker_keeps_jobs_in_ram_only_when_it_is_big_enough(tmp_path, monkeypatch):
     import aivo_worker.main as wm
 

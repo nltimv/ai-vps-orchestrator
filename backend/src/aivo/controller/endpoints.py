@@ -31,6 +31,22 @@ FLASHBOOT_LIMIT = re.compile(r"endpoints with flashboot|flashboot.*(plan|limit)"
 ACTIVE = ("assigned", "preparing", "running", "fetching")
 
 
+def differs(want: Any, have: Any) -> bool:
+    """Whether the live endpoint's value ``have`` differs from ``want``. RunPod adds fields of its own (e.g.
+    ``gpu.minCudaVersion``), so only what aivo sets is compared; lists of names in any order count as equal."""
+    if isinstance(want, dict):
+        return not isinstance(have, dict) or any(differs(v, have.get(k)) for k, v in want.items())
+    if isinstance(want, list):
+        if not isinstance(have, list) or len(want) != len(have):
+            return True
+        if all(not isinstance(x, (dict, list)) for x in want):
+            return sorted(map(str, want)) != sorted(map(str, have))
+        return any(differs(a, b) for a, b in zip(want, have, strict=True))
+    if isinstance(want, (int, float)) and not isinstance(want, bool) and isinstance(have, (int, float)):
+        return float(want) != float(have)
+    return bool(want != have)
+
+
 class EndpointManager:
     def __init__(self, app: AppContext):
         self.app = app
@@ -136,13 +152,21 @@ class EndpointManager:
     async def _apply(
         self, runpod_id: str | None, old_hash: str | None, body: dict[str, Any], h: str, gpu_type: str
     ) -> str:
-        """Create the endpoint, or update it when its configuration changed. Returns its RunPod id."""
+        """Create the endpoint, or update it when its configuration changed. Returns its RunPod id.
+
+        An update sends only the settings that differ from the live endpoint: each update makes a new RunPod
+        release, and its workers start over.
+        """
         app = self.app
         if runpod_id and old_hash != h:
-            if await app.runpod.get_endpoint(runpod_id) is None:
+            live = await app.runpod.get_endpoint(runpod_id)
+            if live is None:
                 runpod_id = None
             else:
-                await app.runpod.update_endpoint(runpod_id, {k: v for k, v in body.items() if k != "type"})
+                changed = {k: v for k, v in body.items() if k != "type" and differs(v, live.get(k))}
+                if changed:
+                    log.info("updating RunPod endpoint %s for %s: %s", runpod_id, gpu_type, ", ".join(sorted(changed)))
+                    await app.runpod.update_endpoint(runpod_id, changed)
         if not runpod_id:
             created = await app.runpod.create_endpoint(body)
             runpod_id = str(created.get("id") or "")
@@ -165,7 +189,11 @@ class EndpointManager:
     async def sync(self) -> None:
         """Keep endpoints in step: settings or a new release changed (new config), keep-warm ended, or RunPod
         lowered max workers of an endpoint unused for days. Deletes this deployment's endpoints aivo no longer
-        knows."""
+        knows.
+
+        Changes reach RunPod only when an endpoint's own settings changed, and only the fields that differ: on
+        RunPod (Nov 2026), changing the GPU, data centers, image or environment makes a new release whose
+        workers start over, while worker counts and timeouts change without one."""
         app = self.app
         async with app.sessionmaker() as s:
             rows = (await s.execute(select(GpuEndpoint))).scalars().all()
@@ -188,7 +216,8 @@ class EndpointManager:
                 continue
             warm = row.keep_warm_until is not None and row.keep_warm_until > utcnow()
             try:
-                desired_hash = self.config_hash(self.desired(row.gpu_type, rs, warm=warm, flashboot=row.flashboot))
+                want = self.desired(row.gpu_type, rs, warm=warm, flashboot=row.flashboot)
+                desired_hash = self.config_hash(want)
                 if desired_hash != row.config_hash and row.id not in busy:
                     await self.ensure(offer)
                     continue
@@ -199,9 +228,8 @@ class EndpointManager:
                         r.runpod_id, r.config_hash, r.status = None, None, "creating"
                     continue
                 if int((live.get("workers") or {}).get("max", 0)) < max(1, rs.max_workers_per_gpu):
-                    await app.runpod.update_endpoint(
-                        row.runpod_id, {"workers": {"max": max(1, rs.max_workers_per_gpu)}}
-                    )
+                    # the whole block, so nothing else in it changes; worker settings alone make no new release
+                    await app.runpod.update_endpoint(row.runpod_id, {"workers": want["workers"]})
             except Exception as e:
                 log.warning("could not sync endpoint %s: %s", row.gpu_type, e)
         await self._delete_orphans({r.runpod_id for r in rows if r.runpod_id})

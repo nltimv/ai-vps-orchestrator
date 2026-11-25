@@ -20,6 +20,8 @@ class RunPodAPI(Protocol):
 
     async def gpu_types(self, params: dict[str, Any]) -> list[dict[str, Any]]: ...
 
+    async def data_centers(self) -> list[dict[str, Any]]: ...
+
     async def network_volume(self, volume_id: str) -> dict[str, Any] | None: ...
 
     async def list_endpoints(self) -> list[dict[str, Any]]: ...
@@ -64,8 +66,12 @@ class HttpRunPod:
     # -- REST API v2 -----------------------------------------------------------------
 
     async def gpu_types(self, params: dict[str, Any]) -> list[dict[str, Any]]:
-        data = await self.rest.request("GET", "/v2/catalog/gpus", params=params) or {}
+        data = await self.rest.request("GET", "/v2/catalog/gpus", params=params or None) or {}
         return list(data.get("gpus") or [])
+
+    async def data_centers(self) -> list[dict[str, Any]]:
+        data = await self.rest.request("GET", "/v2/catalog/datacenters") or {}
+        return list(data.get("dataCenters") or [])
 
     async def network_volume(self, volume_id: str) -> dict[str, Any] | None:
         return await self.rest.request("GET", f"/v2/network-volumes/{volume_id}", missing_ok=True)

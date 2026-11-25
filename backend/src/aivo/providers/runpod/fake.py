@@ -36,6 +36,14 @@ CATALOG = [
     ("NVIDIA RTX 6000 Ada Generation", "RTX 6000 Ada", "ADA_48_PRO", 48, 1.91, 167),
     ("NVIDIA H100 80GB HBM3", "H100 SXM", "ADA_80_PRO", 80, 4.18, 188),
 ]
+DATA_CENTERS = [
+    ("CA-MTL-1", "NORTH_AMERICA"),
+    ("EU-NL-1", "EUROPE"),
+    ("EU-RO-1", "EUROPE"),
+    ("EUR-IS-1", "EUROPE"),
+    ("US-CA-2", "NORTH_AMERICA"),
+    ("AP-JP-1", "ASIA"),
+]
 _ids = itertools.count(1)
 
 
@@ -74,7 +82,10 @@ class FakeEndpoint:
     no_gpu: bool = False
 
     def as_json(self) -> dict[str, Any]:
-        return {**self.body, "id": self.id, "createdAt": self.created_at}
+        out = {**self.body, "id": self.id, "createdAt": self.created_at, "version": 1}
+        if isinstance(self.body.get("gpu"), dict):  # RunPod adds fields of its own
+            out["gpu"] = {"allowedCudaVersions": [], "minCudaVersion": "12.0", **self.body["gpu"]}
+        return out
 
 
 class FakeRunPod:
@@ -101,6 +112,8 @@ class FakeRunPod:
         self.progress_every_s = progress_every_s
         self.endpoints: dict[str, FakeEndpoint] = {}
         self.deleted: list[str] = []
+        self.stock: dict[str, list[str]] | None = None  # GPU type -> data centers with stock (default EU-NL-1)
+        self.updates: list[tuple[str, list[str]]] = []  # (endpoint id, fields sent): each is a RunPod release
         self.transport: Any = None  # httpx transport to aivo, set by attach()
         self._root = Path(tempfile.mkdtemp(prefix="aivo-fake-runpod-"))
         self._loop: asyncio.Task[None] | None = None
@@ -130,8 +143,15 @@ class FakeRunPod:
     # -- REST API v2 -----------------------------------------------------------------
 
     async def gpu_types(self, params: dict[str, Any]) -> list[dict[str, Any]]:
-        return [
-            {
+        """Like RunPod: with ``include=AVAILABILITY`` only the types with stock (in the asked countries), each
+        with its data centers; without parameters every type, without stock information."""
+        with_stock = bool(params)
+        out = []
+        for tid, name, pool, mem, price, ram in CATALOG:
+            dcs = self.stock.get(tid, ["EU-NL-1"]) if self.stock is not None else ["EU-NL-1"]
+            if with_stock and not dcs:
+                continue
+            g: dict[str, Any] = {
                 "id": tid,
                 "name": name,
                 "pool": pool,
@@ -142,11 +162,15 @@ class FakeRunPod:
                 "price": {"secure": round(price / 1.7, 2), "community": 0, "serverless": price},
                 "maxCount": {"secure": 8, "community": 0},
                 "minRam": ram,
-                "availability": "HIGH",
-                "dataCenters": [{"id": "EU-NL-1", "name": "Netherlands 1", "availability": "HIGH"}],
             }
-            for tid, name, pool, mem, price, ram in CATALOG
-        ]
+            if with_stock:
+                g["availability"] = "HIGH"
+                g["dataCenters"] = [{"id": d, "name": d, "availability": "HIGH"} for d in dcs]
+            out.append(g)
+        return out
+
+    async def data_centers(self) -> list[dict[str, Any]]:
+        return [{"id": d, "name": d, "region": r} for d, r in DATA_CENTERS]
 
     async def network_volume(self, volume_id: str) -> dict[str, Any] | None:
         return {"id": volume_id, "dataCenter": "EU-NL-1", "size": 200}
@@ -180,6 +204,7 @@ class FakeRunPod:
 
     async def update_endpoint(self, endpoint_id: str, body: dict[str, Any]) -> dict[str, Any]:
         ep = self.endpoints[endpoint_id]
+        self.updates.append((endpoint_id, sorted(body)))
         for k, v in body.items():
             ep.body[k] = {**ep.body.get(k, {}), **v} if isinstance(v, dict) and k == "workers" else v
         return ep.as_json()
