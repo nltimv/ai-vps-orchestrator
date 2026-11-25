@@ -44,6 +44,7 @@ from aivo_worker.logbuf import LogBuffer
 from aivo_worker.weights import FileManager
 
 log = logging.getLogger(__name__)
+PUBLISH_WAIT_S = 1200.0  # at most this long after a job, finishing copies to the shared volume
 
 
 def _short(job_id: str) -> str:
@@ -74,6 +75,7 @@ class WorkerRuntime:
         worker_id: str | None = None,
         endpoint_id: str | None = None,
         progress_every_s: float = 2.0,
+        shared_dir: Path | None = None,  # model files every worker can reuse (a RunPod global volume)
     ):
         self.logs = logs or LogBuffer()
         self.engine = engine
@@ -81,7 +83,7 @@ class WorkerRuntime:
             engine.logs = self.logs
         models_dir.mkdir(parents=True, exist_ok=True)
         job_dir.mkdir(parents=True, exist_ok=True)
-        self.files = FileManager(models_dir, simulate=simulate_files, logs=self.logs)
+        self.files = FileManager(models_dir, simulate=simulate_files, shared=shared_dir, logs=self.logs)
         self.executor = Executor(engine, self.files, job_dir, logs=self.logs)
         self.transport = transport
         self.worker_id = worker_id or os.environ.get("RUNPOD_POD_ID") or socket.gethostname()
@@ -218,6 +220,8 @@ class WorkerRuntime:
                         return await self._fail(aivo, "engine", f"{type(e).__name__}: {e}", t0)
                     return {"error": f"engine: {type(e).__name__}: {e}"}
         finally:
+            # model files downloaded for this job go onto the shared volume before the worker may stop
+            await self.files.settle(PUBLISH_WAIT_S)
             self.prev_job_end = time.time()
             self.jobs_done += 1
 

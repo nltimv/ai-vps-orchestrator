@@ -64,8 +64,12 @@ class EndpointManager:
         dcs = gpus.data_centers(gpu_type)
         if dcs:
             body["dataCenterIds"] = dcs
-        if env.runpod_network_volume_id:
-            body["mounts"] = {"network": [{"volumeId": env.runpod_network_volume_id}]}
+        if env.runpod_global_volume_id:
+            # any data center; sending both lists switches an endpoint that had a network volume
+            body["mounts"] = {"network": [], "global": [{"volumeId": env.runpod_global_volume_id}]}
+            body["env"]["AIVO_VOLUME_KIND"] = "global"  # the worker keeps working copies on its own disk
+        elif env.runpod_network_volume_id:
+            body["mounts"] = {"global": [], "network": [{"volumeId": env.runpod_network_volume_id}]}
         return body
 
     @staticmethod

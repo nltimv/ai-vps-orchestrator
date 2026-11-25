@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import secrets
@@ -31,6 +32,7 @@ _SOURCE_NAMES = {"volume": "the model disk", "url": "the model copy", "hf": "Hug
 RANGE_SIZE = 64 * 1024 * 1024
 PARALLEL_RANGES = 16
 PARALLEL_FILES = 4
+SHARED_MARKER = ".aivo-complete"  # next to a file on the shared volume: {"bytes": n} once it's whole
 
 
 class FileManager:
@@ -40,11 +42,16 @@ class FileManager:
         *,
         simulate: bool = False,
         volume_mount: Path | None = None,
+        shared: Path | None = None,
         logs: LogBuffer | None = None,
     ):
         self.models_dir = models_dir
         self.logs = logs or LogBuffer()
         self.volume_mount = volume_mount
+        # a RunPod global volume: object storage every worker can mount, anywhere. No rename, eventually
+        # consistent: files are copied there whole after a download, then marked complete (SHARED_MARKER)
+        self.shared = shared
+        self._publishing: set[asyncio.Task[None]] = set()
         self.simulate = simulate
         self.states: dict[str, FileState] = {}
         self.timings: list[PhaseTiming] = []
@@ -89,6 +96,15 @@ class FileManager:
                     st.state, st.source, st.bytes_done = "ready", "local", dest.stat().st_size
                     self.logs.emit("agent", f"{f.dest}: already on this machine")
                     return
+                kept = self._shared_copy(f)
+                if kept is not None:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.is_symlink() or dest.exists():
+                        dest.unlink()
+                    dest.symlink_to(kept)
+                    st.state, st.source, st.bytes_done = "ready", "volume", kept.stat().st_size
+                    self.logs.emit("agent", f"{f.dest}: on the shared volume (no download)")
+                    return
                 errors: list[str] = []
                 for src in f.sources:
                     try:
@@ -107,6 +123,10 @@ class FileManager:
                             t = asyncio.create_task(self._verify_later(dest, f.sha256, st))
                             self._bg.add(t)
                             t.add_done_callback(self._bg.discard)
+                        if self.shared is not None and src.kind != "volume":
+                            t = asyncio.create_task(self._publish(dest, f.dest), name=f"publish:{f.dest}")
+                            self._publishing.add(t)
+                            t.add_done_callback(self._publishing.discard)
                         return
                     except Exception as e:  # try the next source
                         self.logs.emit("agent", f"{f.dest}: {src.kind} failed: {e}", "warning")
@@ -116,6 +136,58 @@ class FileManager:
             except Exception as e:
                 st.state, st.error = "failed", str(e)
                 self.logs.emit("agent", f"{f.dest}: could not be fetched: {e}", "error")
+
+    # -- the shared (global) volume ------------------------------------------------------
+
+    def _shared_path(self, rel: str) -> Path | None:
+        if self.shared is None:
+            return None
+        p = (self.shared / rel).resolve()
+        return p if self.shared.resolve() in p.parents else None
+
+    def _shared_copy(self, f: FileFetch) -> Path | None:
+        """The file on the shared volume, if a worker finished copying it there (its marker says how big)."""
+        p = self._shared_path(f.dest)
+        if p is None:
+            return None
+        try:
+            marked = json.loads(p.with_name(p.name + SHARED_MARKER).read_text()).get("bytes")
+            size = p.stat().st_size
+        except (OSError, ValueError):
+            return None
+        if size != marked or (f.bytes is not None and size != f.bytes):
+            return None
+        return p
+
+    async def _publish(self, local: Path, rel: str) -> None:
+        """Copy a downloaded file onto the shared volume for later workers: whole, then marked complete."""
+        target = self._shared_path(rel)
+        if target is None:
+            return
+        try:
+            size = local.stat().st_size
+            marker = target.with_name(target.name + SHARED_MARKER)
+            if self._shared_copy(FileFetch(dest=rel, bytes=size)) is not None:
+                return  # another worker kept it already
+            t0 = time.monotonic()
+            await asyncio.to_thread(_copy_whole, local, target)
+            if target.stat().st_size != size:
+                raise OSError(f"copied {target.stat().st_size} of {size} bytes")
+            marker.write_text(json.dumps({"bytes": size}))
+            secs = time.monotonic() - t0
+            self.logs.emit(
+                "agent", f"{rel}: kept on the shared volume for later workers ({size / 1e6:,.0f} MB in {secs:.0f} s)"
+            )
+        except Exception as e:  # later workers just download it again
+            self.logs.emit("agent", f"{rel}: could not keep it on the shared volume: {e}", "warning")
+
+    async def settle(self, timeout: float) -> None:
+        """Wait (up to ``timeout``) for copies to the shared volume, so they aren't cut off when the worker stops."""
+        pending = {t for t in self._publishing if not t.done()}
+        if not pending:
+            return
+        self.logs.emit("agent", f"keeping {len(pending)} model file(s) on the shared volume for later workers")
+        await asyncio.wait(pending, timeout=timeout)
 
     def _dest_path(self, rel: str) -> Path:
         p = (self.models_dir / rel).resolve()
@@ -148,6 +220,14 @@ class FileManager:
             self.logs.emit("agent", f"{path.name}: checksum mismatch, file discarded", "error")
             path.rename(path.with_suffix(path.suffix + ".bad"))
             st.state, st.error = "failed", "checksum mismatch"
+
+
+def _copy_whole(src: Path, dst: Path) -> None:
+    """Sequential copy (object-backed storage: no rename, so the marker written afterwards says it's whole)."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    with src.open("rb") as fi, dst.open("wb") as fo:
+        while block := fi.read(16 * 1024 * 1024):
+            fo.write(block)
 
 
 def _sha256_file(path: Path) -> str:

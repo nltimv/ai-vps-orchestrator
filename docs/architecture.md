@@ -36,7 +36,8 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
 4. **Work.** RunPod starts a worker, or reuses one waiting on that endpoint. The worker:
    - fetches the job from aivo with the ticket (`/spec`): workflow, model files with download links,
      output shape;
-   - downloads model files from Hugging Face (kept on its disk or the network volume);
+   - downloads model files from Hugging Face, unless a global or network volume has them already (and
+     copies them onto a global volume afterwards, for later workers);
    - improves the description with a small language model in ComfyUI, as soon as its file is there,
      and sends the result to aivo (`/prompt`), which checks it and answers with the words to use;
    - fetches the starting picture, if any;
@@ -99,5 +100,5 @@ copy of either (the worker's workflow gets them filled in when it fetches the jo
 - **On the worker**, job input and output directories are in RAM (`/dev/shm`) when it is big enough,
   otherwise on the worker's temporary disk. They are deleted right after delivery, and the worker
   itself stops after a short wait.
-- **A network volume**, if configured, holds only public model files. ComfyUI runs with
+- **A global or network volume**, if configured, holds only public model files. ComfyUI runs with
   `--disable-metadata`, and outputs are stripped again before delivery.

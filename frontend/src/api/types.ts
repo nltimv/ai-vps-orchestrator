@@ -272,6 +272,7 @@ export interface SettingsResponse {
   provider: string;
   runpod: {
     network_volume: boolean;
+    global_volume: boolean;
     countries: string[];
     data_centers: string[];
     gpu_types: string[];

@@ -24,7 +24,8 @@ provider: runpod
 runpod:
   countries: []              # ISO codes where workers may run; empty = the built-in European list
   dataCenters: []            # or exact data centers, e.g. [EU-NL-1, EU-RO-1] (overrides countries)
-  networkVolumeId: ""        # keeps model files between workers (pins workers to its data center)
+  globalVolumeId: ""         # keeps model files for every worker, in any data center (recommended)
+  networkVolumeId: ""        # or: keeps them in one data center only (pins workers there); not both
   gpuTypes: []               # only these GPU types (RunPod names); empty = all
   diskGb: 150                # container disk for model files without a network volume
   region: eu                 # name shown in aivo for RunPod GPUs

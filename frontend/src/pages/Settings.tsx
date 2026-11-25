@@ -62,9 +62,11 @@ export function SettingsPage() {
           <li>Waiting for a free GPU is free; billing starts when a GPU starts working on your creation.</li>
           <li>{rp.data_centers.length ? `Data centers: ${rp.data_centers.join(", ")}.` : `Countries: ${rp.countries.join(", ") || "any"}.`}
             {rp.gpu_types.length ? ` Only: ${rp.gpu_types.join(", ")}.` : ""} (AIVO_RUNPOD_* settings)</li>
-          <li>{rp.network_volume
-            ? "Model files are kept on your RunPod network volume, so GPUs start faster."
-            : "Each GPU downloads its model files when it starts. A RunPod network volume (AIVO_RUNPOD_NETWORK_VOLUME_ID) keeps them."}</li>
+          <li>{rp.global_volume
+            ? "Model files are kept on your RunPod global volume: downloaded once, then reused by GPUs in any data center."
+            : rp.network_volume
+              ? "Model files are kept on your RunPod network volume, so GPUs start faster (in that volume's data center only)."
+              : "Each GPU downloads its model files when it starts. A RunPod global volume (AIVO_RUNPOD_GLOBAL_VOLUME_ID) keeps them for every GPU."}</li>
           <li>GPUs deliver results straight to {rp.worker_api_url ?? "this server (set AIVO_PUBLIC_URL)"}; nothing is stored at RunPod.</li>
         </ul>
       </Section>
