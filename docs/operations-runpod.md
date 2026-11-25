@@ -100,10 +100,10 @@ your balance qualifies.
 
 ## Model files: download each time, or keep them on a volume
 
-Without a volume, every new worker downloads its model files from Hugging Face: 1–4 billed minutes for
-the 20–55 GB a video engine or FLUX.2 [dev] needs (about 400 MB/s on fast hosts, less on others). A
-worker that stays on between creations keeps them, so a longer *Keep a GPU waiting for a next creation*
-helps when you make several creations in a row.
+Without a volume, every new worker downloads its model files from Hugging Face. That's billed time: 1–10
+minutes for the 20–55 GB a video engine or FLUX.2 [dev] needs. Hosts get anywhere from about 70 to 400 MB/s
+per file. A worker that stays on between creations keeps its files, so a longer *Keep a GPU waiting for a
+next creation* helps when you make several creations in a row.
 
 A volume keeps them for later workers. RunPod has two kinds:
 
@@ -120,11 +120,18 @@ Use one or the other, not both: RunPod endpoints mount one kind.
 2. Set `AIVO_RUNPOD_GLOBAL_VOLUME_ID=<volume id>` (Helm: `runpod.globalVolumeId`). aivo updates its
    endpoints to mount it.
 
-How it fills: the first worker that needs a file downloads it to its own disk as before and uses it
-right away. When its creation is done, it copies the file onto the volume (a few minutes once, for a
-large engine, billed). Every later worker, in any data center, then uses it from the volume without
-downloading. A global volume has no atomic rename, so a file only counts once a marker says it was
-copied whole; a worker that stopped halfway leaves nothing that's used.
+How it fills:
+- The first worker that needs a file downloads it to its own disk as before and uses it right away.
+- Meanwhile it copies the file onto the volume (about 260 MB/s, so a minute or two once per engine, billed).
+  It finishes those copies before it stops.
+- Every later worker, in any data center, copies the file from the volume to its own disk instead of
+  downloading it. It reads 32 parts at once (about 400 MB/s), so Z-Image's 20 GB take under a minute.
+- A global volume has no atomic rename, so a file only counts once a marker says it was copied whole. A
+  worker that stopped halfway leaves nothing that's used.
+
+Measured on RunPod (November 2026): a fresh worker read Z-Image's files in place from the volume at only
+about 50 MB/s, slower than Hugging Face. That's why workers copy them first, in parallel. The workers
+still need container disk for the files (`AIVO_RUNPOD_DISK_GB`).
 
 **Network volume.**
 1. Create a network volume in the RunPod console, in the data center you want (e.g. EU-NL-1). Size it

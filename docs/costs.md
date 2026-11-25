@@ -24,7 +24,10 @@
   *Improve my description* adds about 10–30 s per creation (a small language model on the same GPU).
   Draft keeps the quick settings for when cost or speed matters more than detail.
 
-- **Network volume** (optional, keeps model files): $0.07/GB-month, e.g. ~$14/month for 200 GB.
+- **Global volume** (optional, keeps model files for workers in any data center): billed per GB stored and
+  per GB read (see RunPod's pricing). A worker that finds its files there copies them in under a minute instead
+  of downloading them for 1–10 billed minutes.
+- **Network volume** (optional, keeps model files in one data center): $0.07/GB-month, e.g. ~$14/month for 200 GB.
 - **Keep one ready** (GPUs page): one worker stays on and is billed the whole time, e.g. 30 min of
   an L40S-class GPU ≈ $0.95.
 
