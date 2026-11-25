@@ -1,5 +1,5 @@
 import { Loader2, X } from "lucide-react";
-import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
+import type { ButtonHTMLAttributes, HTMLAttributes, InputHTMLAttributes, ReactNode, TextareaHTMLAttributes } from "react";
 import { useEffect } from "react";
 
 import { cn } from "@/lib/format";
@@ -31,8 +31,8 @@ export function Button({
   );
 }
 
-export function Card({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("panel rounded-xl", className)}>{children}</div>;
+export function Card({ className, children, ...rest }: HTMLAttributes<HTMLDivElement> & { children: ReactNode }) {
+  return <div className={cn("panel rounded-xl", className)} {...rest}>{children}</div>;
 }
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {

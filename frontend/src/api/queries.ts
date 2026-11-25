@@ -1,7 +1,7 @@
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { del, get, post, put } from "./client";
-import type { AuthStatus, CacheStatus, Catalog, Estimate, GalleryPage, Health, Job, MachinesResponse, OffersResponse, SettingsResponse, Spending, User } from "./types";
+import type { AuthStatus, Catalog, Estimate, GalleryPage, GpusResponse, Health, Job, JobLog, OffersResponse, SettingsResponse, Spending, User } from "./types";
 
 export const useMe = () =>
   useQuery({ queryKey: ["me"], queryFn: () => get<User>("/auth/me"), retry: false, staleTime: 60_000 });
@@ -35,8 +35,15 @@ export const useGallery = (kind: string, mine: boolean) =>
     getNextPageParam: (last) => last.next_cursor ?? undefined,
   });
 
-export const useMachines = () =>
-  useQuery({ queryKey: ["machines"], queryFn: () => get<MachinesResponse>("/machines"), refetchInterval: 20_000 });
+export const useGpus = () =>
+  useQuery({ queryKey: ["machines"], queryFn: () => get<GpusResponse>("/machines"), refetchInterval: 15_000 });
+
+export const useJobLog = (id: string, active: boolean) =>
+  useQuery({
+    queryKey: ["job-log", id],
+    queryFn: () => get<JobLog>(`/jobs/${id}/log`),
+    refetchInterval: active ? 2_000 : false,
+  });
 
 export const useOffers = (kind: string, modelId: string, quality: string, preference: string) =>
   useQuery({
@@ -55,8 +62,6 @@ export const useSpending = () =>
 export const useSettings = () =>
   useQuery({ queryKey: ["settings"], queryFn: () => get<SettingsResponse>("/settings") });
 
-export const useCacheStatus = () =>
-  useQuery({ queryKey: ["cache"], queryFn: () => get<CacheStatus>("/admin/cache"), refetchInterval: 15_000 });
 
 export const useUsers = () =>
   useQuery({

@@ -61,7 +61,7 @@ export function ItemPage() {
             {out?.duration_s && <><dt className="text-muted">Length</dt><dd>{duration(out.duration_s)}</dd></>}
             <dt className="text-muted">Made by</dt><dd>{j.user_name}</dd>
             <dt className="text-muted">When</dt><dd>{ago(j.created_at)}</dd>
-            {j.machine && <><dt className="text-muted">Machine</dt><dd>{j.machine}</dd></>}
+            {j.machine && <><dt className="text-muted">GPU</dt><dd>{j.machine}</dd></>}
             <dt className="text-muted">Cost</dt><dd>{money(j.cost_usd ?? j.est_cost_usd)}</dd>
           </dl>
           {j.reference && (

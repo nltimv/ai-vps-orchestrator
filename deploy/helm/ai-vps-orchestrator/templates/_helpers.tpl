@@ -37,7 +37,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 - name: AIVO_WORKER_IMAGE_REPOSITORY
   value: {{ .Values.image.worker.repository | quote }}
-{{- if eq .Values.provider "runpod" }}
 {{- with .Values.runpod }}
 {{- with .countries }}
 - name: AIVO_RUNPOD_COUNTRIES
@@ -55,10 +54,13 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 - name: AIVO_RUNPOD_GPU_TYPES
   value: {{ join "," . | quote }}
 {{- end }}
-- name: AIVO_RUNPOD_KEEP_WARM_S
-  value: {{ .keepWarmSeconds | quote }}
+- name: AIVO_RUNPOD_DISK_GB
+  value: {{ .diskGb | quote }}
 - name: AIVO_RUNPOD_REGION
   value: {{ .region | quote }}
+{{- with .workerApiUrl }}
+- name: AIVO_WORKER_API_URL
+  value: {{ . | quote }}
 {{- end }}
 {{- end }}
 - name: AIVO_MEDIA_DIR
@@ -67,18 +69,6 @@ app.kubernetes.io/instance: {{ .Release.Name }}
   value: /scratch
 - name: AIVO_SESSION_COOKIE_SECURE
   value: {{ ternary "true" "false" (or .Values.ingress.enabled .Values.httpRoute.enabled) | quote }}
-{{- with .Values.spaces.region }}
-- name: AIVO_SPACES_REGION
-  value: {{ . | quote }}
-{{- end }}
-{{- with .Values.spaces.bucket }}
-- name: AIVO_SPACES_BUCKET
-  value: {{ . | quote }}
-{{- end }}
-{{- with .Values.spaces.endpoint }}
-- name: AIVO_SPACES_ENDPOINT
-  value: {{ . | quote }}
-{{- end }}
 {{- with .Values.secrets.adminEmail }}
 - name: AIVO_ADMIN_EMAIL
   value: {{ . | quote }}

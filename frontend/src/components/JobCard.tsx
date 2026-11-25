@@ -1,25 +1,24 @@
-import { AlertTriangle, CheckCircle2, Clock, Film, Image as ImageIcon, Loader2, Music, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Clock, Film, Image as ImageIcon, Loader2, Music, ScrollText, X } from "lucide-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 
 import { post } from "@/api/client";
-import { useMachines } from "@/api/queries";
+import { useMe } from "@/api/queries";
 import type { Job } from "@/api/types";
 import { duration, isActive, money, stageLabel } from "@/lib/format";
 
+import { LogViewer } from "./LogViewer";
 import { Button, Card, Progress } from "./ui";
 
-const STEPS = ["starting_machine", "loading_model", "generating", "saving"];
+const STEPS = ["waiting_for_gpu", "loading_model", "generating", "saving"];
 
 export const KindIcon = ({ kind, className }: { kind: string; className?: string }) =>
   kind === "video" ? <Film className={className} /> : kind === "music" ? <Music className={className} /> : <ImageIcon className={className} />;
 
 export function JobCard({ job }: { job: Job }) {
   const active = isActive(job.state);
-  const machines = useMachines();
-  const step =
-    job.stage === "starting_machine" && job.instance_id
-      ? machines.data?.live.find((m) => m.id === job.instance_id)?.boot_stage_label
-      : null;
+  const me = useMe();
+  const [showLog, setShowLog] = useState(false);
   const stepIdx = STEPS.indexOf(job.stage);
   const overall =
     job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + (job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5)) / STEPS.length;
@@ -31,12 +30,18 @@ export function JobCard({ job }: { job: Job }) {
           <div className="line-clamp-2 text-sm">{job.prompt}</div>
           <div className="mt-1 text-xs text-muted">{job.model_name}{job.machine ? ` · ${job.machine}` : ""}</div>
         </div>
+        {me.data?.role === "admin" && job.state !== "queued" && (
+          <Button size="sm" variant="ghost" aria-label="Show log" title="The worker's log (admins)" onClick={() => setShowLog(true)}>
+            <ScrollText className="size-4" />
+          </Button>
+        )}
         {active && (
           <Button size="sm" variant="ghost" aria-label="Cancel" onClick={() => post(`/jobs/${job.id}/cancel`)}>
             <X className="size-4" />
           </Button>
         )}
       </div>
+      {showLog && <LogViewer jobId={job.id} label={`${job.model_name}: ${job.prompt.slice(0, 60)}`} onClose={() => setShowLog(false)} />}
       {active && (
         <div className="mt-3">
           <div className="mb-1.5 flex items-center justify-between text-xs">
@@ -46,7 +51,6 @@ export function JobCard({ job }: { job: Job }) {
                 : <Loader2 className="size-3.5 animate-spin" />}
               {stageLabel(job.stage)}
               {job.stage === "generating" && job.progress > 0 ? ` ${Math.round(job.progress * 100)}%` : ""}
-              {step && <span className="font-normal text-muted">· {step}</span>}
             </span>
             <span className="text-muted">
               {job.eta_s ? `about ${duration(job.eta_s)} left` : job.est_wait_s ? `usually ~${duration(job.est_wait_s)}` : ""}

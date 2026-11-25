@@ -1,4 +1,4 @@
-"""End-to-end: API -> scheduler -> fake machine (real TLS mock worker) -> encrypted gallery."""
+"""End to end: API -> scheduler -> simulated RunPod queue (real worker code, mock engine) -> encrypted gallery."""
 
 from tests.integration.harness import Harness
 
@@ -15,7 +15,7 @@ async def test_image_job_end_to_end(env):
                 "/api/v1/estimate", json={"kind": "image", "prompt": "a red fox in snow", "quality": "draft"}
             )
         ).json()
-        assert est["machine"]["gpu_class"] == "rtx4000ada", est
+        assert est["machine"]["gpu_class"] == "rtx4000ada", est  # the cheapest GPU type that fits
         assert est["est_cost_usd"] > 0 and est["est_wait_s"] > 0
 
         r = await h.client.post(
@@ -63,66 +63,87 @@ async def test_image_job_end_to_end(env):
         assert gallery["items"][0]["id"] == job["id"]
         assert gallery["items"][0]["prompt"] == "a red fox in snow"
 
-        machines = (await h.client.get("/api/v1/machines")).json()
-        assert len(machines["live"]) == 1 and machines["live"][0]["state"] == "ready"
+        gpus = (await h.client.get("/api/v1/machines")).json()
+        assert [g["gpu_type"] for g in gpus["gpus"]] == ["NVIDIA RTX 4000 Ada Generation"]
+        assert gpus["gpus"][0]["status"] == "ready"
+        assert len(gpus["workers"]) == 1 and gpus["workers"][0]["state"] in ("waiting", "working")
 
-        # worker deleted its copies after we acknowledged them
-        m = next(iter(h.provider.machines.values()))
-        assert not any((m.root / "jobs").glob(f"{job['id']}*"))
+        # RunPod's job held only a ticket: no prompt, no picture
+        fake = h.runpod
+        (ep,) = fake.endpoints.values()
+        (rp_job,) = ep.jobs
+        assert set(rp_job.input) == {"aivo_url", "job_id", "token", "protocol"}
+        assert "fox" not in str(rp_job.input)
+        # ... and its result is just the file names (the files went straight to aivo)
+        assert set(rp_job.output) == {"outputs"} and all(isinstance(n, str) for n in rp_job.output["outputs"])
+        # the worker deleted its copies after delivering them
+        (w,) = fake.workers_of(ep.id)
+        assert not any(w.runtime.executor.job_root.rglob(f"{job['id']}*"))
+        # the ticket stopped working when the job ended
+        r = await h.client.post(
+            f"/api/v1/worker/jobs/{job['id']}/progress",
+            json={"stage": "generating", "progress": 0.5},
+            headers={"Authorization": f"Bearer {rp_job.input['token']}"},
+        )
+        assert r.status_code == 401
 
 
-async def test_video_and_music_reuse_machine(env):
-    async with Harness(env, settings={"max_instances": 1}) as h:
+async def test_one_endpoint_per_gpu_and_workers_are_reused(env):
+    async with Harness(env, settings={"keep_warm_s": 30}) as h:
         await h.setup_admin()
-        v = (
-            await h.client.post(
-                "/api/v1/jobs",
-                json={
-                    "kind": "video",
-                    "prompt": "waves at sunset",
-                    "quality": "standard",
-                    "model_id": "ltx2",
-                    "duration": "short",
-                },
-            )
-        ).json()
-        mu = (
-            await h.client.post(
-                "/api/v1/jobs",
-                json={"kind": "music", "prompt": "lofi hip hop, mellow piano", "duration": "30s", "lyrics": "la la la"},
-            )
-        ).json()
-        vd = await h.wait_job(v["id"], timeout=60)
-        md = await h.wait_job(mu["id"], timeout=60)
-        assert vd["state"] == "succeeded", vd
-        assert md["state"] == "succeeded", md
-        assert vd["outputs"][0]["media_type"] == "video/mp4"
-        assert md["outputs"][0]["media_type"] == "audio/mp4"
-        # range on video for seeking
-        url = vd["outputs"][0]["url"]
-        size = vd["outputs"][0]["bytes"]
+        img = {"kind": "image", "prompt": "a cat", "quality": "draft"}
+        first = await h.wait_job((await h.client.post("/api/v1/jobs", json=img)).json()["id"])
+        second = await h.wait_job((await h.client.post("/api/v1/jobs", json=img)).json()["id"])
+        assert first["state"] == second["state"] == "succeeded"
+        # same GPU type: one endpoint, and the waiting worker took the second job (no second start)
+        assert len(h.runpod.endpoints) == 1
+        rows = await h.sql("SELECT count(*), count(DISTINCT provider_instance_id) FROM instances")
+        assert rows[0] == (1, 1)
+        assert first["instance_id"] == second["instance_id"]
+        # each job is charged its share of the worker's time; the second one no cold start
+        assert first["cost_usd"] > 0 and second["cost_usd"] > 0
+        # a different GPU type gets its own endpoint
+        vid = {
+            "kind": "video",
+            "prompt": "waves at sunset",
+            "quality": "standard",
+            "model_id": "ltx2",
+            "duration": "short",
+        }
+        v = await h.wait_job((await h.client.post("/api/v1/jobs", json=vid)).json()["id"], timeout=60)
+        assert v["state"] == "succeeded", v
+        assert v["outputs"][0]["media_type"] == "video/mp4"
+        assert len(h.runpod.endpoints) == 2
+        url, size = v["outputs"][0]["url"], v["outputs"][0]["bytes"]
         r = await h.client.get(url, headers={"Range": f"bytes={size // 2}-"})
         assert r.status_code == 206 and len(r.content) == size - size // 2
-        # max_instances=1: one machine served both
-        rows = await h.sql("SELECT count(*) FROM instances")
-        assert rows[0][0] == 1
 
 
-async def test_idle_machine_is_destroyed(env):
-    async with Harness(env, settings={"idle_timeout_s": 1}) as h:
+async def test_parallel_jobs_get_their_own_workers(env):
+    async with Harness(env, settings={"max_workers_per_gpu": 2}) as h:
+        await h.setup_admin()
+        img = {"kind": "image", "prompt": "a cat", "quality": "draft"}
+        ids = [(await h.client.post("/api/v1/jobs", json=img)).json()["id"] for _ in range(3)]
+        done = [await h.wait_job(i, timeout=60) for i in ids]
+        assert all(d["state"] == "succeeded" for d in done), done
+        workers = (await h.sql("SELECT count(DISTINCT provider_instance_id) FROM instances"))[0][0]
+        assert workers == 2  # the endpoint's maximum; the third job waited for a free worker
+
+
+async def test_idle_worker_stops_and_billing_ends(env):
+    async with Harness(env, settings={"keep_warm_s": 5}) as h:
         await h.setup_admin()
         j = (await h.client.post("/api/v1/jobs", json={"kind": "image", "prompt": "a cat", "quality": "draft"})).json()
         assert (await h.wait_job(j["id"]))["state"] == "succeeded"
 
-        async def gone():
-            rows = await h.sql("SELECT state FROM instances")
-            return rows and all(r[0] == "destroyed" for r in rows)
+        async def ended():
+            rows = await h.sql("SELECT state, destroy_confirmed_at - idle_since FROM instances")
+            return rows and all(r[0] == "destroyed" for r in rows) and rows
 
-        await h.wait_for(gone, timeout=15)
-        assert h.provider.machines == {}
-        # cost was accrued
+        rows = await h.wait_for(ended, timeout=20)
+        assert rows[0][1].total_seconds() == 5  # billed until RunPod stopped it: keep-warm after its last job
         rows = await h.sql("SELECT sum(usd) FROM cost_accruals")
-        assert rows[0][0] is not None and float(rows[0][0]) >= 0
+        assert rows[0][0] is not None and float(rows[0][0]) > 0
 
 
 async def test_unauthenticated_and_csrf(env):
@@ -138,21 +159,3 @@ async def test_unauthenticated_and_csrf(env):
             "/api/v1/auth/setup", json={"email": "x@example.com", "display_name": "X", "password": "another password"}
         )
         assert r.status_code == 403
-
-
-async def test_prewarm_only_when_enabled(env):
-    async with Harness(env) as h:
-        await h.setup_admin()
-        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
-        assert r == {"started": False, "reason": "disabled"}
-        await h.client.put("/api/v1/settings", json={"speculative_warmup": True})
-        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
-        assert r["started"] is True
-
-        async def ready():
-            rows = await h.sql("SELECT state FROM instances")
-            return rows and rows[0][0] == "ready"
-
-        await h.wait_for(ready, timeout=15)
-        r = (await h.client.post("/api/v1/machines/prewarm", json={"kind": "image"})).json()
-        assert r == {"started": False, "reason": "already_running"}

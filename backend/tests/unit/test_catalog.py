@@ -92,16 +92,15 @@ def test_gated_variants_are_left_out_without_a_hugging_face_token():
 
 
 def test_download_errors_say_what_to_do():
-    from aivo.controller.dispatcher import download_error
-    from aivo_protocol.worker_api import FileState
+    from aivo.controller.jobspec import download_error
 
     files = CAT.get("flux2-dev").manifest.files
-    gated = FileState(dest="diffusion_models/flux2-dev.safetensors", state="failed", error="hf: HTTP 401")
-    assert "AIVO_HF_TOKEN" in download_error([gated], files)
-    moved = FileState(dest="vae/flux2-vae.safetensors", state="failed", error="hf: HTTP 401")
-    assert "refused" in download_error([moved], files) and "AIVO_HF_TOKEN" not in download_error([moved], files)
-    other = FileState(dest="vae/flux2-vae.safetensors", state="failed", error="size mismatch")
-    assert download_error([other], files).startswith("The AI model's files couldn't be downloaded")
+    gated = "diffusion_models/flux2-dev.safetensors: hf: HTTP 401"
+    assert "AIVO_HF_TOKEN" in download_error(gated, files)
+    moved = "vae/flux2-vae.safetensors: hf: HTTP 401"
+    assert "refused" in download_error(moved, files) and "AIVO_HF_TOKEN" not in download_error(moved, files)
+    other = "vae/flux2-vae.safetensors: size mismatch"
+    assert download_error(other, files).startswith("The AI model's files couldn't be downloaded")
 
 
 def test_minor_words_and_ages_are_caught_without_flagging_adults():

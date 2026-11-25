@@ -35,11 +35,10 @@ image tags:
   updates the database before the new backend starts. Pods that run the controller are replaced
   (`Recreate`), never doubled, so only one controller runs at a time.
 - **Dashboard**: the frontend image of the same release.
-- **GPU machines**: the backend gives new machines the worker image of its own release
-  (`aivo-worker:<version>`). Machines already running keep their worker until they shut down.
-  The backend checks the worker's protocol version, so an older worker can't be given work it
-  doesn't understand. Prepared machine images (DigitalOcean) still help after an upgrade: a
-  machine pulls only the layers that changed.
+- **RunPod workers**: the backend updates its RunPod endpoints to the worker image of its own release
+  (`aivo-worker:<version>`), and RunPod replaces their workers with the new release. Worker and backend
+  check each other's protocol version, so an older worker can't be given work it doesn't understand.
+  RunPod hosts that have an older release pull only the layers that changed.
 
 Version tags never change once pushed, so Kubernetes keeps the default pull policy for them
 (pull once). `latest` is always pulled again.
@@ -73,7 +72,7 @@ Packages → `charts/ai-vps-orchestrator` → Package settings). Make it public,
 | Value | Effect |
 |---|---|
 | `image.backend.tag`, `image.frontend.tag` | Run other images than the chart's release |
-| `image.worker.tag` | Worker image tag for GPU machines (default: the chart's release) |
+| `image.worker.tag` | Worker image tag RunPod runs (default: the chart's release) |
 | `workerImage` | Full worker image reference, e.g. a fork's (`AIVO_WORKER_IMAGE`) |
 | `image.*.pullPolicy` | Empty: Kubernetes decides (pull once for versions, always for `latest`) |
 
@@ -83,4 +82,4 @@ Packages → `charts/ai-vps-orchestrator` → Package settings). Make it public,
   `latest` images. Use it for trying changes, not for upgrades: a chart that keeps the same
   `latest` tag can't tell Kubernetes that anything changed.
 - A source checkout or `docker compose` build reports version `dev` and uses
-  `aivo-worker:latest` for GPU machines.
+  `aivo-worker:latest` for RunPod workers.

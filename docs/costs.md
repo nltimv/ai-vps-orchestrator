@@ -1,28 +1,31 @@
 # Costs
 
 ## How the bill is built
-- **GPU machines.** Billed per second (with a minimum, configurable as `min_billing_s`,
-  default 5 min) from creation until destroyed. Powered-off machines **are still billed**, so
-  aivo always destroys them.
-- **Typical creation cost** with the cold start included. Numbers are rough; the dashboard
-  shows a live estimate:
+- **GPU time on RunPod Serverless.** RunPod bills a worker per second from its start until it stops:
+  - its start-up (container + AI engine);
+  - its creations, including downloading model files;
+  - the waits between creations;
+  - the wait after the last one (*Keep a GPU waiting for a next creation*, default 60 s).
 
-  | Creation | Machine | Cost |
+  Waiting in a queue for a free GPU costs nothing, and so does an idle endpoint.
+- **Typical cost of a creation** (RunPod's November 2026 prices; the dashboard shows a live
+  estimate):
+
+  | Creation | GPU | Cost |
   |---|---|---|
-  | One Draft image | RTX 4000 Ada | ~$0.10–0.20 |
-  | A 5 s Standard video | 48 GB tier | ~$0.40–0.60 |
-  | Follow-up work on a machine that's already running | — | cents |
+  | One Draft image (cold start) | 16–24 GB, ~$0.58–0.68/h | ~$0.02–0.04 |
+  | A 5 s Standard video (cold start, model download) | 48 GB PRO, ~$1.91/h | ~$0.15–0.30 |
+  | A follow-up creation on a GPU that's still waiting | — | only its own time |
 
-- **The idle tail.** After the last creation the machine stays on for the idle timeout
-  (default 10 min) in case more work comes. That costs at most ~$0.13 (RTX 4000 Ada), ~$0.26
-  (48 GB) or ~$0.74 (H100). Lower it in Settings if you mostly make one-offs. Raise it, or use
-  *Keep warm*, for sessions.
+- **Network volume** (optional, keeps model files): $0.07/GB-month, e.g. ~$14/month for 200 GB.
+- **Keep one ready** (GPUs page): one worker stays on and is billed the whole time, e.g. 30 min of
+  an L40S-class GPU ≈ $0.95.
 
-## How the machine is chosen
-For each candidate the scorer estimates:
-- **wait** = create + boot + model load + generation + download;
-- **cost** = price × (billable time incl. the minimum and the expected idle tail), shared across
-  queued compatible jobs.
+## How the GPU is chosen
+For each GPU type the scorer estimates:
+- **wait** = time until a worker has the job (queue + cold start; ~0 when a worker of that type is
+  on) + model load + generation + delivery;
+- **cost** = price × the billed part of that time, plus the expected wait for a next creation.
 
 It then minimizes `cost + λ × wait`. The λ values are what an hour of waiting is worth:
 
@@ -32,26 +35,16 @@ It then minimizes `cost + λ × wait`. The λ values are what an hour of waiting
 | Balanced | $4 |
 | Fastest | $20 |
 
-Small penalties are added for machines that were often sold out lately, for far more GPU than
-needed, and for lighter model variants. Estimates start from priors and are replaced by the
-timings measured on your own runs.
-
-## Cache costs (monthly, "Balanced" policy)
-
-| Item | Cost |
-|---|---|
-| Prepared machine image | ~$1.50–2 per region × 2 regions |
-| Spaces model mirror | $5 (250 GB included) |
-| One 120 GB model disk (TOR1) | ~$12 |
-| **Total** | **~$20/month** |
-
-Turn pieces off in Settings → Faster start-up to save money.
+Small penalties are added for GPU types that often had no free GPU lately, for far more GPU than
+needed, and for lighter model variants. Estimates start from priors and are replaced by the timings
+measured on your own runs.
 
 ## Limits
 - **Warning level** (`soft_cap_usd`, default $30/month): users confirm each new creation.
 - **Spending limit** (`hard_cap_usd`, default $40/month):
-  - Placement reserves budget atomically, so concurrent requests can't overshoot.
-  - At the limit, new machines stop starting and running ones finish their current job.
-  - At the limit plus $2 they are destroyed immediately.
-- The provider's month-to-date figure is shown next to aivo's own accounting. A billing alert
-  in the DO control panel is recommended.
+  - Each creation reserves its expected cost atomically when it's placed, so concurrent requests
+    can't overshoot.
+  - At the limit, new creations aren't placed; running ones finish.
+  - At the limit plus $2, running ones are cancelled.
+- aivo's numbers come from RunPod's list prices and the workers' own timing. Your RunPod invoice is
+  the final word; set a low balance alert in the RunPod console.

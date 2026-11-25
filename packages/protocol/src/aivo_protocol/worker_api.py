@@ -1,7 +1,16 @@
-"""Wire contract between the backend (client) and the worker agent (server).
+"""Wire contract between the backend and the GPU worker (RunPod Serverless, queue-based endpoints).
 
-The backend *pushes* work to the worker over HTTPS. The worker never calls the
-backend, so it never needs to know where the backend lives.
+aivo submits a job to the queue endpoint of a GPU type. The job's whole input is a ``Ticket``: aivo's
+address, the aivo job id and a one-time token. The worker then talks to aivo directly over HTTPS:
+
+    POST /api/v1/worker/jobs/{id}/spec        -> WorkSpec   (what to run; marks the job "preparing")
+    GET  /api/v1/worker/jobs/{id}/inputs/{n}  -> bytes      (starting picture)
+    POST /api/v1/worker/jobs/{id}/progress    -> ProgressOut (progress + log lines; says when to cancel)
+    PUT  /api/v1/worker/jobs/{id}/outputs/{n} -> UploadOut  (each finished file, streamed)
+    POST /api/v1/worker/jobs/{id}/complete | /fail
+
+So prompts, starting pictures and results never pass through RunPod's job system, and there is no size limit
+on results. The ticket stops working when the job ends.
 """
 
 from __future__ import annotations
@@ -14,66 +23,7 @@ from pydantic import BaseModel, Field
 from aivo_protocol.version import PROTOCOL_VERSION
 
 OutputKind = Literal["image", "video", "audio"]
-EngineName = Literal["comfy", "mock"]
-
-
-class WatchdogConfig(BaseModel):
-    """Opt-in safety net: the worker deletes its own machine if the backend goes silent.
-
-    Uses a provider token scoped to deleting machines. Recommended only inside a
-    dedicated cloud account/team, because such a token can delete any machine there.
-    """
-
-    enabled: bool = False
-    provider: str = "digitalocean"
-    token: str | None = None
-    max_silence_s: int = 1200
-    deadline_unix: float | None = None
-
-
-class WorkerBootstrap(BaseModel):
-    """Everything a freshly booted worker needs. Delivered via cloud-init user_data
-    (DigitalOcean) or as the ``AIVO_BOOTSTRAP_B64`` environment variable (RunPod Serverless).
-
-    Never contains user content (prompts, images): those only travel over the
-    worker channel, and only into RAM-backed directories where possible.
-
-    Without a TLS certificate the agent serves plain HTTP: only for RunPod Serverless, whose
-    gateway terminates HTTPS in front of the worker.
-    """
-
-    protocol: str = PROTOCOL_VERSION
-    instance_id: str
-    deployment_id: str
-    token_sha256: str
-    tls_cert_pem: str = ""
-    tls_key_pem: str = ""
-    listen_host: str = "0.0.0.0"
-    listen_port: int = 443
-    engine: EngineName = "comfy"
-    models_dir: str = "/var/lib/aivo/models"
-    volume_mount: str | None = None
-    job_dir: str = "/run/aivo/jobs"  # tmpfs: inputs/outputs never touch disk
-    watchdog: WatchdogConfig = Field(default_factory=WatchdogConfig)
-    worker_image: str | None = None
-
-
-BOOTSTRAP_ENV = "AIVO_BOOTSTRAP_B64"
-
-
-def encode_bootstrap_env(boot: WorkerBootstrap) -> str:
-    """The bootstrap as one environment variable value (RunPod endpoints take env, not user_data)."""
-    import base64
-    import zlib
-
-    return base64.b64encode(zlib.compress(boot.model_dump_json(exclude_none=True).encode(), 9)).decode()
-
-
-def decode_bootstrap_env(value: str) -> WorkerBootstrap:
-    import base64
-    import zlib
-
-    return WorkerBootstrap.model_validate_json(zlib.decompress(base64.b64decode(value)))
+ErrorCode = Literal["oom", "engine", "timeout", "cancelled", "missing_files", "bad_request"]
 
 
 # ---------------------------------------------------------------- files
@@ -91,10 +41,6 @@ class FileFetch(BaseModel):
     bytes: int | None = None
     sha256: str | None = None
     sources: list[FileSource] = Field(default_factory=list)
-
-
-class EnsureFilesIn(BaseModel):
-    files: list[FileFetch]
 
 
 class FileState(BaseModel):
@@ -136,7 +82,7 @@ class JobIn(BaseModel):
     job_id: str
     model_id: str
     workflow: dict = Field(default_factory=dict)
-    inputs: list[str] = Field(default_factory=list)  # names previously uploaded to /v1/inputs
+    inputs: list[str] = Field(default_factory=list)  # names of starting files in the inputs directory
     required_files: list[str] = Field(default_factory=list)  # dests that must be ready
     output: OutputSpec
     timeout_s: int = 3600
@@ -173,49 +119,16 @@ class JobStatus(BaseModel):
     eta_s: float | None = None
     outputs: list[OutputMeta] = Field(default_factory=list)
     error: str | None = None
-    error_code: Literal["oom", "engine", "timeout", "cancelled", "missing_files", "bad_request"] | None = None
+    error_code: ErrorCode | None = None
 
 
-# ---------------------------------------------------------------- health
+# ---------------------------------------------------------------- worker <-> aivo
 
 
 class GpuInfo(BaseModel):
     name: str
     vram_total_gb: float
     vram_free_gb: float | None = None
-
-
-class Health(BaseModel):
-    protocol: str = PROTOCOL_VERSION
-    agent_version: str
-    instance_id: str
-    engine: EngineName
-    engine_ready: bool
-    gpu: GpuInfo | None = None
-    disk_free_gb: float | None = None
-    files_present: list[str] = Field(default_factory=list)
-    models_loaded: list[str] = Field(default_factory=list)
-    running_job: str | None = None
-    outputs_pending: int = 0
-    draining: bool = False
-    uptime_s: float = 0.0
-    image_digest: str | None = None
-    engine_error: str | None = None  # the AI engine failed to start (definitive)
-    log_seq: int = 0  # number of the newest machine log line (grows while the machine is busy starting)
-
-
-class BootStatus(BaseModel):
-    """Served (HTTP 503) by the machine's start-up status server until the agent takes over."""
-
-    stage: str = "starting"
-    detail: str | None = None
-    progress_bytes: int | None = None
-    failed: bool = False
-    error: str | None = None
-    updated_at: float | None = None
-
-
-LogSource = Literal["setup", "agent", "engine"]
 
 
 class LogLine(BaseModel):
@@ -230,11 +143,7 @@ class LogsOut(BaseModel):
     lines: list[LogLine] = Field(default_factory=list)
     next_seq: int = 0  # pass back as ?since= to get only newer lines
     dropped: int = 0  # lines that were evicted before the caller saw them
-    reset: bool = False  # the machine software restarted: numbering began again (lines are from seq 1)
-
-
-class RotateTokenOut(BaseModel):
-    token: str
+    reset: bool = False  # numbering began again
 
 
 class PhaseTiming(BaseModel):
@@ -245,5 +154,66 @@ class PhaseTiming(BaseModel):
     model_id: str | None = None
 
 
-class TelemetryOut(BaseModel):
+class Ticket(BaseModel):
+    """The whole input of a RunPod job. Holds no prompt or picture: the worker fetches those from aivo."""
+
+    aivo_url: str
+    job_id: str
+    token: str
+    protocol: str = PROTOCOL_VERSION
+
+
+class WorkerInfo(BaseModel):
+    """Who is working, for billing: RunPod bills a worker from its start until it scales down."""
+
+    worker_id: str  # RunPod's id of the worker (RUNPOD_POD_ID)
+    endpoint_id: str | None = None
+    started_at: float  # unix time the worker process started
+    job_started_at: float | None = None  # unix time this job reached the worker
+    prev_job_end: float | None = None  # unix time this worker finished its previous job
+    jobs_done: int = 0
+    gpu: GpuInfo | None = None
+    agent_version: str = "dev"
+    protocol: str = PROTOCOL_VERSION
+
+
+class WorkSpec(BaseModel):
+    job_id: str
+    model_id: str
+    workflow: dict = Field(default_factory=dict)
+    files: list[FileFetch] = Field(default_factory=list)  # model files, with where to get them
+    inputs: list[str] = Field(default_factory=list)  # starting files to fetch from aivo
+    output: OutputSpec
+    timeout_s: int = 3600
+
+
+class ProgressIn(BaseModel):
+    stage: str  # loading_model | generating | saving | ...
+    progress: float = 0.0
+    eta_s: float | None = None
+    lines: list[LogLine] = Field(default_factory=list)
+
+
+class ProgressOut(BaseModel):
+    cancel: bool = False
+
+
+class UploadOut(BaseModel):
+    bytes: int
+    sha256: str
+
+
+class CompleteIn(BaseModel):
+    outputs: list[OutputMeta]
     phases: list[PhaseTiming] = Field(default_factory=list)
+    worker: WorkerInfo
+    finished_at: float
+    lines: list[LogLine] = Field(default_factory=list)
+
+
+class FailIn(BaseModel):
+    code: ErrorCode
+    message: str
+    worker: WorkerInfo | None = None
+    finished_at: float | None = None
+    lines: list[LogLine] = Field(default_factory=list)

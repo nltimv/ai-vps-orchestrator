@@ -133,44 +133,6 @@ class Page(BaseModel):
     next_cursor: str | None = None
 
 
-class InstanceOut(BaseModel):
-    id: uuid.UUID
-    name: str
-    state: str
-    gpu: str
-    gpu_class: str
-    vram_gb: float
-    region: str
-    region_name: str
-    price_hourly: float
-    created_at: datetime
-    ready_at: datetime | None
-    idle_since: datetime | None
-    keep_warm_until: datetime | None
-    idle_shutdown_at: datetime | None
-    uptime_s: float | None
-    cost_so_far_usd: float
-    models_loaded: list[str]
-    current_job_id: uuid.UUID | None = None
-    failure_reason: str | None = None
-    boot_stage: str | None = None  # current start-up step (while starting)
-    boot_stage_label: str | None = None
-    has_saved_log: bool = False  # last log lines were kept when the machine went away
-    timeline: list[dict[str, Any]] = Field(default_factory=list)
-
-
-class WarmupIn(BaseModel):
-    kind: Literal["image", "video", "music"] = "image"
-    model_id: str | None = None
-    quality: Literal["draft", "standard", "best"] = "standard"
-    offer_key: str | None = None
-    preference: Literal["economy", "balanced", "fast"] | None = None
-
-
-class KeepWarmIn(BaseModel):
-    minutes: int = Field(ge=0, le=24 * 60)
-
-
 class SpendingOut(BaseModel):
     period: str
     compute_usd: float

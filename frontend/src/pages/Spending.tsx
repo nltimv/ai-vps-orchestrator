@@ -13,7 +13,7 @@ export function SpendingPage() {
       <PageHeader title="Spending" subtitle={`This month (since ${new Date(s.period).toLocaleDateString(undefined, { month: "long", day: "numeric" })})`} />
       <Card className="mb-6 p-5">
         <div className="mb-2 flex items-center justify-between text-sm">
-          <span>{money(s.compute_usd, 2)} spent on machines {s.reserved_usd > 0 && <span className="text-muted">(+{money(s.reserved_usd, 2)} set aside for running work)</span>}</span>
+          <span>{money(s.compute_usd, 2)} spent on GPUs {s.reserved_usd > 0 && <span className="text-muted">(+{money(s.reserved_usd, 2)} set aside for running work)</span>}</span>
           <span className="text-muted">limit {money(s.hard_cap_usd, 0)}</span>
         </div>
         <Progress value={used / Math.max(s.hard_cap_usd, 0.01)} />
@@ -22,9 +22,9 @@ export function SpendingPage() {
         </div>
       </Card>
       <div className="mb-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Stat label="Machines" value={money(s.compute_usd, 2)} sub="this month" />
+        <Stat label="GPUs" value={money(s.compute_usd, 2)} sub="this month" />
         <Stat label="Model cache" value={money(s.storage_monthly_usd, 2)} sub="per month (estimate)" />
-        <Stat label="Running now" value={s.running_machines} sub={s.running_machines ? "machines" : "nothing is billing"} />
+        <Stat label="Running now" value={s.running_machines} sub={s.running_machines ? "GPUs" : "nothing is billing"} />
         <Stat label="Cloud bill so far" value={money(s.provider_month_to_date_usd, 2)} sub="as reported by the provider (whole account)" />
       </div>
       {s.by_day.length > 0 && (
@@ -53,7 +53,7 @@ export function SpendingPage() {
           </table>
         </Card>
         <Card className="p-5">
-          <div className="mb-3 text-sm font-medium">Machines</div>
+          <div className="mb-3 text-sm font-medium">GPUs</div>
           <table className="w-full text-sm">
             <tbody className="divide-y divide-[var(--border)]">
               {s.by_machine.map((m) => (

@@ -1,14 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, HardDrive, Link2, Save } from "lucide-react";
+import { Check, Copy, Link2, Save } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { patch, post } from "@/api/client";
-import { useCacheStatus, useCatalog, useHealth, useSaveSettings, useSettings, useUsers } from "@/api/queries";
-import type { RuntimeSettings, SettingsResponse } from "@/api/types";
+import { useCatalog, useHealth, useSaveSettings, useSettings, useUsers } from "@/api/queries";
+import type { RuntimeSettings } from "@/api/types";
 import { LicenseBadge } from "@/components/LicenseBadge";
-import { PausedBanner } from "@/components/PausedBanner";
 import { Badge, Button, Card, Chips, ErrorNote, Field, Input, Label, PageHeader, Toggle } from "@/components/ui";
-import { ago, cn, money, providerLabel, setupStepLabel } from "@/lib/format";
+import { providerLabel } from "@/lib/format";
 
 export function SettingsPage() {
   const s = useSettings();
@@ -23,73 +22,54 @@ export function SettingsPage() {
     Object.entries(draft).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(s.data!.settings[k])),
   );
   const onSave = async () => { await save.mutateAsync(changed); setSaved(true); };
-  const regions = s.data.regions;
-  const runpod = s.data.provider === "runpod" ? s.data.runpod : null;
+  const rp = s.data.runpod;
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Settings" subtitle={`Cloud: ${providerLabel(s.data.provider)}`}
+      <PageHeader title="Settings" subtitle={`GPUs: ${providerLabel(s.data.provider)}`}
         actions={<Button variant="primary" onClick={onSave} loading={save.isPending} disabled={!Object.keys(changed).length}>
           {saved ? <Check className="size-4" /> : <Save className="size-4" />} {saved ? "Saved" : "Save changes"}</Button>} />
       <ErrorNote error={save.error} />
-      <PausedBanner isAdmin />
       <Status />
 
-      <Section title="Spending limits" desc="Machines stop starting once the monthly limit is reached.">
+      <Section title="Spending limits" desc="Nothing new starts once the monthly limit is reached.">
         <div className="grid gap-4 sm:grid-cols-2">
           <NumberField label="Ask before continuing above ($/month)" value={draft.soft_cap_usd} onChange={(v) => set("soft_cap_usd", v)} />
           <NumberField label="Monthly limit ($)" value={draft.hard_cap_usd} onChange={(v) => set("hard_cap_usd", v)} />
-          <NumberField label="Most expensive machine allowed ($/hour)" value={draft.max_price_hourly} step={0.1} onChange={(v) => set("max_price_hourly", v)} />
+          <NumberField label="Most expensive GPU allowed ($/hour)" value={draft.max_price_hourly} step={0.1} onChange={(v) => set("max_price_hourly", v)} />
         </div>
       </Section>
 
-      <Section title="Machines" desc="How long machines stay on, and how many may run at once.">
+      <Section title="GPUs" desc="Creations run on RunPod Serverless: you pay for a GPU only while it works (and while it waits briefly for a next creation).">
         <div className="grid gap-4 sm:grid-cols-2">
-          <NumberField label="Shut down after being idle for (minutes)" value={Math.round(draft.idle_timeout_s / 60)} min={1}
-            onChange={(v) => set("idle_timeout_s", Math.round(v * 60))} />
-          <NumberField label="Never run a machine longer than (hours)" value={draft.max_lifetime_s / 3600} step={0.5}
-            onChange={(v) => set("max_lifetime_s", Math.round(v * 3600))} />
-          <NumberField label="Machines at the same time" value={draft.max_instances} min={1} max={8} onChange={(v) => set("max_instances", Math.round(v))} />
+          <NumberField label="GPUs of one type at the same time" value={draft.max_workers_per_gpu} min={1} max={20}
+            onChange={(v) => set("max_workers_per_gpu", Math.round(v))} />
+          <NumberField label="Keep a GPU waiting for a next creation (seconds)" value={draft.keep_warm_s} min={5} max={3600}
+            onChange={(v) => set("keep_warm_s", Math.round(v))} />
+          <NumberField label="Try another GPU type if none is free after (minutes)" value={Math.round(draft.gpu_fallback_after_s / 60)} min={1}
+            onChange={(v) => set("gpu_fallback_after_s", Math.round(v * 60))} />
           <NumberField label="Give up waiting for a free GPU after (minutes)" value={Math.round(draft.capacity_wait_max_s / 60)}
             onChange={(v) => set("capacity_wait_max_s", Math.round(v * 60))} />
+          <NumberField label="Longest a single creation may take (minutes)" value={Math.round(draft.job_timeout_s / 60)} min={5}
+            onChange={(v) => set("job_timeout_s", Math.round(v * 60))} />
         </div>
         <div className="mt-4"><Label>Default priority</Label>
           <Chips name="Default priority" value={draft.preference_default} onChange={(v) => v && set("preference_default", v)}
             options={[{ id: "economy", label: "Save money" }, { id: "balanced", label: "Balanced" }, { id: "fast", label: "Fastest" }]} /></div>
-        <div className="mt-4"><Toggle checked={draft.speculative_warmup} onChange={(v) => set("speculative_warmup", v)}
-          label="Start a machine as soon as someone opens the Create page (faster, costs a bit more)" /></div>
-      </Section>
-
-      <Section title="Locations" desc="Leave empty to allow every datacenter.">
-        <Label>Allowed</Label>
-        <RegionPicker regions={regions} value={draft.allowed_regions} onChange={(v) => set("allowed_regions", v)} />
-        <div className="mt-4"><Label>Preferred</Label>
-          <RegionPicker regions={regions} value={draft.preferred_regions} onChange={(v) => set("preferred_regions", v)} /></div>
+        <ListInput className="mt-4" label="Never use these GPU types" placeholder="NVIDIA H100 80GB HBM3, NVIDIA RTX A5000"
+          value={draft.denied_sizes} onChange={(v) => set("denied_sizes", v)} />
+        <ul className="mt-4 list-disc space-y-1 pl-5 text-sm text-muted">
+          <li>Waiting for a free GPU is free; billing starts when a GPU starts working on your creation.</li>
+          <li>{rp.data_centers.length ? `Data centers: ${rp.data_centers.join(", ")}.` : `Countries: ${rp.countries.join(", ") || "any"}.`}
+            {rp.gpu_types.length ? ` Only: ${rp.gpu_types.join(", ")}.` : ""} (AIVO_RUNPOD_* settings)</li>
+          <li>{rp.network_volume
+            ? "Model files are kept on your RunPod network volume, so GPUs start faster."
+            : "Each GPU downloads its model files when it starts. A RunPod network volume (AIVO_RUNPOD_NETWORK_VOLUME_ID) keeps them."}</li>
+          <li>GPUs deliver results straight to {rp.worker_api_url ?? "this server (set AIVO_PUBLIC_URL)"}; nothing is stored at RunPod.</li>
+        </ul>
       </Section>
 
       <Engines draft={draft} set={set} />
-      {runpod ? <RunPodSection info={runpod} idleMinutes={Math.round(draft.idle_timeout_s / 60)} />
-        : <CacheSection draft={draft} set={set} spaces={s.data.spaces_configured} regions={regions} />}
-
-      {!runpod && <Section title="Security" desc="Who may connect to the machines, and what happens if this server disappears.">
-        <Label>Machine access</Label>
-        <Chips name="Machine access" value={draft.firewall_mode} onChange={(v) => v && set("firewall_mode", v)} options={[
-          { id: "auto_egress_ip", label: "Only this server (automatic)" },
-          { id: "cidrs", label: "Only these addresses" },
-          { id: "open", label: "Anyone (certificate-protected)" },
-        ]} />
-        {draft.firewall_mode === "cidrs" && (
-          <ListInput className="mt-3" label="Allowed addresses" placeholder="203.0.113.4/32, 198.51.100.0/24"
-            value={draft.allowed_cidrs} onChange={(v) => set("allowed_cidrs", v)} />
-        )}
-        <div className="mt-4">
-          <Toggle checked={draft.watchdog_enabled} onChange={(v) => set("watchdog_enabled", v)}
-            label="Machines delete themselves if this server goes silent for 20 minutes" />
-          {!s.data.watchdog_token_configured && draft.watchdog_enabled && (
-            <p className="mt-2 text-xs text-amber-500">Needs AIVO_DO_WATCHDOG_TOKEN (a token that may only delete machines; use a dedicated cloud team).</p>
-          )}
-        </div>
-      </Section>}
 
       <Section title="Adult content (18+)" desc="Engines that make nudity and sexual content, for adults only.">
         <Toggle checked={draft.adult_content_enabled} onChange={(v) => set("adult_content_enabled", v)}
@@ -100,19 +80,6 @@ export function SettingsPage() {
           <li>Adult engines only start from pictures made here from a text description, never from uploaded photos.</li>
           <li>Descriptions that could involve minors are always refused.</li>
         </ul>
-      </Section>
-
-      <Section title="Troubleshooting" desc="When machines don't start. The machine log (Machines → Show log) shows each start-up step.">
-        <div className="grid gap-4 sm:grid-cols-2">
-          <NumberField label="Pause new machines after this many failed start-ups in a row (0 = never)"
-            value={draft.boot_failures_before_pause} min={0} onChange={(v) => set("boot_failures_before_pause", v)} />
-          <NumberField label="Longest start-up allowed (minutes)" value={Math.round(draft.boot_health_max_s / 60)} min={5}
-            onChange={(v) => set("boot_health_max_s", v * 60)} />
-        </div>
-        <Field label="Allow logging in to machines (SSH) from these addresses" hint="Debugging only. Also needs AIVO_DO_SSH_KEY_IDS. Leave empty normally.">
-          <ListInput placeholder="203.0.113.4/32" value={draft.debug_ssh_cidrs}
-            onChange={(v) => set("debug_ssh_cidrs", v)} />
-        </Field>
       </Section>
 
       <Users />
@@ -153,22 +120,6 @@ function NumberField({ label, value, onChange, step = 1, min = 0, max }: { label
   );
 }
 
-function RegionPicker({ regions, value, onChange }: { regions: { id: string; name: string }[]; value: string[]; onChange: (v: string[]) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {regions.map((r) => {
-        const on = value.includes(r.id);
-        return (
-          <button key={r.id} type="button" onClick={() => onChange(on ? value.filter((x) => x !== r.id) : [...value, r.id])}
-            className={cn("h-8 rounded-full border px-3 text-sm cursor-pointer", on ? "border-brand-500 bg-brand-500/15" : "border-base")}>
-            {r.name}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 function Engines({ draft, set }: { draft: RuntimeSettings; set: <K extends keyof RuntimeSettings>(k: K, v: RuntimeSettings[K]) => void }) {
   const cat = useCatalog();
   const all = cat.data?.models ?? [];
@@ -191,99 +142,6 @@ function Engines({ draft, set }: { draft: RuntimeSettings; set: <K extends keyof
   );
 }
 
-function RunPodSection({ info, idleMinutes }: { info: NonNullable<SettingsResponse["runpod"]>; idleMinutes: number }) {
-  const keepWarm = Math.max(1, Math.round(info.keep_warm_s / 60));
-  return (
-    <Section title="RunPod Serverless" desc="Each machine is a RunPod endpoint with one worker. You pay only while the worker runs.">
-      <ul className="list-disc space-y-1 pl-5 text-sm text-muted">
-        <li>Getting a GPU ready and downloading the worker software is free; billing starts when the worker starts.</li>
-        <li>An idle worker is kept for follow-up creations for {Math.min(keepWarm, idleMinutes)} min, then let go
-          (AIVO_RUNPOD_KEEP_WARM_S). If this server goes silent, RunPod stops it after {info.idle_timeout_s} s.</li>
-        <li>{info.network_volume
-          ? "Model files are kept on your RunPod network volume, so later workers start faster."
-          : "Model files are downloaded by every new worker. A RunPod network volume (AIVO_RUNPOD_NETWORK_VOLUME_ID) keeps them."}</li>
-        <li>RunPod's gateway handles the encryption to the worker; creations pass through it but are never stored there.</li>
-      </ul>
-    </Section>
-  );
-}
-
-function CacheSection({ draft, set, spaces, regions }: {
-  draft: RuntimeSettings; set: <K extends keyof RuntimeSettings>(k: K, v: RuntimeSettings[K]) => void; spaces: boolean;
-  regions: { id: string; name: string }[];
-}) {
-  const cache = useCacheStatus();
-  const cat = useCatalog();
-  const qc = useQueryClient();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const cp = draft.cache_policy;
-  const run = async (k: string, fn: () => Promise<unknown>) => {
-    setBusy(k); setError(null);
-    try { await fn(); await qc.invalidateQueries({ queryKey: ["cache"] }); } catch (e) { setError(e); } finally { setBusy(null); }
-  };
-  const enabledModels = (cat.data?.models ?? []).filter((m) => m.enabled).map((m) => m.id);
-  return (
-    <Section title="Faster start-up" desc="Keep things ready near the GPUs so new machines start quicker. These cost a little every month.">
-      <ErrorNote error={error} />
-      <div className="grid gap-4 md:grid-cols-3">
-        <Card className="p-4">
-          <div className="flex items-center gap-2 font-medium"><HardDrive className="size-4" /> Prepared machine image</div>
-          <p className="mt-1 text-xs text-muted">Software pre-installed, so machines skip a ~5 minute setup. ≈ $2/month per location.</p>
-          <Button size="sm" className="mt-3" disabled={!cache.data?.bake_supported} loading={busy === "bake"}
-            onClick={() => run("bake", () => post("/admin/cache/bake"))}>Prepare now</Button>
-        </Card>
-        <Card className="p-4">
-          <div className="font-medium">Model copy (Spaces)</div>
-          <p className="mt-1 text-xs text-muted">{spaces ? "A private copy of the AI models for fast downloads. ≈ $5/month." : "Not set up (AIVO_SPACES_* settings)."}</p>
-          <Button size="sm" className="mt-3" disabled={!spaces} loading={busy === "mirror"}
-            onClick={() => run("mirror", () => post("/admin/cache/mirror", { models: enabledModels }))}>Copy all engines</Button>
-        </Card>
-        <Card className="p-4">
-          <div className="font-medium">Model disks</div>
-          <p className="mt-1 text-xs text-muted">Most-used models on a disk next to the GPUs. ≈ {money(cp.volume_size_gb * 0.1, 0)}/month per location.</p>
-          <Toggle checked={cp.volume_enabled} onChange={(v) => set("cache_policy", { ...cp, volume_enabled: v })} label="Use model disks" />
-          <Button size="sm" className="mt-3" disabled={!cp.volume_enabled} loading={busy === "vol"}
-            onClick={() => run("vol", () => post("/admin/cache/volumes"))}>Create disks</Button>
-        </Card>
-      </div>
-      <div className="mt-4 grid gap-4 md:grid-cols-2">
-        <div><Label>Prepared image locations</Label>
-          <RegionPicker regions={regions} value={cp.snapshot_regions} onChange={(v) => set("cache_policy", { ...cp, snapshot_regions: v })} /></div>
-        <div><Label>Model disk locations</Label>
-          <RegionPicker regions={regions} value={cp.volume_regions} onChange={(v) => set("cache_policy", { ...cp, volume_regions: v })} /></div>
-      </div>
-      {cache.data && (
-        <div className="mt-5 text-sm">
-          <div className="mb-2 font-medium">Currently: about {money(cache.data.monthly_total_usd, 2)}/month</div>
-          <ul className="space-y-1 text-muted">
-            {cache.data.resources.map((r) => (
-              <li key={r.id}>{r.kind === "snapshot" ? "Prepared image" : r.kind === "volume" ? "Model disk" : r.kind} · {r.region} ·{" "}
-                <Badge tone={r.status === "ready" ? "good" : "neutral"}>{r.status}</Badge> · {money(r.monthly_cost_usd, 2)}/month</li>
-            ))}
-            {cache.data.runs.slice(0, 3).map((r) => (
-              <li key={r.id}>
-                {r.kind === "bake" ? "Preparing the image" : r.kind} ·{" "}
-                <Badge tone={r.state === "succeeded" ? "good" : r.state === "failed" ? "bad" : "neutral"}>
-                  {r.state === "running" && r.stage ? setupStepLabel(r.stage) : r.state}
-                </Badge>{" "}
-                · {ago(r.started_at)}
-                {r.state === "failed" && r.error && <div className="mt-1 text-red-500">{r.error}</div>}
-                {r.log_tail && r.log_tail.length > 0 && (
-                  <details className="mt-1">
-                    <summary className="cursor-pointer">Last lines from the machine</summary>
-                    <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded panel-2 p-2 font-mono text-[11px]">{r.log_tail.join("\n")}</pre>
-                  </details>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </Section>
-  );
-}
-
 function Users() {
   const users = useUsers();
   const qc = useQueryClient();
@@ -295,7 +153,7 @@ function Users() {
     setCopied(false);
   };
   return (
-    <Section title="People" desc="Everyone shares the gallery. Admins can change settings and machines.">
+    <Section title="People" desc="Everyone shares the gallery. Admins can change settings and GPUs.">
       <div className="mb-4 flex flex-wrap gap-2">
         <Button size="sm" onClick={() => invite("member")}><Link2 className="size-4" /> Invite someone</Button>
         <Button size="sm" variant="ghost" onClick={() => invite("admin")}>Invite an admin</Button>
@@ -342,7 +200,7 @@ function Status() {
   const c = h.data.controller;
   return (
     <div className="flex flex-wrap gap-2 text-xs">
-      <Badge tone={c?.alive ? "good" : "bad"}>{c?.alive ? `Machine manager running (checked ${Math.round(c.last_tick_age_s)} s ago)` : "Machine manager is not running"}</Badge>
+      <Badge tone={c?.alive ? "good" : "bad"}>{c?.alive ? `GPU manager running (checked ${Math.round(c.last_tick_age_s)} s ago)` : "GPU manager is not running"}</Badge>
       <Badge>version {h.data.version}</Badge>
       {h.data.offers_error && <Badge tone="warn">Cloud availability check failing</Badge>}
       {h.data.live_updates && !h.data.live_updates.connected && (

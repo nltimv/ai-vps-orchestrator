@@ -48,33 +48,22 @@ class EnvSettings(BaseSettings):
 
     catalog_dir: Path = REPO_ROOT / "catalog"
 
-    provider: Literal["fake", "digitalocean", "runpod"] = "fake"
-    do_token: SecretStr | None = None
-    do_api_base: str = "https://api.digitalocean.com"
-    # Optional custom-scoped token (droplet:delete) handed to workers for the self-destruct watchdog.
-    do_watchdog_token: SecretStr | None = None
-    # Operating-system image for GPU machines without a prepared image. DigitalOcean's GPU images come with
-    # the GPU driver; a plain Ubuntu image has none, and the AI engine can't start there.
-    do_base_image: str = "gpu-h100x1-base"
-    do_base_image_amd: str = "gpu-amd-base"
-    # Debugging only: your own DigitalOcean SSH key ids/fingerprints, added to every machine
-    # (also open port 22 with Settings -> debug_ssh_cidrs).
-    do_ssh_key_ids: CsvList = Field(default_factory=list)
+    # runpod = RunPod Serverless; fake = a simulated RunPod in this process (development, CI)
+    provider: Literal["fake", "runpod"] = "fake"
 
-    # --- RunPod Serverless (AIVO_PROVIDER=runpod, experimental) ----------------------------
-    # Each machine is its own load-balancing endpoint with at most one worker; deleting the endpoint
-    # stops its billing at once. See docs/operations-runpod.md.
+    # --- RunPod Serverless ---------------------------------------------------------------
+    # One queue-based endpoint per GPU type; RunPod's queue starts and stops the workers.
+    # Each job's input is only a ticket: workers fetch the job from aivo and deliver results to aivo.
     runpod_api_key: SecretStr | None = None
-    runpod_api_base: str = "https://api.runpod.io"
-    # The gateway in front of an endpoint's worker ({endpoint_id} is filled in).
-    runpod_gateway_url: str = "https://{endpoint_id}.api.runpod.ai"
+    runpod_api_base: str = "https://api.runpod.io"  # REST API v2 (endpoints, GPU catalog)
+    runpod_queue_base: str = "https://api.runpod.ai"  # job queue (/v2/<endpoint>/run, /status, /cancel)
     # Where workers may run: these countries (ISO codes) ...
     runpod_countries: CsvList = Field(
         default_factory=lambda: "NL,BE,DE,FR,CZ,RO,SE,NO,IS,FI,PL,ES,IT,AT,DK,IE,PT".split(",")
     )
     # ... or exactly these data centers (e.g. EU-NL-1,EU-RO-1); overrides the countries
     runpod_data_centers: CsvList = Field(default_factory=list)
-    # Region name shown in aivo for RunPod machines
+    # Region name shown in aivo for RunPod GPUs
     runpod_region: str = "eu"
     # Only these GPU types (RunPod ids or names, e.g. "NVIDIA L40S,RTX 4090"); empty = all
     runpod_gpu_types: CsvList = Field(default_factory=list)
@@ -82,26 +71,16 @@ class EnvSettings(BaseSettings):
     runpod_network_volume_id: str | None = None
     # Container disk for model files when there is no network volume (GB)
     runpod_disk_gb: int = 150
-    # RunPod stops a worker this long after the last request: the safety net if aivo goes silent
-    runpod_idle_timeout_s: int = 90
-    # aivo keeps an idle RunPod worker running (billed) at most this long for follow-up jobs
-    runpod_keep_warm_s: int = 120
-    # Waiting for RunPod to prepare a GPU host (pulling the worker software) is not billed
-    runpod_prepare_timeout_s: int = 1200
-
-    spaces_key: SecretStr | None = None
-    spaces_secret: SecretStr | None = None
-    spaces_region: str | None = None
-    spaces_bucket: str | None = None
-    spaces_endpoint: str | None = None  # override (e.g. MinIO in dev)
+    # Address workers use to reach aivo (defaults to AIVO_PUBLIC_URL). Only /api/v1/worker/ is used,
+    # with a one-time ticket per job.
+    worker_api_url: str | None = None
 
     hf_token: SecretStr | None = None  # only used to resolve gated downloads backend-side
 
-    # GPU machines run the worker image of the same release as this backend, so an upgrade
+    # RunPod workers run the worker image of the same release as this backend, so an upgrade
     # changes both together. Set AIVO_WORKER_IMAGE only to pin another image.
     worker_image: str = ""
     worker_image_repository: str = "ghcr.io/nltimv/aivo-worker"
-    worker_port: int = 443
 
     admin_email: str | None = None
     admin_password: SecretStr | None = None
@@ -129,11 +108,10 @@ class EnvSettings(BaseSettings):
     session_ttl_hours: int = 24 * 14
     cors_origins: CsvList = Field(default_factory=list)
 
-    # Fake provider tuning (dev/CI)
+    # Simulated RunPod (AIVO_PROVIDER=fake): worker start-up and job time, in seconds
     fake_boot_seconds: float = 2.0
     fake_job_seconds: float = 2.0
-    # Simulated problems for the next machines, e.g. "boot_reports_failure,boot_reports_failure"
-    # (see providers/fake/provider.py for the list). Dev only.
+    # Simulated problems for the next jobs, e.g. "worker_crash,no_gpu" (see providers/runpod/fake.py)
     fake_chaos: CsvList = Field(default_factory=list)
 
     log_level: str = "INFO"
@@ -143,7 +121,6 @@ class EnvSettings(BaseSettings):
         "oidc_allowed_groups",
         "oidc_admin_groups",
         "cors_origins",
-        "do_ssh_key_ids",
         "fake_chaos",
         "runpod_countries",
         "runpod_data_centers",
@@ -172,52 +149,26 @@ class EnvSettings(BaseSettings):
         return bool(self.oidc_issuer and self.oidc_client_id)
 
 
-class CachePolicy(BaseModel):
-    snapshot_regions: list[str] = Field(default_factory=lambda: ["tor1", "nyc2"])
-    volume_enabled: bool = True
-    volume_regions: list[str] = Field(default_factory=lambda: ["tor1"])
-    volume_size_gb: int = 120
-    hot_models: list[str] = Field(default_factory=list)
-    mirror_enabled: bool = True
-
-
 class RuntimeSettings(BaseModel):
     """Admin-editable settings with safe defaults."""
 
-    idle_timeout_s: int = 600
-    min_billing_s: int = 300
-    max_lifetime_s: int = 4 * 3600
-    lifetime_grace_s: int = 900
-    max_instances: int = 1
     preference_default: Preference = "balanced"
-    allowed_regions: list[str] = Field(default_factory=list)  # empty = all
-    preferred_regions: list[str] = Field(default_factory=list)
-    denied_sizes: list[str] = Field(default_factory=list)
+    denied_sizes: list[str] = Field(default_factory=list)  # GPU types not to use
     max_price_hourly: float = 10.0
     soft_cap_usd: float = 30.0
     hard_cap_usd: float = 40.0
     overrun_margin_usd: float = 2.0
-    boot_strategy: Literal["auto", "snapshot", "base"] = "auto"
-    cache_policy: CachePolicy = Field(default_factory=CachePolicy)
     enabled_models: list[str] | None = None  # None = manifest defaults
-    watchdog_enabled: bool = False
-    firewall_mode: Literal["auto_egress_ip", "cidrs", "open"] = "auto_egress_ip"
-    allowed_cidrs: list[str] = Field(default_factory=list)
-    speculative_warmup: bool = False
+    # RunPod: workers per GPU type at the same time (the endpoint's max workers)
+    max_workers_per_gpu: int = 2
+    # RunPod: a worker waits this long for a next job before it stops (billed while it waits)
+    keep_warm_s: int = 60
+    # No worker took the job within this time: try the next GPU type
+    gpu_fallback_after_s: int = 300
+    # Give up when no GPU took the job within this time
     capacity_wait_max_s: int = 1800
-    max_create_attempts: int = 8
-    provision_deadline_s: int = 900
-    boot_ip_timeout_s: int = 480
-    # Time for a machine's software to come up. Extended while it reports progress, up to boot_health_max_s.
-    boot_health_timeout_s: int = 600  # from a prepared machine image
-    boot_health_timeout_base_s: int = 1500  # from the plain GPU image (installs and downloads everything)
-    boot_health_max_s: int = 2400
-    boot_progress_grace_s: int = 300  # each sign of start-up progress allows this much more time
-    # Pause new machines after this many start-up failures in a row (0 = never).
-    boot_failures_before_pause: int = 2
-    requeue_backoff_s: int = 30  # pause before a job gets another machine after one failed
-    debug_ssh_cidrs: list[str] = Field(default_factory=list)  # opens SSH (port 22) to these addresses
-    capacity_cooldown_s: int = 600
+    # Longest a single creation may run on a worker
+    job_timeout_s: int = 3600
     per_job_confirm_usd: float = 1.0
     # Adult (18+) engines and creations. Also needs the per-account switch (Settings -> People).
     adult_content_enabled: bool = False

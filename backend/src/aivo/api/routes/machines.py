@@ -1,159 +1,156 @@
+"""GPUs: one RunPod queue endpoint per GPU type, its queue and workers, and the options for a typical request."""
+
 from __future__ import annotations
 
-import json
-import uuid
-from collections.abc import AsyncIterator
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sse_starlette.sse import EventSourceResponse
 
 from aivo.api.deps import current_user, get_app, get_session, require_admin
-from aivo.api.schemas import InstanceOut, KeepWarmIn, MachineChoice, WarmupIn
 from aivo.catalog.presets import FriendlyParams
 from aivo.context import AppContext
-from aivo.controller.budget import admit, reservation_for
-from aivo.controller.common import build_context, get_offers, live_view
-from aivo.controller.lifecycle import transition_instance
-from aivo.controller.pause import get_pause
-from aivo.controller.pause import resume as resume_provisioning
-from aivo.controller.provisioner import stage_label
-from aivo.controller.scheduler import BILLING_STATES, MAX_CANDIDATES, _cand_json
-from aivo.db.models import CostAccrual, Event, Instance, Job, User
-from aivo.events.bus import emit
+from aivo.controller.common import build_context, get_offers
+from aivo.controller.endpoints import EndpointManager
+from aivo.db.models import CostAccrual, GpuEndpoint, Instance, Job, User
 from aivo.placement.request import build_request
 from aivo.placement.scorer import rank
-from aivo.providers.base import instance_name
+from aivo.providers.base import ProviderError
 from aivo.providers.regions import region_meta
-from aivo.safety import adult_ok
-from aivo.services import machine_log
 from aivo.services.jobs import machine_choice
 
 router = APIRouter(prefix="/machines", tags=["machines"])
 
+ACTIVE = ("assigned", "preparing", "running", "fetching")
 
-async def _instance_out(s: AsyncSession, i: Instance, idle_timeout_s: int, with_timeline: bool) -> InstanceOut:
-    now = datetime.now(UTC)
-    cost = (
-        await s.execute(select(func.coalesce(func.sum(CostAccrual.usd), 0)).where(CostAccrual.instance_id == i.id))
-    ).scalar_one()
-    job_id = (
-        await s.execute(
-            select(Job.id)
-            .where(Job.instance_id == i.id, Job.state.in_(("assigned", "preparing", "running", "fetching")))
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    idle_at = None
-    if i.state == "ready" and i.idle_since:
-        idle_at = i.idle_since + timedelta(seconds=idle_timeout_s)
-        if i.keep_warm_until and i.keep_warm_until > idle_at:
-            idle_at = i.keep_warm_until
-    timeline = []
-    if with_timeline:
-        evs = (
-            (await s.execute(select(Event).where(Event.scope == "instance", Event.ref_id == i.id).order_by(Event.id)))
-            .scalars()
-            .all()
-        )
-        timeline = [{"at": e.at, "state": e.payload.get("state"), "detail": e.payload} for e in evs]
-    end = i.destroy_confirmed_at or now
-    return InstanceOut(
-        id=i.id,
-        name=i.name,
-        state=i.state,
-        gpu=i.gpu_model,
-        gpu_class=i.gpu_class,
-        vram_gb=i.vram_gb,
-        region=i.region,
-        region_name=region_meta(i.region).name,
-        price_hourly=float(i.price_hourly),
-        created_at=i.created_at,
-        ready_at=i.ready_at,
-        idle_since=i.idle_since,
-        keep_warm_until=i.keep_warm_until,
-        idle_shutdown_at=idle_at,
-        uptime_s=(end - i.create_accepted_at).total_seconds() if i.create_accepted_at else None,
-        cost_so_far_usd=float(cost),
-        models_loaded=list(i.models_loaded or []),
-        current_job_id=job_id,
-        failure_reason=i.failure_reason,
-        # start-up step; RunPod Serverless reports its preparation while the machine is still "provisioning"
-        boot_stage=i.boot_stage if i.state in ("provisioning", "booting") else None,
-        boot_stage_label=stage_label(i.boot_stage) if i.state in ("provisioning", "booting") and i.boot_stage else None,
-        has_saved_log=bool(i.boot_log),
-        timeline=timeline,
-    )
+
+class KeepWarmIn(BaseModel):
+    minutes: int = Field(30, ge=0, le=12 * 60)
+
+
+async def _health(app: AppContext, runpod_id: str | None) -> dict[str, Any] | None:
+    if not runpod_id:
+        return None
+    try:
+        return await asyncio.wait_for(app.runpod.health(runpod_id), 5)
+    except Exception:
+        return None
 
 
 @router.get("")
-async def list_machines(
-    recent: int = 10,
-    _: User = Depends(current_user),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
+async def list_gpus(
+    user: User = Depends(current_user), app: AppContext = Depends(get_app), s: AsyncSession = Depends(get_session)
 ) -> dict[str, Any]:
     rs = await app.runtime(s)
-    live = (
-        (await s.execute(select(Instance).where(Instance.state != "destroyed").order_by(Instance.created_at.desc())))
-        .scalars()
-        .all()
-    )
-    past = (
+    now = datetime.now(UTC)
+    endpoints = (await s.execute(select(GpuEndpoint).order_by(GpuEndpoint.price_hourly))).scalars().all()
+    jobs_by_ep = dict(
         (
             await s.execute(
-                select(Instance).where(Instance.state == "destroyed").order_by(Instance.created_at.desc()).limit(recent)
+                select(Job.endpoint_id, func.count())
+                .where(Job.state.in_(ACTIVE), Job.endpoint_id.is_not(None))
+                .group_by(Job.endpoint_id)
             )
-        )
-        .scalars()
-        .all()
+        ).all()
     )
+    healths = await asyncio.gather(*(_health(app, e.runpod_id) for e in endpoints))
+    gpus = []
+    for e, h in zip(endpoints, healths, strict=True):
+        hw = (h or {}).get("workers") or {}
+        hj = (h or {}).get("jobs") or {}
+        gpus.append(
+            {
+                "gpu_type": e.gpu_type,
+                "gpu": e.gpu_name,
+                "gpu_class": e.gpu_class,
+                "vram_gb": e.vram_gb,
+                "price_hourly": float(e.price_hourly),
+                "status": e.status,
+                "error": e.error if user.role == "admin" else None,
+                "keep_warm_until": e.keep_warm_until if e.keep_warm_until and e.keep_warm_until > now else None,
+                "last_used_at": e.last_used_at,
+                "workers_running": hw.get("running"),
+                "workers_idle": hw.get("idle"),
+                "jobs_waiting": hj.get("inQueue"),
+                "jobs_active": jobs_by_ep.get(e.id, 0),
+            }
+        )
+    since = now - timedelta(hours=24)
+    rows = (
+        await s.execute(
+            select(
+                Instance,
+                func.coalesce(func.sum(CostAccrual.usd), 0),
+                func.coalesce(func.sum(CostAccrual.billed_seconds), 0),
+            )
+            .outerjoin(CostAccrual, CostAccrual.instance_id == Instance.id)
+            .where((Instance.state != "destroyed") | (Instance.destroy_confirmed_at > since))
+            .group_by(Instance.id)
+            .order_by(Instance.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    current = dict(
+        (
+            await s.execute(select(Job.instance_id, Job.id).where(Job.state.in_(ACTIVE), Job.instance_id.is_not(None)))
+        ).all()
+    )
+    workers = [
+        {
+            "id": i.id,
+            "worker_id": i.provider_instance_id,
+            "gpu": i.gpu_model,
+            "gpu_type": i.size_slug,
+            "region_name": region_meta(i.region).name,
+            "price_hourly": float(i.price_hourly),
+            "state": {"busy": "working", "ready": "waiting"}.get(i.state, "stopped"),
+            "started_at": i.create_accepted_at,
+            "idle_since": i.idle_since,
+            "stops_at": i.idle_since + timedelta(seconds=rs.keep_warm_s)
+            if i.state == "ready" and i.idle_since
+            else None,
+            "ended_at": i.destroy_confirmed_at,
+            "cost_usd": round(float(usd), 4),
+            "hours": round(float(secs) / 3600, 3),
+            "current_job_id": current.get(i.id),
+        }
+        for i, usd, secs in rows
+        if i.provider == "runpod"
+    ]
     return {
-        "live": [await _instance_out(s, i, rs.idle_timeout_s, True) for i in live],
-        "recent": [await _instance_out(s, i, rs.idle_timeout_s, False) for i in past],
-        # new machines are paused after repeated start-up failures (None when not paused)
-        "provisioning_paused": await get_pause(s),
+        "gpus": gpus,
+        "workers": workers,
+        "max_workers_per_gpu": rs.max_workers_per_gpu,
+        "keep_warm_s": rs.keep_warm_s,
+        "offers_error": app.offers.error,
     }
 
 
-@router.get("/{instance_id}/logs")
-async def machine_logs(
-    instance_id: uuid.UUID,
-    request: Request,
-    cursor: str | None = None,
+@router.post("/gpus/{gpu_type:path}/keep-warm")
+async def keep_warm(
+    gpu_type: str,
+    body: KeepWarmIn,
     _: User = Depends(require_admin),
     app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> EventSourceResponse:
-    """Live log of one machine (admins): aivo's decisions, the start-up script, the agent and the AI engine."""
-    exists = (await s.execute(select(Instance.id).where(Instance.id == instance_id))).first()
-    if exists is None:
-        raise HTTPException(404, "No such machine")
-    await s.close()  # don't hold a database connection for the life of the stream
-    cur = machine_log.Cursor.parse(request.headers.get("last-event-id") or cursor)
-
-    async def gen() -> AsyncIterator[dict[str, str]]:
-        async for m in machine_log.stream(app, instance_id, cur, request.is_disconnected):
-            yield {"event": m["event"], "id": m["id"], "data": json.dumps(m["data"])}
-
-    return EventSourceResponse(gen(), ping=15, headers={"X-Accel-Buffering": "no"})
-
-
-@router.post("/provisioning/resume")
-async def resume_start_ups(
-    admin: User = Depends(require_admin),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> dict[str, bool]:
-    """Allow new machines again after start-ups were paused."""
-    was = await resume_provisioning(s, by=str(admin.id))
-    await s.commit()
-    if app.controller:
-        app.controller.wake()
-    return {"resumed": was}
+) -> dict[str, Any]:
+    """Keep one worker of this GPU type running (billed all the time) for a while: no start-up wait."""
+    offers = await get_offers(app)
+    if not any(o.size_slug == gpu_type for o in offers):
+        raise HTTPException(404, "unknown GPU type")
+    async with app.sessionmaker() as s, s.begin():
+        exists = (await s.execute(select(GpuEndpoint.id).where(GpuEndpoint.gpu_type == gpu_type))).scalar_one_or_none()
+    try:
+        if exists is None:
+            offer = next(o for o in offers if o.size_slug == gpu_type)
+            await EndpointManager(app).ensure(offer)
+        row = await EndpointManager(app).set_keep_warm(gpu_type, body.minutes)
+    except ProviderError as e:
+        raise HTTPException(502, f"RunPod: {e}") from e
+    return {"gpu_type": gpu_type, "keep_warm_until": row.keep_warm_until}
 
 
 @router.get("/offers")
@@ -166,7 +163,7 @@ async def offers(
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    """All machine options ranked for a typical request, with plain-language reasons."""
+    """All GPU types ranked for a typical request, with plain-language reasons."""
     from aivo.catalog.presets import plan
 
     rs = await app.runtime(s)
@@ -178,10 +175,9 @@ async def offers(
         error = app.offers.error
     except Exception as e:
         all_offers, error = [], str(e)
-    _, live = await live_view(s, app)
-    ctx = await build_context(app, s, rs, allow_new=True)
-    cands = rank(req, all_offers, live, ctx)
-    ranked_keys = {c.offer.key for c in cands if c.instance_id is None}
+    ctx = await build_context(app, s, rs)
+    cands = rank(req, all_offers, [], ctx)
+    ranked = {c.offer.key for c in cands}
     unsuitable = [
         {
             "key": o.key,
@@ -192,12 +188,12 @@ async def offers(
             "price_hourly": o.price_hourly,
             "why": "Not enough memory for this engine"
             if o.vram_gb < min(v.min_vram_gb for v in req.variants)
-            else "Not compatible"
-            if o.vendor not in {x for v in req.variants for x in v.vendors}
-            else "Excluded by settings or recently sold out",
+            else "None free in the allowed data centers"
+            if not o.available
+            else "Excluded by settings",
         }
         for o in all_offers
-        if o.key not in ranked_keys and o.gpu_count == 1
+        if o.key not in ranked
     ]
     return {
         "model_id": pl.model.id,
@@ -206,154 +202,3 @@ async def offers(
         "unsuitable": unsuitable,
         "offers_error": error,
     }
-
-
-@router.post("/prewarm", status_code=202)
-async def prewarm(
-    body: WarmupIn,
-    user: User = Depends(current_user),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> dict[str, object]:
-    """Speculative start when someone opens the Create page (only if enabled in Settings and nothing runs)."""
-    rs = await app.runtime(s)
-    if not rs.speculative_warmup:
-        return {"started": False, "reason": "disabled"}
-    live = (
-        await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
-    ).scalar_one()
-    if live:
-        return {"started": False, "reason": "already_running"}
-    if await get_pause(s):
-        return {"started": False, "reason": "paused"}
-    try:
-        choice = await warmup(WarmupIn(kind=body.kind, quality=body.quality), user=user, app=app, s=s)
-    except HTTPException as e:
-        return {"started": False, "reason": str(e.detail)}
-    return {"started": True, "machine": choice.model_dump()}
-
-
-@router.post("/warmup", status_code=202)
-async def warmup(
-    body: WarmupIn,
-    user: User = Depends(require_admin),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> MachineChoice:
-    """Start a machine ahead of time so the next creation doesn't wait for start-up."""
-    from aivo.catalog.presets import plan
-
-    rs = await app.runtime(s)
-    fp = FriendlyParams(kind=body.kind, prompt="warmup", model_id=body.model_id, quality=body.quality)
-    pl = plan(app.catalog, fp, app.enabled_models(rs))
-    if pl.model.manifest.adult and not adult_ok(user, rs):
-        raise HTTPException(403, "Adult content isn't switched on for your account.")
-    req = build_request(pl, body.preference or rs.preference_default, hf_token=app.env.hf_token is not None)
-    live_count = (
-        await s.execute(select(func.count()).select_from(Instance).where(Instance.state.in_(BILLING_STATES)))
-    ).scalar_one()
-    if live_count >= rs.max_instances:
-        raise HTTPException(409, "The maximum number of machines is already running")
-    if await get_pause(s):
-        raise HTTPException(409, "New machines are paused after repeated start-up problems. Resume them first.")
-    ctx = await build_context(app, s, rs, allow_new=True)
-    cands = [c for c in rank(req, await get_offers(app), [], ctx) if c.instance_id is None]
-    if body.offer_key:
-        cands = [c for c in cands if c.key == body.offer_key] + [c for c in cands if c.key != body.offer_key]
-    if not cands:
-        raise HTTPException(409, "No suitable machine is available right now")
-    top = cands[0]
-    now = datetime.now(UTC)
-    reservation = reservation_for(top.offer.price_hourly, rs.idle_timeout_s, rs, top.offer.provider)
-    adm = await admit(s, rs, now, reservation)
-    if not adm.ok:
-        raise HTTPException(402, "This month's spending limit has been reached")
-    iid = uuid.uuid4()
-    o = top.offer
-    cand_json = [_cand_json(c) for c in cands[:MAX_CANDIDATES]]
-    cand_json[0]["prefetch_model"] = pl.model.id
-    cand_json[0]["prefetch_mode"] = pl.mode
-    s.add(
-        Instance(
-            id=iid,
-            name=instance_name(app.deployment_id, iid),
-            provider=app.provider.name,
-            offer_key=o.key,
-            size_slug=o.size_slug,
-            region=o.region,
-            gpu_class=o.gpu_class or "unknown",
-            gpu_model=o.gpu_model,
-            vendor=o.vendor,
-            vram_gb=o.vram_gb,
-            ram_gb=o.ram_gb,
-            price_hourly=o.price_hourly,
-            state="pending",
-            manual=bool(body.offer_key),
-            reserved_usd=reservation,
-            candidates=cand_json,
-        )
-    )
-    await s.flush()
-    await emit(
-        s,
-        scope="instance",
-        type="instance.state",
-        ref_id=iid,
-        payload={"state": "pending", "warmup": True, "by": str(user.id)},
-    )
-    await s.commit()
-    if app.controller:
-        app.controller.spawn_provisioner(iid)
-    return machine_choice(top)
-
-
-@router.post("/{instance_id}/keep-warm")
-async def keep_warm(
-    instance_id: uuid.UUID, body: KeepWarmIn, _: User = Depends(require_admin), s: AsyncSession = Depends(get_session)
-) -> dict[str, object]:
-    until = datetime.now(UTC) + timedelta(minutes=body.minutes) if body.minutes else None
-    r = await s.execute(
-        update(Instance)
-        .where(
-            Instance.id == instance_id,
-            Instance.state.in_(("pending", "creating", "provisioning", "booting", "ready", "busy")),
-        )
-        .values(keep_warm_until=until)
-        .returning(Instance.id)
-    )
-    if r.first() is None:
-        raise HTTPException(404, "No such running machine")
-    await emit(
-        s,
-        scope="instance",
-        type="instance.keep_warm",
-        ref_id=instance_id,
-        payload={"until": until.isoformat() if until else None},
-    )
-    await s.commit()
-    return {"keep_warm_until": until}
-
-
-@router.post("/{instance_id}/shutdown")
-async def shutdown(
-    instance_id: uuid.UUID,
-    _: User = Depends(require_admin),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> dict[str, bool]:
-    inst = (await s.execute(select(Instance).where(Instance.id == instance_id).with_for_update())).scalar_one_or_none()
-    if inst is None or inst.state == "destroyed":
-        raise HTTPException(404, "No such running machine")
-    now = datetime.now(UTC)
-    if inst.state == "busy":
-        inst.drain_reason = "manual"  # finish the current creation first
-    elif inst.state == "ready":
-        await transition_instance(s, inst.id, "ready", "draining", drain_reason="manual", draining_at=now)
-    elif inst.state in ("pending", "creating") and not inst.provider_instance_id:
-        await transition_instance(s, inst.id, inst.state, "destroyed", outcome="ok", failure_reason="cancelled")
-    elif inst.state != "destroying":
-        await transition_instance(s, inst.id, inst.state, "destroying", destroy_requested_at=now, drain_reason="manual")
-    await s.commit()
-    if app.controller:
-        app.controller.wake()
-    return {"ok": True}

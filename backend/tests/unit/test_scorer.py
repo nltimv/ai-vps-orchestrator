@@ -1,4 +1,3 @@
-import uuid
 from dataclasses import replace
 
 from hypothesis import given, settings
@@ -6,17 +5,22 @@ from hypothesis import strategies as st
 
 from aivo.catalog.loader import Catalog
 from aivo.catalog.presets import FriendlyParams, plan
-from aivo.config import REPO_ROOT
+from aivo.config import REPO_ROOT, EnvSettings
 from aivo.placement.request import build_request
-from aivo.placement.scorer import Context, LiveInstance, rank
-from aivo.providers.fake.provider import FakeProvider
+from aivo.placement.scorer import Context, rank
+from aivo.providers.runpod.catalog import GpuCatalog
+from aivo.providers.runpod.fake import FakeRunPod
 
 CAT = Catalog.load(REPO_ROOT / "catalog")
 ENABLED = set(CAT.models)
 
 
+SMALL = "NVIDIA RTX 4000 Ada Generation"
+L40S = "NVIDIA L40S"
+
+
 async def offers():
-    return await FakeProvider().list_offers()
+    return await GpuCatalog(FakeRunPod(), EnvSettings(_env_file=None)).offers()
 
 
 def ctx(**kw):
@@ -34,7 +38,7 @@ def req(kind="image", quality="standard", preference="balanced", model=None, dur
 async def test_fast_image_draft_prefers_small_gpu():
     r = req(quality="draft", model="z-image-turbo")
     c = rank(r, await offers(), [], ctx())
-    assert c[0].offer.size_slug == "gpu-4000adax1-20gb"
+    assert c[0].offer.size_slug == SMALL
     assert "Cheapest option that fits" in c[0].reasons
     assert c[0].suitability == 100
     # 8x sizes are never candidates
@@ -49,7 +53,7 @@ async def test_amd_excluded_for_nvidia_only_models():
 async def test_vram_floor_respected():
     c = rank(req(kind="video", model="wan22-a14b"), await offers(), [], ctx())
     assert c and all(x.offer.vram_gb >= x.variant.min_vram_gb for x in c)
-    assert all(x.offer.size_slug != "gpu-4000adax1-20gb" for x in c)
+    assert all(x.offer.size_slug != SMALL for x in c)
 
 
 async def test_wan_balanced_picks_48gb_fast_best_picks_h100():
@@ -59,28 +63,25 @@ async def test_wan_balanced_picks_48gb_fast_best_picks_h100():
     fast = rank(req(kind="video", model="wan22-a14b", quality="best", preference="fast"), o, [], ctx())
     assert fast[0].offer.gpu_class in ("h100", "h200")
     bal_best = rank(req(kind="video", model="wan22-a14b", quality="best", preference="balanced"), o, [], ctx())
-    assert bal_best[0].offer.vram_gb == 48
+    assert bal_best[0].offer.vram_gb >= 48  # on RunPod's prices an H100 can be worth it for long videos
 
 
-async def test_ready_instance_beats_new_machine():
+async def test_a_gpu_type_with_a_worker_up_starts_without_waiting():
     o = await offers()
-    l40s = next(x for x in o if x.size_slug == "gpu-l40sx1-48gb")
     r = req(model="z-image-turbo")
-    files = next(iter(r.variants)).file_dests
-    live = LiveInstance(uuid.uuid4(), l40s, "ready", files_present=files, models_loaded=("z-image-turbo",))
-    c = rank(r, o, [live], ctx())
-    assert c[0].instance_id == live.instance_id
-    assert "Already running — no start-up wait" in c[0].reasons
-    assert "AI model already loaded" in c[0].reasons
+    cold = {x.offer.size_slug: x for x in rank(r, o, [], ctx())}
+    warm = {x.offer.size_slug: x for x in rank(r, o, [], ctx(warm_sizes=frozenset({L40S})))}
+    assert warm[L40S].wait_s < cold[L40S].wait_s
+    assert "A GPU of this type is already on — no start-up wait" in warm[L40S].reasons
 
 
 async def test_cooldown_and_failures_demote():
     o = await offers()
     r = req(model="z-image-turbo", quality="draft")
-    c = rank(r, o, [], ctx(cooldown=frozenset({("gpu-4000adax1-20gb", "tor1")})))
-    assert all(x.offer.size_slug != "gpu-4000adax1-20gb" for x in c)
-    c2 = rank(r, o, [], ctx(p_fail={("gpu-4000adax1-20gb", "tor1"): 0.95}))
-    rtx = next(x for x in c2 if x.offer.size_slug == "gpu-4000adax1-20gb")
+    c = rank(r, o, [], ctx(cooldown=frozenset({(SMALL, "eu")})))
+    assert all(x.offer.size_slug != SMALL for x in c)
+    c2 = rank(r, o, [], ctx(p_fail={(SMALL, "eu"): 0.95}))
+    rtx = next(x for x in c2 if x.offer.size_slug == SMALL)
     assert "Often sold out lately" in rtx.reasons
 
 
@@ -90,8 +91,10 @@ async def test_allow_new_false_only_live():
 
 
 async def test_regions_filter():
-    c = rank(req(model="z-image-turbo"), await offers(), [], ctx(allowed_regions=frozenset({"nyc2"})))
-    assert c and all(x.offer.region == "nyc2" for x in c)
+    c = rank(req(model="z-image-turbo"), await offers(), [], ctx(allowed_regions=frozenset({"us"})))
+    assert c == []  # RunPod GPUs here are in "eu"
+    c = rank(req(model="z-image-turbo"), await offers(), [], ctx(allowed_regions=frozenset({"eu"})))
+    assert c and all(x.offer.region == "eu" for x in c)
 
 
 async def test_oom_bump_raises_floor():

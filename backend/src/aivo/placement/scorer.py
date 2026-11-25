@@ -82,8 +82,9 @@ class Context:
     max_gpu_count: int = 1
     idle_timeout_s: float = 600
     min_billing_s: float = 300
-    # RunPod Serverless: creating the endpoint and preparing the host are not billed
+    # RunPod Serverless: waiting in the queue is not billed (the worker's start-up is: part of t_create)
     create_unbilled: bool = False
+    warm_sizes: frozenset[str] = frozenset()  # GPU types with a worker up (no cold start)
     tail_share: float = 0.5
     allow_new: bool = True  # False when max_instances reached / budget locked
     estimator: Estimator = field(default_factory=Estimator)
@@ -261,8 +262,10 @@ def _eval_live(req: Request, ctx: Context, inst: LiveInstance, v: VariantNeed, l
 
 def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: float) -> Candidate:
     image_kind = "snapshot" if offer.region in ctx.snapshot_regions else "base"
-    t_create = ctx.estimator.t_create(offer.size_slug, offer.region, image_kind)
-    t_boot = ctx.estimator.t_boot(offer.size_slug, offer.region, image_kind)
+    warm = offer.size_slug in ctx.warm_sizes
+    # RunPod: t_create = from submitting until a worker takes the job (queue + the worker's cold start)
+    t_create = 5.0 if warm else ctx.estimator.t_create(offer.size_slug, offer.region, image_kind)
+    t_boot = 0.0 if warm else ctx.estimator.t_boot(offer.size_slug, offer.region, image_kind)
     t_load, source = _load_seconds(req, ctx, v, offer.region, frozenset(), False, offer.gpu_class)
     t_run = _run_seconds(req, ctx, offer.gpu_class)
     if offer.vram_gb < v.recommended_vram_gb:
@@ -271,7 +274,8 @@ def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: 
     fixed = t_create + t_boot + t_load
     wait = fixed + t_run + t_xfer
     k = max(1, req.k)
-    billed_fixed = fixed - t_create if ctx.create_unbilled else fixed
+    # waiting in the queue is free, the worker's start is billed: count about half of t_create
+    billed_fixed = fixed - t_create / 2 if ctx.create_unbilled else fixed
     billable = max(billed_fixed + k * t_run, ctx.min_billing_s) + ctx.tail_share * ctx.idle_timeout_s
     cost = offer.price_hourly / 3600 * billable / k
     p_fail = ctx.p_fail.get((offer.size_slug, offer.region), P_FAIL_PRIOR)
@@ -285,9 +289,7 @@ def _eval_new(req: Request, ctx: Context, offer: GpuOffer, v: VariantNeed, lam: 
         "quality": P_QUALITY.get(v.precision, 0.05) * QUALITY_WEIGHT.get(req.quality, 1.0),
         "pref": -0.02 if offer.region in ctx.preferred_regions else 0.0,
     }
-    flags = {"new"}
-    if image_kind == "snapshot":
-        flags.add("snapshot")
+    flags = {"warm" if warm else "new"}
     if source == "volume":
         flags.add("volume")
     return _cand(
@@ -347,8 +349,8 @@ def _explain(cands: list[Candidate], ctx: Context) -> None:
     for c in cands:
         c.suitability = max(1, round(100 * best / c.score)) if c.score > 0 else 100
         r: list[str] = []
-        if "running" in c.flags:
-            r.append("Already running — no start-up wait")
+        if "running" in c.flags or "warm" in c.flags:
+            r.append("A GPU of this type is already on — no start-up wait")
         elif "starting" in c.flags:
             r.append("Already starting up")
         if c.cost_usd <= cheapest * 1.001:
@@ -359,8 +361,6 @@ def _explain(cands: list[Candidate], ctx: Context) -> None:
             r.append("AI model already loaded")
         elif "volume" in c.flags:
             r.append("AI model cached in this region")
-        if "snapshot" in c.flags and "new" in c.flags:
-            r.append("Machine image prepared here — quicker start")
         if c.p_fail >= 0.4:
             r.append("Often sold out lately")
         if c.offer.vram_gb >= 2 * c.variant.recommended_vram_gb:

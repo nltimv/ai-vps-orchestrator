@@ -155,43 +155,56 @@ export interface GalleryPage {
   next_cursor: string | null;
 }
 
-export interface Instance {
-  id: string;
-  name: string;
-  state: string;
+/** One GPU type with its RunPod queue endpoint. */
+export interface GpuEndpoint {
+  gpu_type: string;
   gpu: string;
-  gpu_class: string;
+  gpu_class: string | null;
   vram_gb: number;
-  region: string;
+  price_hourly: number;
+  status: "creating" | "ready" | "error";
+  error: string | null;
+  keep_warm_until: string | null;
+  last_used_at: string | null;
+  workers_running: number | null;
+  workers_idle: number | null;
+  jobs_waiting: number | null;
+  jobs_active: number;
+}
+
+/** A RunPod worker, billed from its start until it stops. */
+export interface Worker {
+  id: string;
+  worker_id: string;
+  gpu: string;
+  gpu_type: string;
   region_name: string;
   price_hourly: number;
-  created_at: string;
-  ready_at: string | null;
+  state: "working" | "waiting" | "stopped";
+  started_at: string | null;
   idle_since: string | null;
-  keep_warm_until: string | null;
-  idle_shutdown_at: string | null;
-  uptime_s: number | null;
-  cost_so_far_usd: number;
-  models_loaded: string[];
+  stops_at: string | null;
+  ended_at: string | null;
+  cost_usd: number;
+  hours: number;
   current_job_id: string | null;
-  failure_reason: string | null;
-  boot_stage: string | null;
-  boot_stage_label: string | null;
-  has_saved_log: boolean;
-  timeline: { at: string; state: string | null; detail: Record<string, unknown> }[];
 }
 
-export interface ProvisioningPause {
-  paused: true;
-  reason: string;
-  at: string;
-  failures: number;
+export interface GpusResponse {
+  gpus: GpuEndpoint[];
+  workers: Worker[];
+  max_workers_per_gpu: number;
+  keep_warm_s: number;
+  offers_error: string | null;
 }
 
-export interface MachinesResponse {
-  live: Instance[];
-  recent: Instance[];
-  provisioning_paused: ProvisioningPause | null;
+export interface JobLog {
+  state: string;
+  stage: string;
+  gpu_type: string | null;
+  total: number;
+  lines: LogLine[];
+  error: string | null;
 }
 
 export interface LogLine {
@@ -231,40 +244,19 @@ export interface Spending {
   by_machine: { id: string; gpu: string; region: string; state: string; usd: number; hours: number; created_at: string }[];
 }
 
-export interface CachePolicy {
-  snapshot_regions: string[];
-  volume_enabled: boolean;
-  volume_regions: string[];
-  volume_size_gb: number;
-  hot_models: string[];
-  mirror_enabled: boolean;
-}
-
 export interface RuntimeSettings {
-  idle_timeout_s: number;
-  min_billing_s: number;
-  max_lifetime_s: number;
-  lifetime_grace_s: number;
-  max_instances: number;
   preference_default: Preference;
-  allowed_regions: string[];
-  preferred_regions: string[];
   denied_sizes: string[];
   max_price_hourly: number;
   soft_cap_usd: number;
   hard_cap_usd: number;
   overrun_margin_usd: number;
-  boot_strategy: "auto" | "snapshot" | "base";
-  cache_policy: CachePolicy;
   enabled_models: string[] | null;
-  watchdog_enabled: boolean;
-  firewall_mode: "auto_egress_ip" | "cidrs" | "open";
-  allowed_cidrs: string[];
-  speculative_warmup: boolean;
+  max_workers_per_gpu: number;
+  keep_warm_s: number;
+  gpu_fallback_after_s: number;
   capacity_wait_max_s: number;
-  boot_failures_before_pause: number;
-  boot_health_max_s: number;
-  debug_ssh_cidrs: string[];
+  job_timeout_s: number;
   adult_content_enabled: boolean;
   [k: string]: unknown;
 }
@@ -272,29 +264,14 @@ export interface RuntimeSettings {
 export interface SettingsResponse {
   settings: RuntimeSettings;
   defaults: RuntimeSettings;
-  regions: { id: string; name: string }[];
   provider: string;
-  runpod: { network_volume: boolean; keep_warm_s: number; idle_timeout_s: number } | null;
-  spaces_configured: boolean;
-  watchdog_token_configured: boolean;
-}
-
-export interface CacheStatus {
-  resources: { id: string; kind: string; region: string | null; status: string; size_gb: number | null; monthly_cost_usd: number; contents: number; in_use: boolean; created_at: string }[];
-  mirror: { configured: boolean; stored_gb: number; monthly_cost_usd: number; models: Record<string, { status: string; gb: number }> };
-  runs: {
-    id: string;
-    kind: string;
-    state: string;
-    step: string | null;
-    stage?: string | null;
-    error?: string | null;
-    log_tail?: string[] | null;
-    started_at: string;
-    finished_at: string | null;
-  }[];
-  monthly_total_usd: number;
-  bake_supported: boolean;
+  runpod: {
+    network_volume: boolean;
+    countries: string[];
+    data_centers: string[];
+    gpu_types: string[];
+    worker_api_url: string | null;
+  };
 }
 
 export interface Health {

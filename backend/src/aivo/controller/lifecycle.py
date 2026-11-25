@@ -45,14 +45,17 @@ ACTIVE_JOB_STATES = ("assigned", "preparing", "running", "fetching")
 WAITING_JOB_STATES = ("queued", "waiting_capacity", "provisioning")
 TERMINAL_JOB_STATES = ("succeeded", "failed", "cancelled")
 
+# RunPod queue: assigned = submitted to a GPU type's queue, waiting for a worker; preparing = a worker has it
+# and loads the model; running = generating; fetching = the worker is uploading the results to aivo.
+# A worker that dies mid-job is replaced by RunPod, which retries the job: back to preparing.
 JOB_TRANSITIONS: dict[str, set[str]] = {
     "queued": {"provisioning", "assigned", "waiting_capacity", "failed", "cancelled", "queued"},
     "waiting_capacity": {"queued", "provisioning", "assigned", "failed", "cancelled"},
     "provisioning": {"assigned", "queued", "waiting_capacity", "failed", "cancelled"},
-    "assigned": {"preparing", "queued", "failed", "cancelled"},
-    "preparing": {"running", "queued", "failed", "cancelled"},
-    "running": {"fetching", "queued", "failed", "cancelled"},
-    "fetching": {"succeeded", "queued", "failed"},
+    "assigned": {"assigned", "preparing", "running", "fetching", "queued", "waiting_capacity", "failed", "cancelled"},
+    "preparing": {"preparing", "running", "fetching", "queued", "failed", "cancelled"},
+    "running": {"preparing", "fetching", "queued", "failed", "cancelled"},
+    "fetching": {"preparing", "succeeded", "queued", "failed", "cancelled"},
     "succeeded": set(),
     "failed": {"queued"},  # manual retry
     "cancelled": set(),

@@ -1,4 +1,4 @@
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "2.0"
 
 
 def protocol_compatible(other: str) -> bool:

@@ -1,22 +1,22 @@
 # Models and hardware
 
-This page explains which models/pipelines aivo offers, why, and on which DigitalOcean GPUs they run.
+This page explains which models/pipelines aivo offers, why, and on which RunPod Serverless GPUs they run.
 
-## DigitalOcean GPU tiers (Nov 2026)
+## RunPod Serverless GPU tiers (Nov 2026)
 
-| Size | GPU | VRAM | ~Price/h | Where | Notes |
-|---|---|---|---|---|---|
-| `gpu-4000adax1-20gb` | RTX 4000 Ada | 20 GB | $0.76 | TOR1 | cheapest; fast images, music, budget video |
-| `gpu-6000adax1-48gb` | RTX 6000 Ada | 48 GB | $1.57 | TOR1 | **best value**: runs every engine in its compact (fp8) form |
-| `gpu-l40sx1-48gb` | L40S | 48 GB | $1.57 | TOR1 | same tier as RTX 6000 Ada |
-| `gpu-h100x1-80gb` | H100 | 80 GB | $4.41 | NYC2, AMS3, TOR1 | ~2–3× faster; full-precision variants; 5 TiB scratch disk |
-| `gpu-h200x1-141gb` | H200 | 141 GB | $4.47 | NYC2, ATL1 | like H100, more memory |
-| `gpu-mi300x1-192gb` | AMD MI300X | 192 GB | $2.59 | ATL1 | needs a ROCm worker image (not built yet) |
-| 8× sizes | | | $20–35+ | | excluded: far more than one generation needs |
+| GPU types (pool) | VRAM | ~Price/h while working | Notes |
+|---|---|---|---|
+| RTX A4000 / A4500 / RTX 4000 Ada | 16–20 GB | $0.58 | cheapest; fast images, music, budget video |
+| L4 / RTX A5000 / RTX 3090 | 24 GB | $0.68–0.75 | the same jobs, a bit more memory |
+| RTX 4090 | 24 GB | $1.12 | fast for images |
+| RTX A6000 / A40 | 48 GB | $1.22 | older: no fast FP8, slower for FP8 video models |
+| L40 / L40S / RTX 6000 Ada | 48 GB | $1.91 | **best value for video**: every engine in its compact (fp8) form |
+| A100 | 80 GB | $2.74 | |
+| H100 | 80 GB | $4.18 | ~2–3× faster; full-precision variants |
+| RTX PRO 6000 | 96 GB | ~$4.00 | |
 
-Prices and regions are read live from the API (`/v2/sizes`), never hard-coded. Availability
-changes a lot, which is why the scheduler ranks and falls back instead of pinning one machine
-type or datacenter.
+Prices and stock are read live from RunPod's GPU catalog, never hard-coded. Stock changes a lot,
+which is why the scheduler ranks GPU types and moves a job to the next one when no GPU becomes free.
 
 ## The catalog
 
@@ -35,14 +35,14 @@ type or datacenter.
 
 **Rule of thumb:**
 
-| Kind | Default machine | Faster option |
+| Kind | Default GPU | Faster option |
 |---|---|---|
-| Images and music | RTX 4000 Ada (20 GB) | 48 GB tier |
+| Images and music | 16–24 GB | 48 GB tier |
 | Video | 48 GB tier | H100 at *Best* quality or with *Fastest* priority |
 
-The suitability scorer decides this per request. It compares the cost of each machine with the
-value of the waiting time, so cold-start time counts too. A machine that is already running
-with the right model loaded nearly always wins.
+The suitability scorer decides this per request. It compares the cost of each GPU type with the
+value of the waiting time, so cold-start time counts too. A GPU type with a worker already on
+(waiting for a next creation) starts without a cold start and usually wins.
 
 ### Left out (and why)
 - **Wan 2.5 / 2.6 / 2.7 / 3.0**: hosted-only; no downloadable weights.
@@ -86,7 +86,7 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
   workflow. "Quick with sound" uses LTX-2 19B (public) meanwhile.
 - **Verify the newest workflows.** The workflow graphs follow ComfyUI's native nodes for each
   model family. Confirm the node names for **ACE-Step 1.5** against the pinned ComfyUI version
-  before first use. Then run `scripts/do_smoke.py --model <id>` once per engine.
+  before first use. Then try each engine once on RunPod with a low spending limit.
 - **Check licenses yourself.** Re-check each model card before any commercial use.
   FLUX.2 [dev] is personal/non-commercial only. LTX-2.x needs a paid license above $10M yearly
   revenue.
@@ -106,6 +106,6 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
 3. Optionally add it to `catalog/routing.yaml` so *Auto* can pick it.
 4. Run `uv run aivo catalog-check` and `uv run pytest backend/tests/unit/test_catalog.py`.
    Every combination must render.
-5. Run a cost-capped smoke test on a real GPU: `scripts/do_smoke.py --model <id>`.
+5. Try it once on RunPod with a low spending limit (Settings → Spending limits).
 
-No worker rebuild is needed. The backend renders workflows and the worker just runs them.
+No worker rebuild is needed. The backend renders workflows; the worker fetches and runs them.

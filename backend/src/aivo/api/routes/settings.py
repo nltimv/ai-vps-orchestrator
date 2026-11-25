@@ -23,17 +23,14 @@ async def get_settings(
     return {
         "settings": rs.model_dump(),
         "defaults": RuntimeSettings().model_dump(),
-        "regions": [{"id": r.slug, "name": r.name} for r in app.provider.regions().values()],
-        "provider": app.provider.name,
+        "provider": app.runpod.name,
         "runpod": {
             "network_volume": bool(app.env.runpod_network_volume_id),
-            "keep_warm_s": app.env.runpod_keep_warm_s,
-            "idle_timeout_s": app.env.runpod_idle_timeout_s,
-        }
-        if app.provider.name == "runpod"
-        else None,
-        "spaces_configured": bool(app.env.spaces_bucket),
-        "watchdog_token_configured": bool(app.env.do_watchdog_token),
+            "countries": app.env.runpod_countries,
+            "data_centers": app.env.runpod_data_centers,
+            "gpu_types": app.env.runpod_gpu_types,
+            "worker_api_url": app.env.worker_api_url or app.env.public_url,
+        },
     }
 
 
@@ -54,8 +51,10 @@ async def put_settings(
         raise HTTPException(422, e.errors(include_url=False, include_context=False)) from e
     if merged.hard_cap_usd < merged.soft_cap_usd:
         raise HTTPException(422, "The spending limit must be at least the warning level")
-    if merged.idle_timeout_s < 60:
-        raise HTTPException(422, "Idle shutdown must be at least 1 minute")
+    if not 5 <= merged.keep_warm_s <= 3600:
+        raise HTTPException(422, "Workers wait between 5 seconds and 1 hour for a next job")
+    if not 1 <= merged.max_workers_per_gpu <= 20:
+        raise HTTPException(422, "Workers per GPU type: between 1 and 20")
     data = merged.model_dump(mode="json")
     for k in body:
         await s.execute(
