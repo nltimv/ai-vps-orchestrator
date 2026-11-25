@@ -142,3 +142,28 @@ def test_trigger_words_stay_outside_the_rewrite(app, cat):
     spec = work_spec(app, job)
     assert f"{adult.prompt_prefix}, {PROMPT_MARKER}" in str(spec.workflow)
     assert adult.prompt_prefix not in spec.rewrite.fallback
+
+
+def test_text_the_user_never_wrote_is_dropped(cat):
+    """Seen on RunPod: Qwen3-4B added a tagline to a poster and a chalkboard text to a cafe."""
+    rw = cat.rewriter
+    poster = (
+        "A vibrant digital illustration of a poster for a summer music festival called 'Sunwave 2026', with a "
+        "large stylized sunburst and waves. The text 'Sunwave 2026' is displayed in a bold, modern font, with the "
+        "tagline 'Feel the Beat of Summer' below it. The overall composition is energetic and inviting."
+    )
+    out, _ = accept_rewrite(
+        rw, poster, adult=False, original="a poster for a summer music festival called 'Sunwave 2026'"
+    )
+    assert "Feel the Beat" not in out and "'Sunwave 2026'" in out and out.endswith("energetic and inviting.")
+    cafe = (
+        "A cozy coffee shop on a rainy evening, warm light on wooden tables. A chalkboard near the door reads "
+        '"It\'s raining outside" in faded script. Rain streams down the large window.'
+    )
+    out, _ = accept_rewrite(rw, cafe, adult=False, original="a cozy coffee shop on a rainy evening")
+    assert "chalkboard" not in out and "Rain streams" in out
+    # apostrophes aren't quotes; quoted words the user wrote stay
+    cat_text = "The cat's fur is golden-brown, it's sitting on a sunny windowsill with plants around it."
+    assert accept_rewrite(rw, cat_text, adult=False, original="a cat on a windowsill")[0] == cat_text
+    sign = 'A shop front with a neon sign that says "OPEN LATE" glowing in the rain at night.'
+    assert accept_rewrite(rw, sign, adult=False, original='a shop with a sign saying "open late"')[0] == sign

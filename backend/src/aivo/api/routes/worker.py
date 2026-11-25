@@ -170,7 +170,11 @@ async def prompt(
     fp = friendly_from_job(app, job)
     mf = app.catalog.get(job.model_id).manifest
     fallback = describe(app.catalog, mf, fp)
-    text, why = (None, "rewriting is off") if rw is None else accept_rewrite(rw, body.text, adult=bool(job.adult))
+    text, why = (
+        (None, "rewriting is off")
+        if rw is None
+        else accept_rewrite(rw, body.text, adult=bool(job.adult), original=fp.prompt)
+    )
     if body.error and text is None:
         why = f"the language model failed: {body.error[:200]}"
     took = f" in {body.seconds:.1f} s" if body.seconds is not None else ""

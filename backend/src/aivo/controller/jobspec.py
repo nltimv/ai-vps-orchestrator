@@ -181,8 +181,29 @@ _SPECIAL = re.compile(r"<\|[a-z_]+\|>|</?think>")
 _LABEL = re.compile(r"^\**\s*(?:improved |detailed |final |video |image )?prompt\s*\**\s*:\s*\**\s*", re.IGNORECASE)
 
 
-def accept_rewrite(rw: Rewriter, text: str | None, *, adult: bool) -> tuple[str | None, str]:
-    """The language model's text, tidied, if it can be used; else ``None`` and why not."""
+_QUOTED = re.compile(r'"([^"]{2,})"|“([^”]{2,})”|(?<!\w)\'([^\']{2,}?)\'(?!\w)')
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _without_invented_text(text: str, original: str) -> str:
+    """Drop sentences that put words in quotes the user never wrote: engines like FLUX.2 render them."""
+    own = " ".join(original.lower().split())
+    keep = []
+    for sentence in _SENTENCE.split(text):
+        quoted = [next(g for g in m.groups() if g) for m in _QUOTED.finditer(sentence)]
+        if any(" ".join(q.lower().split()) not in own for q in quoted):
+            continue
+        keep.append(sentence)
+    return " ".join(keep)
+
+
+def accept_rewrite(
+    rw: Rewriter, text: str | None, *, adult: bool, original: str | None = None
+) -> tuple[str | None, str]:
+    """The language model's text, tidied, if it can be used; else ``None`` and why not.
+
+    ``original``: the user's description; quoted text that isn't in it is removed.
+    """
     if not text:
         return None, "the language model wrote nothing"
     if "<think>" in text and "</think>" not in text:
@@ -195,6 +216,8 @@ def accept_rewrite(rw: Rewriter, text: str | None, *, adult: bool) -> tuple[str 
         t = t[1:-1].strip()
     if t.startswith("“") and t.endswith("”"):
         t = t[1:-1].strip()
+    if original is not None:
+        t = _without_invented_text(t, original)
     if len(t) < rw.min_chars:
         return None, "the language model's text was too short"
     low = t.lower()

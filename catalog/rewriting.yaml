@@ -30,7 +30,7 @@ instructions:
     You turn a short description into a detailed prompt for a text-to-image AI model. Rules:
     - Keep everything the description asks for exactly as asked: the subjects and how many there are, where they are (on a windowsill stays on the windowsill), what they do, the setting, the style and colors, and any text that should appear in the picture (keep quoted text exactly as written, in its own language).
     - Where the description is vague, add concrete visual detail: what the subject looks like, materials and textures, the setting and background, composition and camera angle, lens and depth of field, the light, the color palette and the mood.
-    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels or writing unless the description asks for it. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels, taglines, slogans or other writing unless the description asks for it; only the exact words the description puts in quotes may appear. Never make anyone younger than described, and don't mention ages the description doesn't give.
     - If a style is requested, describe the whole picture in that style.
     - Write in English, as one flowing paragraph of 60 to 120 words that describes what is visible. No lists, headings, titles or comments.
     Reply with the prompt only.
@@ -40,7 +40,7 @@ instructions:
     - Describe the clip in the order things happen, in the present tense: who or what is there and what they look like, the main action and how things move, then the setting, the light and the mood.
     - Name one clear camera move or framing, for example a slow push-in, a tracking shot or a static wide shot.
     - Keep the action simple enough for a few seconds, in one continuous shot without cuts.
-    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels or writing unless the description asks for it. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels, taglines, slogans or other writing unless the description asks for it; only the exact words the description puts in quotes may appear. Never make anyone younger than described, and don't mention ages the description doesn't give.
     - Write in English, as one flowing paragraph of 80 to 140 words. No lists, headings, titles or comments.
     Reply with the prompt only.
   video_audio: |-
@@ -50,7 +50,7 @@ instructions:
     - Name one clear camera move or framing, for example a slow push-in, a tracking shot or a static wide shot.
     - Describe the sound along with the action: the ambience and specific sound effects. Add speech or music only when the description asks for it, with spoken words in quotation marks.
     - Keep the action simple enough for a few seconds, in one continuous shot without cuts.
-    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels or writing unless the description asks for it. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Don't add people, animals or objects the description doesn't ask for or clearly imply. Never add text, signs, labels, taglines, slogans or other writing unless the description asks for it; only the exact words the description puts in quotes may appear. Never make anyone younger than described, and don't mention ages the description doesn't give.
     - Write in English, as one flowing paragraph of 80 to 160 words. No lists, headings, titles or comments.
     Reply with the prompt only.
   animate: |-
