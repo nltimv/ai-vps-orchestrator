@@ -48,6 +48,18 @@ export function ItemPage() {
             <div className="text-xs uppercase tracking-wide text-muted">Description</div>
             <p className="mt-1 whitespace-pre-wrap text-sm">{j.prompt}</p>
           </div>
+          {j.prompt_used && (
+            <details className="group" data-testid="improved">
+              <summary className="cursor-pointer text-xs uppercase tracking-wide text-muted hover:text-[var(--text)]">
+                Improved description
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{j.prompt_used}</p>
+              <button type="button" className="mt-1 text-xs text-brand-500 hover:underline cursor-pointer"
+                onClick={() => remix({ seed: null, prompt: j.prompt_used ?? j.prompt, params: { ...j.params, enhance: false } })}>
+                Start from this text
+              </button>
+            </details>
+          )}
           {j.lyrics && (
             <div>
               <div className="text-xs uppercase tracking-wide text-muted">Lyrics</div>

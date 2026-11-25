@@ -37,6 +37,7 @@ export interface CatalogModel {
   enabled: boolean;
   license: License;
   supports: { avoid: boolean; seed: boolean; sound: boolean; lyrics: boolean; instrumental: boolean };
+  improves: string[]; // modes in which "Improve my description" applies
   durations: { id: string; label: string; seconds: number }[];
   max_count: number;
   min_vram_gb: number;
@@ -70,6 +71,7 @@ export interface CreateRequest {
   instrumental?: boolean;
   seed?: number | null;
   reference_asset_id?: string | null;
+  enhance?: boolean;
   preference?: Preference | null;
   placement?: { mode: "auto" | "manual"; offer_key?: string | null; allow_fallback: boolean };
   confirm_over_soft_cap?: boolean;
@@ -129,6 +131,7 @@ export interface Job {
   model_id: string;
   model_name: string;
   prompt: string;
+  prompt_used: string | null; // the improved description it was made with
   avoid: string | null;
   lyrics: string | null;
   params: Record<string, unknown>;

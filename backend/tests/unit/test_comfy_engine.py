@@ -79,3 +79,21 @@ async def test_progress_never_goes_back_from_creating_to_loading(engine, tmp_pat
     values = [p for p, _ in seen]
     assert values == sorted(values), values
     assert values[-1] >= 0.9
+
+
+async def test_engine_generates_text_with_the_rewriter_workflow(engine):
+    """The rewriter's workflow (catalog/rewriter) runs in ComfyUI and its text comes back from PreviewAny."""
+    from aivo.catalog.presets import rewrite_input
+
+    cat = Catalog.load(REPO_ROOT / "catalog")
+    rw = cat.rewriter
+    assert rw is not None
+    mf = cat.get("z-image-turbo").manifest
+    fp = FriendlyParams(kind="image", prompt="a lighthouse at dusk", style="photo")
+    wf = render_workflow(cat.rewriter_workflow, {**rw.params, "text": rewrite_input(cat, mf, "image", fp), "seed": 7})
+    gen = wf["2"]["inputs"]
+    assert gen["sampling_mode"] == "on" and gen["sampling_mode.seed"] == 7 and gen["max_length"] == 400
+    assert gen["prompt"].endswith("Description: a lighthouse at dusk\n/no_think")
+    assert "Style: Photo (photorealistic" in gen["prompt"]
+    text = await engine.generate_text(wf, rw.output_node)
+    assert "</think>" in text and "a lighthouse at dusk" in text

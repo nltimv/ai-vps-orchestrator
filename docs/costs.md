@@ -13,9 +13,14 @@
 
   | Creation | GPU | Cost |
   |---|---|---|
-  | One Draft image (cold start) | 16–24 GB, ~$0.58–0.68/h | ~$0.02–0.04 |
-  | A 5 s Standard video (cold start, model download) | 48 GB PRO, ~$1.91/h | ~$0.15–0.30 |
+  | Two Draft images (Z-Image Turbo, cold start) | 16–24 GB, ~$0.58–0.68/h | ~$0.02–0.04 |
+  | Two Standard images (FLUX.2 [dev], cold start, model download) | 48 GB, ~$1.91/h | ~$0.10–0.20 |
+  | A 5 s Standard video with sound (LTX-2, cold start, model download) | 48 GB, ~$1.91/h | ~$0.15–0.30 |
+  | A 5 s Standard video with Wan 2.2 (full model, ~4 min of creating on an H100) | 80 GB, ~$4.18/h | ~$0.35–0.55 |
   | A follow-up creation on a GPU that's still waiting | — | only its own time |
+
+  *Improve my description* adds about 10–30 s per creation (a small language model on the same GPU).
+  Draft keeps the quick settings for when cost or speed matters more than detail.
 
 - **Network volume** (optional, keeps model files): $0.07/GB-month, e.g. ~$14/month for 200 GB.
 - **Keep one ready** (GPUs page): one worker stays on and is billed the whole time, e.g. 30 min of

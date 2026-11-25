@@ -238,6 +238,7 @@ class Job(Base):
     model_id: Mapped[str] = mapped_column(String(64))
     variant_id: Mapped[str | None] = mapped_column(String(64))
     prompt_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
+    prompt_used_enc: Mapped[bytes | None] = mapped_column(LargeBinary)  # the improved description, if any
     avoid_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     lyrics_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     friendly_params: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict)

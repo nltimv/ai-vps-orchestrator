@@ -39,6 +39,7 @@ const STAGES: Record<string, string> = {
   waiting_for_gpu: "Starting a GPU",
   starting_machine: "Starting a GPU",
   loading_model: "Loading the AI model",
+  improving: "Improving your description",
   generating: "Creating",
   saving: "Saving",
   done: "Done",

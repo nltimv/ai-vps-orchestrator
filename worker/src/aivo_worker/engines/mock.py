@@ -10,9 +10,11 @@ import array
 import asyncio
 import hashlib
 import math
+import re
 import shutil
 import wave
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageDraw
 
@@ -24,9 +26,13 @@ from aivo_worker.logbuf import LogBuffer
 class MockEngine:
     name = "mock"
 
-    def __init__(self, job_seconds: float = 2.0, *, fail_next: str | None = None):
+    def __init__(self, job_seconds: float = 2.0, *, fail_next: str | None = None, seen: dict[str, Any] | None = None):
         self.job_seconds = job_seconds
+        self.seen = seen  # job id -> the workflow it ran (for tests of the simulated cloud)
         self.fail_next = fail_next  # chaos hook: "oom" | "engine"
+        self.rewrite_reply: str | None = None  # chaos hook: what the language model says instead
+        self.rewrite_fails = False  # chaos hook: the language model errors
+        self.rewrites = 0
         self._ready = False
         self._loaded: list[str] = []
         self._cancel = asyncio.Event()
@@ -60,8 +66,37 @@ class MockEngine:
     async def cancel(self) -> None:
         self._cancel.set()
 
+    async def generate_text(self, workflow: dict[str, Any], output_node: str) -> str:
+        """A stand-in for the language model: a longer description built from the short one."""
+        self.rewrites += 1
+        self._say("got prompt")
+        self._say("Requested to load ZImageTEModel_")
+        await asyncio.sleep(0.05)
+        if self.rewrite_fails:
+            self._say("!!! Exception during processing !!! simulated language model failure", "error")
+            raise EngineError("simulated language model failure")
+        if self.rewrite_reply is not None:
+            return self.rewrite_reply
+        text = next(
+            (
+                str(n["inputs"]["prompt"])
+                for n in workflow.values()
+                if isinstance(n, dict) and "prompt" in n.get("inputs", {})
+            ),
+            "",
+        )
+        m = re.search(r"Description: (.*)", text)
+        desc = (m.group(1) if m else text).strip().rstrip(".")
+        return (
+            f"<think>\n\n</think>\n\n{desc[:1].upper()}{desc[1:]}, shown in rich detail: a clear subject, "
+            "natural textures, a balanced composition with depth, soft directional light and a harmonious "
+            "color palette, sharp focus."
+        )
+
     async def run(self, job: JobIn, inputs_dir: Path, out_dir: Path, progress: ProgressCb) -> list[Path]:
         self._cancel.clear()
+        if self.seen is not None:
+            self.seen[job.job_id] = job.workflow
         self._say("got prompt")
         t0 = asyncio.get_running_loop().time()
         if self.fail_next:

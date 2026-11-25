@@ -90,6 +90,13 @@ class VideoTiming(BaseModel):
     frame_offset: int = 1
     durations: dict[str, float] = Field(default_factory=lambda: {"short": 5.0, "medium": 10.0})
     max_seconds: float = 10.0
+    # frames added between generated ones after creating (FrameInterpolate): 2 turns 16 into 32 fps.
+    # The workflow gets $fps (generating) and $out_fps (the result).
+    interpolate: int = Field(default=1, ge=1, le=4)
+
+    @property
+    def out_fps(self) -> int:
+        return self.fps * self.interpolate
 
     def frames_for(self, seconds: float) -> int:
         seconds = max(0.5, min(seconds, self.max_seconds))
@@ -137,6 +144,9 @@ class ModelManifest(BaseModel):
     # prompts involving minors refused (see aivo/safety.py)
     adult: bool = False
     prompt_prefix: str = ""  # e.g. an add-on's trigger word, put in front of every prompt
+    # Improve the description on the GPU first: mode -> instructions in catalog/rewriting.yaml
+    # (e.g. {t2i: image}). Modes left out (edits, music) use the description as written.
+    rewrite: dict[Mode, str] = Field(default_factory=dict)
     notes: str = ""  # maintainer notes (not shown to end users)
 
     @model_validator(mode="after")
@@ -159,6 +169,9 @@ class ModelManifest(BaseModel):
         for q in ("draft", "standard", "best"):
             if q not in self.quality:
                 raise ValueError(f"{self.id}: missing quality preset {q!r}")
+        for mode in self.rewrite:
+            if mode not in {m.mode for m in self.modes}:
+                raise ValueError(f"{self.id}: rewrite for mode {mode!r}, which the engine doesn't have")
         return self
 
     def variant(self, variant_id: str) -> Variant:
@@ -194,3 +207,17 @@ class ModelManifest(BaseModel):
     @property
     def vendors(self) -> set[str]:
         return {vendor for v in self.variants for vendor in v.vendors}
+
+
+class Rewriter(BaseModel):
+    """``catalog/rewriting.yaml``: the language model that improves descriptions, and its instructions."""
+
+    files: list[FileSpec]
+    workflow: str = "rewriter/workflow.json"  # relative to the catalog root
+    output_node: str
+    params: dict[str, Any] = Field(default_factory=dict)  # sampling settings for the workflow
+    template: str  # the model's input; {instructions}, {description} and {style} are filled in
+    instructions: dict[str, str]  # id (used by manifests' `rewrite`) -> instructions
+    min_chars: int = 20
+    max_chars: int = 2500
+    refusals: list[str] = Field(default_factory=list)  # openings that mean the model declined

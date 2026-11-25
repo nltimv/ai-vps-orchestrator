@@ -21,20 +21,30 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aivo.api.deps import get_app, get_session
+from aivo.catalog.presets import describe
 from aivo.context import AppContext
 from aivo.controller.common import record_phase, update_estimate, utcnow
-from aivo.controller.jobspec import FRIENDLY_ERRORS, download_error, job_files, work_spec
+from aivo.controller.jobspec import (
+    FRIENDLY_ERRORS,
+    accept_rewrite,
+    download_error,
+    friendly_from_job,
+    job_files,
+    work_spec,
+)
 from aivo.controller.lifecycle import job_progress, transition_job
 from aivo.controller.workers import job_cost, worker_done, worker_session
 from aivo.db.models import Asset, GpuEndpoint, Instance, Job
 from aivo.storage.thumbnails import make_thumbnail
-from aivo_protocol import PROTOCOL_VERSION, protocol_compatible
+from aivo_protocol import PROTOCOL_VERSION, protocol_compatible, protocol_tuple
 from aivo_protocol.worker_api import (
     CompleteIn,
     FailIn,
     LogLine,
     ProgressIn,
     ProgressOut,
+    PromptIn,
+    PromptOut,
     UploadOut,
     WorkerInfo,
     WorkSpec,
@@ -141,7 +151,34 @@ async def spec(
     await s.commit()
     if retry:  # RunPod gave the job to a new worker: results of the old one don't count
         await discard_outputs(app, job.id)
-    return await asyncio.to_thread(work_spec, app, job)
+    # workers before protocol 2.1 can't improve descriptions: they get the description as written
+    return await asyncio.to_thread(work_spec, app, job, can_rewrite=protocol_tuple(body.protocol) >= (2, 1))
+
+
+@router.post("/jobs/{job_id}/prompt")
+async def prompt(
+    body: PromptIn,
+    job: Job = Depends(ticket_job),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> PromptOut:
+    """The worker's improved description: checked, kept (sealed) with the creation, and the words to use.
+
+    If it can't be used, the creation is made from the description as the user wrote it.
+    """
+    rw = app.catalog.rewriter
+    fp = friendly_from_job(app, job)
+    mf = app.catalog.get(job.model_id).manifest
+    fallback = describe(app.catalog, mf, fp)
+    text, why = (None, "rewriting is off") if rw is None else accept_rewrite(rw, body.text, adult=bool(job.adult))
+    if body.error and text is None:
+        why = f"the language model failed: {body.error[:200]}"
+    took = f" in {body.seconds:.1f} s" if body.seconds is not None else ""
+    note = f"description improved{took}" if text else f"kept the description as written: {why}"
+    _append_log(job, [LogLine(seq=0, ts=utcnow().timestamp(), source="aivo", text=note)])
+    job.prompt_used_enc = app.keyring.seal(text, job.id.bytes) if text else None
+    await s.commit()
+    return PromptOut(prompt=text or fallback, rewritten=text is not None)
 
 
 @router.get("/jobs/{job_id}/inputs/{name}")
@@ -165,7 +202,7 @@ async def progress(
     job.worker_contact_at = now
     if job.instance_id:
         await s.execute(update(Instance).where(Instance.id == job.instance_id).values(last_contact_at=now))
-    stage = body.stage if body.stage in ("loading_model", "generating", "saving") else "generating"
+    stage = body.stage if body.stage in ("loading_model", "improving", "generating", "saving") else "generating"
     if stage == "generating" and job.state in ("assigned", "preparing"):
         await transition_job(
             s, job.id, job.state, "running", stage="generating", progress=body.progress, started_at=now

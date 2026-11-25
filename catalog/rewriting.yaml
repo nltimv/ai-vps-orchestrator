@@ -1,0 +1,72 @@
+# The description rewriter. Short descriptions make flat pictures and videos; the engines were trained on
+# long, specific captions. Before creating, the worker runs a small language model on the GPU (in ComfyUI)
+# that turns the user's description into such a prompt. aivo checks the result (adult rules included)
+# and keeps the user's own description when the result is unusable. Manifests pick instructions per
+# mode with `rewrite: {t2i: image}`. The user can switch it off per creation ("Improve my description").
+
+# Qwen3-4B: the same file Z-Image and FLUX.2 Klein use as text encoder, so it's often already on the
+# worker. Public (Apache 2.0); size checked against the Hugging Face API, Nov 2026.
+files:
+  - {id: llm, repo: Comfy-Org/z_image_turbo, path: split_files/text_encoders/qwen_3_4b.safetensors,
+     dest: text_encoders/qwen_3_4b.safetensors, bytes: 8044982048}
+workflow: rewriter/workflow.json
+output_node: "3"
+# Qwen3's recommended sampling without thinking; the seed is the creation's own, so "Keep this look"
+# gives the same rewrite.
+params: {max_tokens: 400, temperature: 0.7, top_k: 20, top_p: 0.8, min_p: 0.0, repetition_penalty: 1.05}
+# "/no_think" switches Qwen3's reasoning off.
+template: |-
+  {instructions}
+
+  {style}Description: {description}
+  /no_think
+min_chars: 20
+max_chars: 2500
+refusals: ["i'm sorry", "i am sorry", "sorry,", "i can't", "i cannot", "i can not", "i won't", "i will not",
+           "i'm not able", "i am not able", "i'm unable", "i am unable", "as an ai"]
+
+instructions:
+  image: |-
+    You turn a short description into a detailed prompt for a text-to-image AI model. Rules:
+    - Keep everything the description asks for: the subjects and how many there are, what they do, the setting, the style and colors, and any text that should appear in the picture (keep quoted text exactly as written, in its own language).
+    - Where the description is vague, add concrete visual detail: what the subject looks like, materials and textures, the setting and background, composition and camera angle, lens and depth of field, the light, the color palette and the mood.
+    - Don't add people, animals, text or objects the description doesn't ask for or clearly imply. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - If a style is requested, describe the whole picture in that style.
+    - Write in English, as one flowing paragraph of 60 to 120 words that describes what is visible. No lists, headings, titles or comments.
+    Reply with the prompt only.
+  video: |-
+    You turn a short description into a detailed prompt for a text-to-video AI model that makes a clip of about 5 seconds. Rules:
+    - Keep everything the description asks for: the subjects, what they do, the setting, the style.
+    - Describe the clip in the order things happen, in the present tense: who or what is there and what they look like, the main action and how things move, then the setting, the light and the mood.
+    - Name one clear camera move or framing, for example a slow push-in, a tracking shot or a static wide shot.
+    - Keep the action simple enough for a few seconds, in one continuous shot without cuts.
+    - Don't add people, animals, text or objects the description doesn't ask for or clearly imply. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Write in English, as one flowing paragraph of 80 to 140 words. No lists, headings, titles or comments.
+    Reply with the prompt only.
+  video_audio: |-
+    You turn a short description into a detailed prompt for an AI model that makes a video clip of about 5 seconds with sound. Rules:
+    - Keep everything the description asks for: the subjects, what they do, the setting, the style, any speech or music.
+    - Describe the clip in the order things happen, in the present tense: who or what is there and what they look like, the main action and how things move, then the setting, the light and the mood.
+    - Name one clear camera move or framing, for example a slow push-in, a tracking shot or a static wide shot.
+    - Describe the sound along with the action: the ambience and specific sound effects. Add speech or music only when the description asks for it, with spoken words in quotation marks.
+    - Keep the action simple enough for a few seconds, in one continuous shot without cuts.
+    - Don't add people, animals, text or objects the description doesn't ask for or clearly imply. Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Write in English, as one flowing paragraph of 80 to 160 words. No lists, headings, titles or comments.
+    Reply with the prompt only.
+  animate: |-
+    You write a prompt for an AI model that brings a picture to life as a clip of about 5 seconds. The model sees the picture; you don't, so the description tells you what should happen. Rules:
+    - Describe the movement: what moves, how and in what order, in the present tense, and one camera move or "the camera stays still".
+    - Refer to what the description mentions ("the woman", "the car"); don't invent a different scene, new people or objects.
+    - Keep it physically plausible and simple enough for a few seconds, in one continuous shot.
+    - Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Write in English, as one paragraph of 40 to 90 words. No lists, headings, titles or comments.
+    Reply with the prompt only.
+  animate_audio: |-
+    You write a prompt for an AI model that brings a picture to life as a clip of about 5 seconds with sound. The model sees the picture; you don't, so the description tells you what should happen. Rules:
+    - Describe the movement: what moves, how and in what order, in the present tense, and one camera move or "the camera stays still".
+    - Describe the sound along with the movement: the ambience and specific sound effects. Add speech or music only when the description asks for it, with spoken words in quotation marks.
+    - Refer to what the description mentions ("the woman", "the car"); don't invent a different scene, new people or objects.
+    - Keep it physically plausible and simple enough for a few seconds, in one continuous shot.
+    - Never make anyone younger than described, and don't mention ages the description doesn't give.
+    - Write in English, as one paragraph of 50 to 110 words. No lists, headings, titles or comments.
+    Reply with the prompt only.

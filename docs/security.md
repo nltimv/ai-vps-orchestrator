@@ -15,7 +15,7 @@ makes video seeking work.
 
 **What is encrypted:**
 - outputs, thumbnails and posters, and uploaded starting images;
-- prompts and lyrics, sealed field by field in the DB.
+- prompts, improved descriptions and lyrics, sealed field by field in the DB.
 
 **Plaintext.** It exists only in RAM on the backend (a tmpfs scratch), and on the RunPod worker
 while it works (in `/dev/shm` where that is big enough, otherwise its temporary disk; deleted right

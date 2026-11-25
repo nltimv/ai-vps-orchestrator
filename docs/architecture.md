@@ -37,6 +37,8 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
    - fetches the job from aivo with the ticket (`/spec`): workflow, model files with download links,
      output shape;
    - downloads model files from Hugging Face (kept on its disk or the network volume);
+   - improves the description with a small language model in ComfyUI, as soon as its file is there,
+     and sends the result to aivo (`/prompt`), which checks it and answers with the words to use;
    - fetches the starting picture, if any;
    - runs ComfyUI, reporting progress and log lines (`/progress`, relayed to browsers as SSE);
    - uploads each result (`PUT /outputs/<name>`, checked against its SHA-256);
@@ -84,7 +86,9 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
 
 ## Data residency
 Generated content (outputs, thumbnails, uploaded starting images, prompts and lyrics) is
-**persisted only on the backend's encrypted media volume**.
+**persisted only on the backend's encrypted media volume** and in sealed database fields. The
+improved description is sealed like the description itself; the job's resolved parameters keep no
+copy of either (the worker's workflow gets them filled in when it fetches the job).
 - **RunPod's job system** only sees the ticket and file names: the worker fetches the prompt and
   picture from aivo and uploads results to aivo.
 - **The endpoint settings** hold the worker image, aivo's deployment id and the GPU type. They hold no

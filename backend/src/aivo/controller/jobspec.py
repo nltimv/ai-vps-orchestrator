@@ -4,20 +4,34 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 from typing import Any
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from aivo.catalog.presets import FriendlyParams, Plan, plan, render_workflow, workflow_params
+from aivo.catalog.presets import (
+    PROMPT_MARKER,
+    TEXT_PARAMS,
+    FriendlyParams,
+    Plan,
+    describe,
+    plan,
+    render_workflow,
+    rewrite_for,
+    rewrite_input,
+    text_params,
+    workflow_params,
+)
 from aivo.config import RuntimeSettings
 from aivo.context import AppContext
 from aivo.db.models import Asset, Job
 from aivo.placement.request import build_request
 from aivo.placement.scorer import Request
-from aivo_protocol.catalog_types import FileSpec
-from aivo_protocol.worker_api import FileFetch, FileSource, OutputSpec, WorkSpec
+from aivo.safety import minors_mentioned
+from aivo_protocol.catalog_types import FileSpec, Rewriter
+from aivo_protocol.worker_api import FileFetch, FileSource, OutputSpec, RewriteSpec, WorkSpec
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +91,8 @@ async def resolve(
         "variant_id": variant_id,
         "mode": pl.mode,
         "quality": pl.quality,
-        "params": params,
+        # the user's words stay sealed: work_spec() adds them back from the job's encrypted fields
+        "params": {k: v for k, v in params.items() if k not in TEXT_PARAMS},
         "output": pl.output.model_dump(),
         "units": pl.units,
         "inputs": inputs,
@@ -104,29 +119,94 @@ def _hf_source_url(app: AppContext, f: FileSpec) -> str:
     return url
 
 
-def work_spec(app: AppContext, job: Job) -> WorkSpec:
+def _fetch(app: AppContext, f: FileSpec) -> FileFetch:
+    return FileFetch(
+        dest=f.dest,
+        bytes=f.bytes if f.sha256 else None,
+        sha256=f.sha256,
+        sources=[FileSource(kind="hf", url=_hf_source_url(app, f))],
+    )
+
+
+def work_spec(app: AppContext, job: Job, *, can_rewrite: bool = True) -> WorkSpec:
+    """What the worker runs. ``can_rewrite``: the worker knows how to improve the description (protocol 2.1)."""
     resolved = job.resolved or {}
     cm = app.catalog.get(job.model_id)
     mf = cm.manifest
+    mode = resolved["mode"]
     variant = mf.variant(resolved["variant_id"])
-    files = mf.files_for(variant, resolved["mode"])
+    files = list(mf.files_for(variant, mode))
+    fp = friendly_from_job(app, job)
+    rid = rewrite_for(app.catalog, mf, mode, fp) if can_rewrite else None
+    used = app.keyring.open(job.prompt_used_enc, job.id.bytes) if job.prompt_used_enc else None
+    rewrite: RewriteSpec | None = None
+    if rid and used:  # improved on an earlier attempt: create with the same words again
+        text = text_params(app.catalog, mf, fp, prompt=used)
+    elif rid:
+        rw = app.catalog.rewriter
+        assert rw is not None
+        text = text_params(app.catalog, mf, fp, prompt=PROMPT_MARKER)
+        have = {f.dest for f in files}
+        files = [f for f in rw.files if f.dest not in have] + files  # the language model first
+        rewrite = RewriteSpec(
+            workflow=render_workflow(
+                app.catalog.rewriter_workflow,
+                {
+                    **rw.params,
+                    "text": rewrite_input(app.catalog, mf, rid, fp),
+                    "seed": int(resolved.get("seed") or 0),
+                },
+            ),
+            output_node=rw.output_node,
+            marker=PROMPT_MARKER,
+            fallback=describe(app.catalog, mf, fp),
+            files=[f.dest for f in rw.files],
+        )
+    else:
+        text = text_params(app.catalog, mf, fp)
     return WorkSpec(
         job_id=str(job.id),
         model_id=job.model_id,
-        workflow=render_workflow(cm.workflows[resolved["mode"]], resolved["params"]),
-        files=[
-            FileFetch(
-                dest=f.dest,
-                bytes=f.bytes if f.sha256 else None,
-                sha256=f.sha256,
-                sources=[FileSource(kind="hf", url=_hf_source_url(app, f))],
-            )
-            for f in files
-        ],
+        workflow=render_workflow(cm.workflows[mode], {**resolved["params"], **text}),
+        files=[_fetch(app, f) for f in files],
         inputs=[i["name"] for i in resolved.get("inputs", [])],
         output=OutputSpec.model_validate(resolved["output"]),
         timeout_s=int(resolved.get("timeout_s", 3600)),
+        rewrite=rewrite,
     )
+
+
+_THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+_SPECIAL = re.compile(r"<\|[a-z_]+\|>|</?think>")
+_LABEL = re.compile(r"^\**\s*(?:improved |detailed |final |video |image )?prompt\s*\**\s*:\s*\**\s*", re.IGNORECASE)
+
+
+def accept_rewrite(rw: Rewriter, text: str | None, *, adult: bool) -> tuple[str | None, str]:
+    """The language model's text, tidied, if it can be used; else ``None`` and why not."""
+    if not text:
+        return None, "the language model wrote nothing"
+    if "<think>" in text and "</think>" not in text:
+        return None, "the language model didn't finish"
+    t = _THINK.sub("", text)
+    t = _SPECIAL.sub("", t).strip()
+    t = _LABEL.sub("", t).strip()
+    t = " ".join(t.split())  # one paragraph
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'“”":
+        t = t[1:-1].strip()
+    if t.startswith("“") and t.endswith("”"):
+        t = t[1:-1].strip()
+    if len(t) < rw.min_chars:
+        return None, "the language model's text was too short"
+    low = t.lower()
+    if any(low.startswith(r) for r in rw.refusals):
+        return None, "the language model declined"
+    if len(t) > rw.max_chars:
+        cut = t[: rw.max_chars]
+        end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+        t = cut[: end + 1] if end > rw.min_chars else cut
+    if adult and minors_mentioned(t):
+        return None, "the improved text broke the adult content rules"
+    return t, ""
 
 
 def job_files(app: AppContext, job: Job) -> list[FileSpec]:

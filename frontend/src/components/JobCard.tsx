@@ -19,9 +19,10 @@ export function JobCard({ job }: { job: Job }) {
   const active = isActive(job.state);
   const me = useMe();
   const [showLog, setShowLog] = useState(false);
-  const stepIdx = STEPS.indexOf(job.stage);
-  const overall =
-    job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + (job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5)) / STEPS.length;
+  // improving the description happens at the end of loading the model
+  const stepIdx = STEPS.indexOf(job.stage === "improving" ? "loading_model" : job.stage);
+  const within = job.stage === "improving" ? 0.95 : job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5;
+  const overall = job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + within) / STEPS.length;
   return (
     <Card className="p-4">
       <div className="flex items-start gap-3">

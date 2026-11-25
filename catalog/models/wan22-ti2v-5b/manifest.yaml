@@ -14,6 +14,8 @@ supports: {avoid: true, seed: true, sound: false}
 modes:
   - {mode: t2v, workflow: workflows/t2v.json}
   - {mode: i2v, workflow: workflows/i2v.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2v: video, i2v: animate}
 variants:
   - id: fp16
     precision: fp16

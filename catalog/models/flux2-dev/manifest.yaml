@@ -14,6 +14,8 @@ license:
 supports: {avoid: false, seed: true}
 modes:
   - {mode: t2i, workflow: workflows/t2i.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2i: image}
 variants:
   - id: fp8
     precision: fp8
@@ -53,11 +55,12 @@ quality:
     sizes: {square: [1024, 1024], portrait: [832, 1216], landscape: [1216, 832], wide: [1344, 768]}
   best:
     label: Best
-    params: {steps: 40, guidance: 4.0}
+    params: {steps: 50, guidance: 4.0}  # the reference default
     sizes: {square: [1536, 1536], portrait: [1216, 1792], landscape: [1792, 1216], wide: [1920, 1088]}
 bench:
   unit: image
   seconds: {l40s: 55, rtx6000ada: 55, h100: 20, h200: 18}
+  quality_factor: {draft: 0.6, standard: 1.0, best: 4.0}  # Best: 50 steps at 1536 px
   model_init_s: 60
 output_mb: 2.0
 tags: [quality]

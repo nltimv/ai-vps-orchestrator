@@ -22,16 +22,45 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 
 | Dashboard name | Model | Why this one | License |
 |---|---|---|---|
-| **Image · Fast** (Auto for Draft/Standard) | Tongyi **Z-Image-Turbo** 6B | Photo quality in ~8 steps; fits 20 GB; seconds per image | Apache-2.0 |
-| **Image · Best** (Auto for Best) | **FLUX.2 [dev]** 32B (fp8 on 48 GB, full on 80 GB) | Top open-weight quality and prompt adherence | **Non-commercial**: personal use |
+| **Image · Fast** (Auto for Draft) | Tongyi **Z-Image-Turbo** 6B | Photo quality in ~8 steps; fits 20 GB; seconds per image | Apache-2.0 |
+| **Image · Best** (Auto for Standard and Best) | **FLUX.2 [dev]** 32B (fp8 on 48 GB, full on 80 GB) | Top open-weight quality and prompt adherence | **Non-commercial**: personal use |
 | **Image · Text & posters** | **Qwen-Image-2512** 20B (+ Lightning speed-up for Draft) | Best text rendering and complex layouts | Apache-2.0 |
 | **Edit an image** | **Qwen-Image-Edit-2511**; quick: **FLUX.2 [klein] 4B** | Instruction-based edits that keep the rest intact | Apache-2.0 |
-| **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled) | Very fast, generates matching audio; 16–48 GB | LTX community license (free < $10M revenue) |
-| **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** + Lightx2v 4-step | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
+| **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled, two stages with a 2× upscaler) | Very fast, generates matching audio; 32–48 GB | LTX community license (free < $10M revenue) |
+| **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** (full model; Lightx2v 4-step at Draft), smoothed to 32 fps | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
 | **Video · Budget** (Auto for Draft) | **Wan 2.2 TI2V-5B** | 720p on the cheapest GPU | Apache-2.0 |
 | **Music · Song** | **ACE-Step 1.5** (turbo) | Full songs with vocals/lyrics or instrumentals in seconds; tiny VRAM | MIT |
 | **Image · Unrestricted (18+)** | **Chroma1-HD** 8.9B (FLUX.1 [schnell] based) | Trained without content filtering; realistic and illustrated; fits 20 GB in fp8 | Apache-2.0 |
 | **Video · Animate (18+)** | **Wan 2.2 A14B** image-to-video + a community adult add-on | Animates a picture made here; the add-on is the most-used general one for Wan 2.2 | Wan: Apache-2.0; add-on: no license stated, personal use only |
+
+## How aivo gets better results
+
+Open models can come close to hosted ones like Gemini, but only with the right settings and a
+prompt in the form they were trained on. aivo does four things:
+
+1. **Improve my description** (on by default; per creation). Short descriptions make flat pictures:
+   the engines were trained on long, specific captions. Before creating, the worker runs a small
+   language model on the same GPU (Qwen3-4B, inside ComfyUI) that rewrites the description. It
+   adds light, setting, composition and camera, and for videos the motion in order and the sound.
+   - The instructions are in `catalog/rewriting.yaml`, one set per kind of creation. Manifests pick
+     one per mode (`rewrite: {t2v: video, i2v: animate}`).
+   - aivo checks the result: empty, cut-off or refusing text is dropped, and adult creations get
+     the minors check again. When the result can't be used, the creation is made from the
+     description as written; nothing fails because of it.
+   - The improved text is shown on the creation's page (*Improved description*). It is sealed in
+     the database like the description itself.
+   - Edits and music use the words as written: an edit instruction isn't a picture description.
+   - Qwen3-4B is the same file Z-Image and FLUX.2 [klein] use as their text encoder (8 GB). Other
+     engines download it once per worker, or once to the network volume.
+2. **No shortcuts at Standard.**
+   - Pictures at Standard and Best go to FLUX.2 [dev].
+   - Wan 2.2 runs its full model at Standard (20 steps, as in ComfyUI's template) and Best (40 steps,
+     as in the reference code). Only Draft uses the 4-step speed-up.
+   - LTX-2 uses its official two-stage pipeline: 8 steps at half size, Lightricks' 2× latent
+     upscaler, then 3 refining steps at full size.
+3. **Finishing.** Wan 2.2 makes 16 frames per second, which stutters. ComfyUI's built-in frame
+   interpolation (FILM) doubles that to 32 fps after creating.
+4. **Two pictures per creation** by default: one is usually clearly better.
 
 **Rule of thumb:**
 
@@ -67,7 +96,8 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
 - **Never minors.** Descriptions for adult creations are checked for words and ages that point at
   minors (English, Dutch and a few other languages) and refused. Every adult engine also adds
   "child, minor, teen, childlike, young-looking" to what it avoids. The check is deliberately broad:
-  rewording a refused description is easy, a wrong creation can't be undone.
+  rewording a refused description is easy, a wrong creation can't be undone. An improved
+  description is checked again; if it fails, the creation uses the words as written.
 - **Auto never picks** an 18+ engine; you choose it under *More options → Engine*. To animate a
   picture, open it in the gallery and use *Animate this*: the 18+ animation engine is preselected
   for 18+ pictures.
@@ -103,7 +133,10 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
    values you want to control with placeholders such as `"$prompt"`, `"$seed"`, `"$width"`,
    `"$height"`, `"$steps"`, `"$frames"`, `"$fps"`, `"$batch"`, `"$prefix"` and
    `"$reference_image"`. Any key from the quality preset or variant `params` also works.
-3. Optionally add it to `catalog/routing.yaml` so *Auto* can pick it.
+   Video manifests can set `video.interpolate: 2` and use `"$out_fps"` and `"$interpolate"` for a
+   frame interpolation step.
+3. Optionally add it to `catalog/routing.yaml` so *Auto* can pick it, and pick rewriting
+   instructions per mode with `rewrite:` (see `catalog/rewriting.yaml`).
 4. Run `uv run aivo catalog-check` and `uv run pytest backend/tests/unit/test_catalog.py`.
    Every combination must render.
 5. Try it once on RunPod with a low spending limit (Settings → Spending limits).

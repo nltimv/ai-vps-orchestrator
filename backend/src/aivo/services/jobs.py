@@ -84,6 +84,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         model_id=job.model_id,
         model_name=model.manifest.display_name if model else job.model_id,
         prompt=kr.open(job.prompt_enc, job.id.bytes) or "",
+        prompt_used=kr.open(job.prompt_used_enc, job.id.bytes),
         avoid=kr.open(job.avoid_enc, job.id.bytes),
         lyrics=kr.open(job.lyrics_enc, job.id.bytes),
         params=job.friendly_params,

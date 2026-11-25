@@ -25,10 +25,14 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.getByText("What do you want to create?").waitFor();
 
   // image
-  await page.getByLabel("Description").fill("A cozy cabin in a snowy forest at dusk");
+  await page.getByLabel("Description", { exact: true }).fill("A cozy cabin in a snowy forest at dusk");
   await page.getByRole("radio", { name: "Photo" }).click();
   await page.getByRole("radio", { name: /^Draft/ }).click();
   await page.getByText(/ready in/).waitFor({ timeout: 20000 });
+  const improve = page.getByRole("switch", { name: "Improve my description" });
+  assert.equal(await improve.getAttribute("aria-checked"), "true", "descriptions are improved by default");
+  const howMany = page.getByRole("radiogroup", { name: "How many" });
+  assert.equal(await howMany.getByRole("radio", { name: "2", exact: true }).getAttribute("aria-checked"), "true", "two pictures by default");
   await shot("create");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByText(/Starting a GPU|Loading the AI model|Creating/).first().waitFor({ timeout: 20000 });
@@ -36,10 +40,10 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
 
   // video + music each go to their GPU type's queue
   await page.getByRole("tab", { name: "Video" }).click();
-  await page.getByLabel("Description").fill("Waves crashing on black volcanic rocks, drone shot");
+  await page.getByLabel("Description", { exact: true }).fill("Waves crashing on black volcanic rocks, drone shot");
   await page.getByRole("button", { name: "Create", exact: true }).click();
   await page.getByRole("tab", { name: "Music" }).click();
-  await page.getByLabel("Description").fill("mellow beat with soft piano");
+  await page.getByLabel("Description", { exact: true }).fill("mellow beat with soft piano");
   await page.getByRole("button", { name: "Lo-fi" }).click();
   await page.getByRole("button", { name: "Create", exact: true }).click();
 
@@ -50,6 +54,18 @@ const JARGON = /\b(CFG|samplers?|schedulers?|denois\w*|LoRA|checkpoints?|latents
   await page.locator('a[href^="/item/"]').first().waitFor();
   assert.ok((await page.locator('a[href^="/item/"]').count()) >= 3, "gallery shows the creations");
   await shot("gallery");
+
+  // the picture shows the description it was made with
+  await page.getByRole("radio", { name: "Images" }).click();
+  await page.waitForTimeout(500);
+  await page.locator('a[href^="/item/"]').first().click();
+  const improved = page.getByTestId("improved");
+  await improved.waitFor();
+  await improved.locator("summary").click();
+  assert.match(await improved.innerText(), /cozy cabin in a snowy forest at dusk, shown in rich detail/i);
+  await shot("item-image");
+  await page.goto(`${BASE}/gallery`);
+  await page.locator('a[href^="/item/"]').first().waitFor();
 
   // video seeking works through the encrypted store (HTTP Range)
   await page.getByRole("radio", { name: "Videos" }).click();

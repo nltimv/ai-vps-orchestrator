@@ -57,6 +57,8 @@ async def catalog(user: User = Depends(current_user), app: AppContext = Depends(
                 "enabled": mf.id in enabled,
                 "license": mf.license.model_dump(),
                 "supports": mf.supports.model_dump(),
+                # modes in which "Improve my description" applies
+                "improves": [m for m in mf.rewrite if app.catalog.rewriter is not None],
                 "durations": [
                     {"id": k, "label": DURATION_LABELS.get(k, f"{v:.0f} s"), "seconds": v} for k, v in durations.items()
                 ],

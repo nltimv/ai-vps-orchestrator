@@ -43,6 +43,7 @@ MODEL_FOLDERS = (
     "audio_encoders",
     "model_patches",
     "latent_upscale_models",
+    "frame_interpolation",
 )
 OOM_HINTS = ("out of memory", "outofmemory", "cuda error: out of memory", "hip out of memory", "allocation")
 PROGRESS_EVERY_S = 3.0  # ComfyUI redraws progress bars with \r many times a second; keep one every few s
@@ -246,43 +247,9 @@ class ComfyEngine:
                 dst = comfy_in / name
                 shutil.copyfile(src, dst)
                 staged.append(dst)
-        client_id = uuid.uuid4().hex
         tracker = _ProgressTracker(job.workflow, progress)
         try:
-            async with websockets.connect(
-                f"ws://127.0.0.1:{self.port}/ws?clientId={client_id}", max_size=None, open_timeout=20
-            ) as ws:
-                r = await self._http.post("/prompt", json={"prompt": job.workflow, "client_id": client_id})
-                if r.status_code != 200:
-                    raise EngineError(f"workflow rejected: {_short(r.text)}", code="bad_request")
-                prompt_id = r.json()["prompt_id"]
-                tracker.report(0.0, "loading_model")
-                while True:
-                    raw = await ws.recv()
-                    if isinstance(raw, bytes):
-                        continue  # previews (disabled anyway)
-                    msg = json.loads(raw)
-                    t, data = msg.get("type"), msg.get("data", {})
-                    if data.get("prompt_id") not in (None, prompt_id):
-                        continue
-                    if t == "executing":
-                        if data.get("node") is None:
-                            break
-                        tracker.node_started(str(data["node"]))
-                    elif t == "execution_cached":
-                        tracker.nodes_cached([str(n) for n in data.get("nodes") or []])
-                    elif t == "progress":
-                        tracker.sampling(str(data.get("node") or "?"), data.get("value", 0), data.get("max", 1))
-                    elif t == "execution_error":
-                        text = f"{data.get('exception_type', '')}: {data.get('exception_message', '')}"
-                        code = "oom" if any(h in text.lower() for h in OOM_HINTS) else "engine"
-                        raise EngineError(_short(text), code=code)
-                    elif t == "execution_interrupted":
-                        raise EngineError("cancelled", code="cancelled")
-                    elif t == "execution_success":
-                        break
-                    # anything else (status, execution_start, progress_state, executed, ...) changes nothing
-            hist = (await self._http.get(f"/history/{prompt_id}")).json().get(prompt_id, {})
+            prompt_id, hist = await self._execute(job.workflow, tracker)
             files = _collect_outputs(hist.get("outputs", {}))
             if not files:
                 raise EngineError("the workflow produced no output files")
@@ -295,12 +262,68 @@ class ComfyEngine:
                 dst = out_dir / f"output_{i:02d}{src.suffix.lower()}"
                 shutil.move(str(src), dst)
                 out.append(dst)
-            with contextlib.suppress(httpx.HTTPError):
-                await self._http.post("/history", json={"delete": [prompt_id]})
+            await self._forget(prompt_id)
             return out
         finally:
             for p in staged:
                 p.unlink(missing_ok=True)
+
+    async def generate_text(self, workflow: dict[str, Any], output_node: str) -> str:
+        if not self._ready:
+            raise EngineError("engine not ready")
+        prompt_id, hist = await self._execute(workflow, None)
+        await self._forget(prompt_id)
+        shown = (hist.get("outputs", {}).get(output_node) or {}).get("text") or []
+        if not shown or not isinstance(shown[0], str):
+            raise EngineError("the language model produced no text")
+        return shown[0]
+
+    async def _forget(self, prompt_id: str) -> None:
+        with contextlib.suppress(httpx.HTTPError):
+            await self._http.post("/history", json={"delete": [prompt_id]})
+
+    async def _execute(self, workflow: dict[str, Any], tracker: _ProgressTracker | None) -> tuple[str, dict[str, Any]]:
+        """Queue a workflow, follow it to the end, and return its prompt id and history entry."""
+        client_id = uuid.uuid4().hex
+        async with websockets.connect(
+            f"ws://127.0.0.1:{self.port}/ws?clientId={client_id}", max_size=None, open_timeout=20
+        ) as ws:
+            r = await self._http.post("/prompt", json={"prompt": workflow, "client_id": client_id})
+            if r.status_code != 200:
+                raise EngineError(f"workflow rejected: {_short(r.text)}", code="bad_request")
+            prompt_id = r.json()["prompt_id"]
+            if tracker:
+                tracker.report(0.0, "loading_model")
+            while True:
+                raw = await ws.recv()
+                if isinstance(raw, bytes):
+                    continue  # previews (disabled anyway)
+                msg = json.loads(raw)
+                t, data = msg.get("type"), msg.get("data", {})
+                if data.get("prompt_id") not in (None, prompt_id):
+                    continue
+                if t == "executing":
+                    if data.get("node") is None:
+                        break
+                    if tracker:
+                        tracker.node_started(str(data["node"]))
+                elif t == "execution_cached":
+                    if tracker:
+                        tracker.nodes_cached([str(n) for n in data.get("nodes") or []])
+                elif t == "progress":
+                    if tracker:
+                        tracker.sampling(str(data.get("node") or "?"), data.get("value", 0), data.get("max", 1))
+                elif t == "execution_error":
+                    text = f"{data.get('exception_type', '')}: {data.get('exception_message', '')}"
+                    code = "oom" if any(h in text.lower() for h in OOM_HINTS) else "engine"
+                    raise EngineError(_short(text), code=code)
+                elif t == "execution_interrupted":
+                    raise EngineError("cancelled", code="cancelled")
+                elif t == "execution_success":
+                    break
+                # anything else (status, execution_start, progress_state, executed, ...) changes nothing
+        hist = (await self._http.get(f"/history/{prompt_id}")).json().get(prompt_id, {})
+        return prompt_id, hist
 
 
 SAMPLER_TYPES = {"KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"}

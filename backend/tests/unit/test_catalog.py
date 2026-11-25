@@ -33,7 +33,7 @@ def test_files_referenced_by_workflows_are_in_manifest():
             for node in wf.values():
                 if not isinstance(node, dict):
                     continue
-                for k in ("unet_name", "clip_name", "vae_name", "lora_name", "ckpt_name", "text_encoder"):
+                for k in ("unet_name", "clip_name", "vae_name", "lora_name", "ckpt_name", "text_encoder", "model_name"):
                     v = node.get("inputs", {}).get(k)
                     if isinstance(v, str) and not v.startswith("$"):
                         assert v in dests, (m.id, v)
@@ -138,3 +138,51 @@ def test_adult_engines_are_never_picked_automatically():
         for qualities in modes.values():
             for ids in qualities.values():
                 assert not any(CAT.get(i).manifest.adult for i in ids), (kind, ids)
+
+
+def test_ltx2_runs_the_two_stage_pipeline_at_sizes_its_first_stage_can_halve():
+    m = CAT.get("ltx2")
+    for q in m.manifest.quality.values():
+        for w, h in q.sizes.values():
+            assert w % 64 == 0 and h % 64 == 0, (w, h)
+    for mode in ("t2v", "i2v"):
+        wf = m.workflows[mode]
+        kinds = [n["class_type"] for k, n in wf.items() if not k.startswith("_")]
+        assert kinds.count("SamplerCustomAdvanced") == 2 and "LTXVLatentUpsampler" in kinds
+    up = {f.dest for f in m.manifest.files_for(m.manifest.variants[0], "t2v")}
+    assert "latent_upscale_models/ltx-2-spatial-upscaler-x2-1.0.safetensors" in up
+
+
+def test_wan_videos_are_interpolated_to_32_fps():
+    for mid in ("wan22-a14b", "wan22-i2v-adult"):
+        m = CAT.get(mid)
+        mode = "t2v" if "t2v" in m.workflows else "i2v"
+        fp = FriendlyParams(kind="video", prompt="p", model_id=mid, mode=mode, reference_asset_id=uuid.uuid4())
+        pl = plan(CAT, fp, ALL)
+        assert pl.output.fps == 32 and abs(pl.output.duration_s - 81 / 16) < 1e-6
+        out = render_workflow(m.workflows[mode], workflow_params(CAT, pl, fp, m.manifest.variants[0], seed=1))
+        interp = next(n for n in out.values() if n["class_type"] == "FrameInterpolate")
+        video = next(n for n in out.values() if n["class_type"] == "CreateVideo")
+        assert interp["inputs"]["multiplier"] == 2 and video["inputs"]["fps"] == 32
+
+
+def test_standard_wan_uses_the_full_model_and_draft_the_speed_up():
+    q = CAT.get("wan22-a14b").manifest.quality
+    assert q["draft"].params["lora_strength"] == 1.0 and q["draft"].params["steps"] == 4
+    assert q["standard"].params["lora_strength"] == 0.0 and q["standard"].params["steps"] == 20
+    assert q["best"].params["steps"] == 40
+
+
+def test_standard_and_best_pictures_go_to_flux2_first():
+    for q in ("standard", "best"):
+        assert CAT.route("image", "t2i", q, ALL).id == "flux2-dev"
+        assert CAT.route("image", "t2i", q, ALL - {"flux2-dev"}).id == "qwen-image-2512"
+    assert CAT.route("image", "t2i", "draft", ALL).id == "z-image-turbo"
+
+
+def test_every_model_file_lands_in_a_folder_comfyui_is_told_about():
+    from aivo_worker.engines.comfy import MODEL_FOLDERS
+
+    files = [f for m in CAT.models.values() for f in m.manifest.files] + list(CAT.rewriter.files)
+    for f in files:
+        assert f.dest.split("/", 1)[0] in MODEL_FOLDERS, f.dest

@@ -13,6 +13,8 @@ license:
 supports: {avoid: true, seed: true}
 modes:
   - {mode: t2i, workflow: workflows/t2i.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2i: image}
 variants:
   - id: fp8
     precision: fp8

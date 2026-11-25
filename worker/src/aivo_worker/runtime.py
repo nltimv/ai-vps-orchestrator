@@ -29,6 +29,8 @@ from aivo_protocol.worker_api import (
     LogLine,
     ProgressIn,
     ProgressOut,
+    PromptIn,
+    RewriteSpec,
     Ticket,
     WorkerInfo,
     WorkSpec,
@@ -45,6 +47,17 @@ log = logging.getLogger(__name__)
 
 def _short(job_id: str) -> str:
     return job_id.split("-", 1)[0][:8]
+
+
+def _fill(value: Any, marker: str, text: str) -> Any:
+    """``value`` with ``marker`` replaced by ``text`` in every string inside it."""
+    if isinstance(value, str):
+        return value.replace(marker, text) if marker in value else value
+    if isinstance(value, dict):
+        return {k: _fill(v, marker, text) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill(v, marker, text) for v in value]
+    return value
 
 
 class WorkerRuntime:
@@ -136,6 +149,45 @@ class WorkerRuntime:
             return {"cancelled": True}
         return {"error": f"{code}: {message[:500]}"}
 
+    def _can_rewrite(self, rw: RewriteSpec) -> bool:
+        engine_up = self._engine_task is not None and self._engine_task.done() and not self.engine_error
+        return engine_up and self.files.status(rw.files).all_ready
+
+    async def _rewrite(self, aivo: AivoClient, rw: RewriteSpec) -> str:
+        """The improved description (checked by aivo), or the user's own if anything goes wrong.
+
+        Never logs the text: the log goes to admins and isn't encrypted.
+        """
+        t0 = time.monotonic()
+        text: str | None = None
+        error: str | None = None
+        self.logs.emit("agent", "improving the description")
+        try:
+            text = await asyncio.wait_for(self.engine.generate_text(rw.workflow, rw.output_node), rw.timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"[:300] if str(e) else type(e).__name__
+            self.logs.emit("agent", f"the language model failed: {error}", "warning")
+            if isinstance(e, TimeoutError):
+                with contextlib.suppress(Exception):
+                    await self.engine.cancel()
+        seconds = time.monotonic() - t0
+        try:
+            out = await aivo.prompt(PromptIn(text=text, error=error, seconds=seconds))
+        except TicketRejected:
+            raise
+        except Exception as e:
+            self.logs.emit(
+                "agent", f"aivo couldn't check the improved description ({e}); using it as written", "warning"
+            )
+            return rw.fallback
+        self.logs.emit(
+            "agent",
+            f"description improved in {seconds:.1f} s" if out.rewritten else "using the description as written",
+        )
+        return out.prompt
+
     # -- the RunPod handler -----------------------------------------------------------
 
     async def handle(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -168,28 +220,49 @@ class WorkerRuntime:
         sid = _short(spec.job_id)
         self.logs.emit("agent", f"job {sid}: {spec.model_id}, {len(spec.files)} model file(s)")
 
-        # 1) model files (already here when this worker ran the same engine before)
+        # 1) model files (already here when this worker ran the same engine before). The description is
+        #    improved as soon as the language model's file and the AI engine are ready, while the rest
+        #    downloads.
         dests = [f.dest for f in spec.files]
         self.files.ensure(spec.files)
         total = sum(f.bytes or 0 for f in spec.files) or 1
-        while True:
-            st = self.files.status(dests)
-            if st.all_ready:
-                break
-            if st.failed:
-                return await self._fail(
-                    aivo, "missing_files", "; ".join(f"{f.dest}: {f.error}" for f in st.failed)[:1500], t0
-                )
-            done = sum(f.bytes_done for f in st.files)
-            if (await self._push(aivo, "loading_model", min(0.99, done / total))).cancel:
-                return await self._fail(aivo, "cancelled", "cancelled while loading the model", t0)
-            await asyncio.sleep(self.progress_every_s)
+        rewriting: asyncio.Task[str] | None = None
+        try:
+            while True:
+                st = self.files.status(dests)
+                if spec.rewrite and rewriting is None and self._can_rewrite(spec.rewrite):
+                    rewriting = asyncio.create_task(self._rewrite(aivo, spec.rewrite), name="rewrite")
+                if st.all_ready:
+                    break
+                if st.failed:
+                    return await self._fail(
+                        aivo, "missing_files", "; ".join(f"{f.dest}: {f.error}" for f in st.failed)[:1500], t0
+                    )
+                done = sum(f.bytes_done for f in st.files)
+                if (await self._push(aivo, "loading_model", min(0.99, done / total))).cancel:
+                    return await self._fail(aivo, "cancelled", "cancelled while loading the model", t0)
+                await asyncio.sleep(self.progress_every_s)
 
-        # 2) the AI engine
-        if self._engine_task is not None:
-            await self._engine_task
-        if self.engine_error:
-            return await self._fail(aivo, "engine", f"The AI engine could not start: {self.engine_error}", t0)
+            # 2) the AI engine
+            if self._engine_task is not None:
+                await self._engine_task
+            if self.engine_error:
+                return await self._fail(aivo, "engine", f"The AI engine could not start: {self.engine_error}", t0)
+
+            # 2b) the improved description
+            workflow = spec.workflow
+            if spec.rewrite:
+                if rewriting is None:
+                    rewriting = asyncio.create_task(self._rewrite(aivo, spec.rewrite), name="rewrite")
+                while not rewriting.done():
+                    if (await self._push(aivo, "improving", 0.0)).cancel:
+                        await self.engine.cancel()
+                        return await self._fail(aivo, "cancelled", "cancelled while improving the description", t0)
+                    await asyncio.wait({rewriting}, timeout=self.progress_every_s)
+                workflow = _fill(workflow, spec.rewrite.marker, rewriting.result())
+        finally:
+            if rewriting is not None and not rewriting.done():
+                rewriting.cancel()
 
         # 3) starting files, then the job itself
         for name in spec.inputs:
@@ -198,7 +271,7 @@ class WorkerRuntime:
             JobIn(
                 job_id=spec.job_id,
                 model_id=spec.model_id,
-                workflow=spec.workflow,
+                workflow=workflow,
                 inputs=spec.inputs,
                 required_files=dests,
                 output=spec.output,

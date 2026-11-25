@@ -25,6 +25,7 @@ prepared on a host for it, so later starts are quicker.
 | Start | RunPod starts a worker on a host that already has the worker image. It's the same image as aivo's own release. | Yes, from here |
 | Fetch | The worker asks aivo for the job with the ticket. It gets the engine, the model files and where to get them, and the starting picture. | Yes |
 | Models | The worker downloads the model files from Hugging Face. They stay on the worker's disk for its next job, or on your network volume. | Yes |
+| Improve | A small language model on the same GPU details the description (*Improve my description*); aivo checks the result and keeps it, sealed, with the creation. | Yes |
 | Create | ComfyUI makes the creation. The worker reports progress and log lines to aivo. | Yes |
 | Deliver | The worker uploads each result to aivo over HTTPS. aivo encrypts it onto the media volume right away, and the worker deletes its copy. | Yes |
 | Done | The worker tells aivo it's done; the ticket stops working. RunPod's record of the job holds only file names. | Yes, while it waits for a next job |
@@ -117,7 +118,7 @@ files are stored on the volume, never creations.
   trusts RunPod as much as any GPU provider.
 - **Tickets.**
   - One per job; aivo stores only its SHA-256.
-  - It opens only that job's `spec`, `inputs`, `progress`, `outputs`, `complete` and `fail`, and only
+  - It opens only that job's `spec`, `inputs`, `prompt`, `progress`, `outputs`, `complete` and `fail`, and only
     while the job waits for or is with a worker.
   - It stops working when the job ends, is cancelled or moves to another GPU type.
   - A wrong ticket and an unknown job look the same (401).

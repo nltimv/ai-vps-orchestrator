@@ -107,6 +107,7 @@ class JobOut(BaseModel):
     model_id: str
     model_name: str
     prompt: str
+    prompt_used: str | None = None  # the improved description it was made with, if it was improved
     avoid: str | None = None
     lyrics: str | None = None
     params: dict[str, Any]

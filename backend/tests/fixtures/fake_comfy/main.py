@@ -113,6 +113,12 @@ async def run(pid, wf, ws):
             print("Prompt executed in 0.10 seconds", flush=True)
         await ws.send_text(json.dumps({"type": "executed", "data": {"node": node, "prompt_id": pid, "output": None}}))
     outputs = {}
+    texts = {}
+    for node, spec in wf.items():
+        if spec["class_type"] == "TextGenerate":  # like Qwen3 with /no_think: an empty reasoning block first
+            texts[node] = "<think>\n\n</think>\n\nA detailed version of: " + spec["inputs"]["prompt"][-40:]
+        if spec["class_type"] == "PreviewAny":
+            outputs[node] = {"text": [texts.get(str(spec["inputs"]["source"][0]), "")]}
     for node, spec in wf.items():
         if spec["class_type"] == "SaveImage":
             prefix = spec["inputs"]["filename_prefix"]

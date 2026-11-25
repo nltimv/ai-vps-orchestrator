@@ -58,8 +58,12 @@ async def test_vram_floor_respected():
 
 async def test_wan_balanced_picks_48gb_fast_best_picks_h100():
     o = await offers()
-    bal = rank(req(kind="video", model="wan22-a14b", quality="standard"), o, [], ctx())
+    # Draft (the 4-step speed-up): a short job, so a 48 GB card is the balanced pick
+    bal = rank(req(kind="video", model="wan22-a14b", quality="draft"), o, [], ctx())
     assert bal[0].offer.vram_gb == 48
+    # Standard runs the full model for minutes: on RunPod's prices an H100 can be worth it
+    bal_std = rank(req(kind="video", model="wan22-a14b", quality="standard"), o, [], ctx())
+    assert bal_std[0].offer.vram_gb >= 48
     fast = rank(req(kind="video", model="wan22-a14b", quality="best", preference="fast"), o, [], ctx())
     assert fast[0].offer.gpu_class in ("h100", "h200")
     bal_best = rank(req(kind="video", model="wan22-a14b", quality="best", preference="balanced"), o, [], ctx())

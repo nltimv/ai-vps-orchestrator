@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 
 from aivo.catalog.loader import Catalog, CatalogError, CatalogModel
-from aivo_protocol.catalog_types import Aspect, Kind, Mode, Quality, Variant
+from aivo_protocol.catalog_types import Aspect, Kind, Mode, ModelManifest, Quality, Variant
 from aivo_protocol.worker_api import OutputSpec
 
 DEFAULT_ASPECT: dict[str, Aspect] = {"image": "square", "video": "landscape", "music": "square"}
@@ -22,6 +22,11 @@ FALLBACK_SIZES: dict[str, tuple[int, int]] = {
     "wide": (1344, 768),
 }
 REFERENCE_INPUT_NAME = "reference.png"
+# Parameters that hold the user's words. They're left out of ``jobs.resolved`` (which isn't encrypted)
+# and rebuilt from the sealed description when a worker fetches the job.
+TEXT_PARAMS = ("prompt", "negative", "tags", "lyrics")
+# Stands in for the description in a workflow until the worker has improved it (see ``RewriteSpec``).
+PROMPT_MARKER = "@@aivo:prompt@@"
 
 
 class FriendlyParams(BaseModel):
@@ -42,6 +47,7 @@ class FriendlyParams(BaseModel):
     instrumental: bool = False
     seed: int | None = Field(default=None, ge=0, le=2**32 - 1)
     reference_asset_id: uuid.UUID | None = None
+    enhance: bool = True  # "Improve my description": a language model on the GPU details it first
 
     @field_validator("model_id")
     @classmethod
@@ -105,7 +111,7 @@ def plan(catalog: Catalog, p: FriendlyParams, enabled: set[str]) -> Plan:
             width=width,
             height=height,
             duration_s=secs,
-            fps=mf.video.fps,
+            fps=mf.video.out_fps,
             with_audio=mf.supports.sound and p.sound,
         )
     else:
@@ -140,22 +146,64 @@ def _size(m: CatalogModel, p: FriendlyParams) -> tuple[int, int]:
     return FALLBACK_SIZES[aspect]
 
 
+def describe(catalog: Catalog, mf: ModelManifest, p: FriendlyParams) -> str:
+    """The description as an engine gets it without rewriting: the user's words and the style's phrasing."""
+    prompt = p.prompt.strip()
+    if p.style and p.style in catalog.styles:
+        suffix = catalog.styles[p.style].suffix_for(mf.family)
+        if suffix:
+            prompt = f"{prompt}, {suffix}"
+    return prompt
+
+
+def with_prefix(mf: ModelManifest, prompt: str) -> str:
+    """An add-on's trigger word goes in front, outside anything the rewriter writes."""
+    return f"{mf.prompt_prefix}, {prompt}" if mf.prompt_prefix else prompt
+
+
+def text_params(catalog: Catalog, mf: ModelManifest, p: FriendlyParams, *, prompt: str | None = None) -> dict[str, Any]:
+    """The workflow parameters that hold the user's words (``TEXT_PARAMS``).
+
+    ``prompt`` replaces the description (an improved one, or ``PROMPT_MARKER``).
+    """
+    full = with_prefix(mf, describe(catalog, mf, p) if prompt is None else prompt)
+    negative = mf.defaults.get("negative", "")
+    if mf.supports.avoid and p.avoid:
+        negative = f"{p.avoid}, {negative}".strip(", ")
+    out: dict[str, Any] = {"prompt": full, "negative": negative}
+    if mf.kind == "music":
+        out["tags"] = full
+        lyrics = (p.lyrics or "").strip()
+        out["lyrics"] = "[instrumental]" if (p.instrumental or not lyrics) else lyrics
+    return out
+
+
+def rewrite_for(catalog: Catalog, mf: ModelManifest, mode: str, p: FriendlyParams) -> str | None:
+    """Which rewriting instructions this creation gets, if its description is to be improved."""
+    if not p.enhance or catalog.rewriter is None:
+        return None
+    rid = mf.rewrite.get(mode)  # type: ignore[call-overload]
+    return rid if rid in catalog.rewriter.instructions else None
+
+
+def rewrite_input(catalog: Catalog, mf: ModelManifest, rid: str, p: FriendlyParams) -> str:
+    """What the language model reads: its instructions, the requested style and the user's description."""
+    rw = catalog.rewriter
+    assert rw is not None
+    style = ""
+    if p.style and p.style in catalog.styles:
+        st = catalog.styles[p.style]
+        suffix = st.suffix_for(mf.family)
+        style = f"Style: {st.label}" + (f" ({suffix})" if suffix else "") + "\n"
+    return rw.template.format(instructions=rw.instructions[rid].strip(), style=style, description=p.prompt.strip())
+
+
 def workflow_params(
     catalog: Catalog, pl: Plan, p: FriendlyParams, variant: Variant, *, seed: int | None = None, prefix: str = "aivo"
 ) -> dict[str, Any]:
     """All ``$placeholders`` a workflow template may use."""
     mf = pl.model.manifest
     q = mf.quality[pl.quality]
-    prompt = p.prompt.strip()
-    if mf.prompt_prefix:
-        prompt = f"{mf.prompt_prefix}, {prompt}"
-    if p.style and p.style in catalog.styles:
-        suffix = catalog.styles[p.style].suffix_for(mf.family)
-        if suffix:
-            prompt = f"{prompt}, {suffix}"
-    negative = mf.defaults.get("negative", "")
-    if mf.supports.avoid and p.avoid:
-        negative = f"{p.avoid}, {negative}".strip(", ")
     seed = (
         p.seed if (p.seed is not None and mf.supports.seed) else (seed if seed is not None else random.randrange(2**32))
     )
@@ -163,8 +211,7 @@ def workflow_params(
         **{k: v for k, v in mf.defaults.items() if k != "negative"},
         **q.params,
         **variant.params,
-        "prompt": prompt,
-        "negative": negative,
+        **text_params(catalog, mf, p),
         "seed": seed,
         "batch": pl.output.count,
         "prefix": prefix,
@@ -175,13 +222,12 @@ def workflow_params(
         assert mf.video is not None
         params["frames"] = mf.video.frames_for(pl.output.duration_s or 5)
         params["fps"] = mf.video.fps
+        params["out_fps"] = mf.video.out_fps
+        params["interpolate"] = mf.video.interpolate
         params["duration"] = pl.output.duration_s
         params["sound"] = pl.output.with_audio
     if mf.kind == "music":
         params["duration"] = pl.output.duration_s
-        params["tags"] = prompt
-        lyrics = (p.lyrics or "").strip()
-        params["lyrics"] = "[instrumental]" if (p.instrumental or not lyrics) else lyrics
     if catalog.mode_needs_reference(pl.mode):
         params["reference_image"] = REFERENCE_INPUT_NAME
     return params

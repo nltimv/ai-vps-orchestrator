@@ -42,13 +42,16 @@ export function CreatePage() {
   const [style, setStyle] = useState<string | null>((p.style as string) ?? null);
   const [aspect, setAspect] = useState<Aspect | null>((p.aspect as Aspect) ?? null);
   const [quality, setQuality] = useState<Quality>((p.quality as Quality) ?? "standard");
-  const [count, setCount] = useState<number>((p.count as number) ?? 1);
+  // two pictures by default: one of them is usually clearly better
+  const defaultCount = (k: Kind) => (k === "image" ? 2 : 1);
+  const [count, setCount] = useState<number>((p.count as number) ?? defaultCount(prefill.kind ?? "image"));
   const [durationKey, setDurationKey] = useState<string | null>((p.duration as string) ?? null);
   const [sound, setSound] = useState<boolean>((p.sound as boolean) ?? true);
   const [lyrics, setLyrics] = useState(prefill.lyrics ?? "");
   const [instrumental, setInstrumental] = useState<boolean>((p.instrumental as boolean) ?? false);
   const [avoid, setAvoid] = useState(prefill.avoid ?? "");
   const [seed, setSeed] = useState<number | null>(prefill.seed ?? null);
+  const [enhance, setEnhance] = useState<boolean>((p.enhance as boolean) ?? true);
   const [modelId, setModelId] = useState<string>(prefill.model_id ?? "auto");
   const [preference, setPreference] = useState<Preference | null>(null);
   const [reference, setReference] = useState<Asset | null>(prefill.reference ?? null);
@@ -79,7 +82,9 @@ export function CreatePage() {
     // only once the engine list is there: a preselected engine (e.g. "Animate this") must survive loading
     if (catalog.data && modelId !== "auto" && !usable.some((m) => m.id === modelId)) setModelId("auto");
   }, [catalog.data, usable, modelId]);
-  useEffect(() => setCount((c) => Math.min(c, maxCount)), [maxCount]);
+  const haveEngine = !!routed;
+  // only once the engines are known: before that maxCount is 1 and would undo the default of two pictures
+  useEffect(() => { if (haveEngine) setCount((c) => Math.min(c, maxCount)); }, [maxCount, haveEngine]);
 
   const fullPrompt = kind === "music" && genres.length ? `${genres.join(", ")}. ${prompt}` : prompt;
   const body: CreateRequest = {
@@ -87,7 +92,7 @@ export function CreatePage() {
     avoid: supports.avoid && avoid ? avoid : null, style: kind === "music" ? null : style,
     aspect: kind === "music" ? null : aspect, quality, duration: kind === "image" ? null : durationKey,
     count, sound, lyrics: kind === "music" && !instrumental ? lyrics || null : null, instrumental,
-    seed, reference_asset_id: reference?.id ?? null, preference,
+    seed, reference_asset_id: reference?.id ?? null, enhance, preference,
     placement: { mode: "auto", allow_fallback: true },
   };
   const { prompt: _ignored, ...estimateKey } = body;
@@ -137,7 +142,7 @@ export function CreatePage() {
         <div className="mb-5 inline-flex rounded-xl panel p-1" role="tablist">
           {KIND_TABS.map((t) => (
             <button key={t.id} role="tab" aria-selected={kind === t.id}
-              onClick={() => { setKind(t.id); setDurationKey(null); if (t.id === "music") setReference(null); }}
+              onClick={() => { setKind(t.id); setCount(defaultCount(t.id)); setDurationKey(null); if (t.id === "music") setReference(null); }}
               className={cn("flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors cursor-pointer",
                 kind === t.id ? "brand-gradient text-white" : "hover:bg-[var(--panel-2)]")}>
               <KindIcon kind={t.id} className="size-4" /> {t.label}
@@ -216,6 +221,16 @@ export function CreatePage() {
           )}
           {kind === "video" && supports.sound && (
             <Toggle checked={sound} onChange={setSound} label="Include sound (only some engines can)" />
+          )}
+          {routed?.improves.includes(mode) && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+              <Toggle checked={enhance} onChange={setEnhance} label="Improve my description" />
+              <span className="text-xs text-muted">
+                {enhance
+                  ? "Before creating, a small AI on the GPU adds detail: light, setting, camera. You'll see what it wrote."
+                  : "Your description is used exactly as you wrote it"}
+              </span>
+            </div>
           )}
           {catalog.data && (
             <div><Label>Quality</Label>
