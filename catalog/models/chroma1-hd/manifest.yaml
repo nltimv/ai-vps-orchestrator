@@ -14,6 +14,8 @@ license:
 supports: {avoid: true, seed: true}
 modes:
   - {mode: t2i, workflow: workflows/t2i.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2i: image}
 variants:
   - id: fp8
     precision: fp8
@@ -67,7 +69,7 @@ defaults:
   negative: >-
     low quality, ugly, unfinished, out of focus, deformed, disfigured, blurry, smudged,
     restricted palette, flat colors, child, minor, teen, childlike, young-looking
-max_count: 4
+max_batch: 4  # per run; a creation may have more (made one batch after another)
 output_mb: 2.0
 tags: [adult]
 notes: >

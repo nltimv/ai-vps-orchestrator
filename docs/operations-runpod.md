@@ -25,6 +25,7 @@ prepared on a host for it, so later starts are quicker.
 | Start | RunPod starts a worker on a host that already has the worker image. It's the same image as aivo's own release. | Yes, from here |
 | Fetch | The worker asks aivo for the job with the ticket. It gets the engine, the model files and where to get them, and the starting picture. | Yes |
 | Models | The worker downloads the model files from Hugging Face. They stay on the worker's disk for its next job, or on your network volume. | Yes |
+| Improve | A small language model on the same GPU details the description (*Improve my description*); aivo checks the result and keeps it, sealed, with the creation. | Yes |
 | Create | ComfyUI makes the creation. The worker reports progress and log lines to aivo. | Yes |
 | Deliver | The worker uploads each result to aivo over HTTPS. aivo encrypts it onto the media volume right away, and the worker deletes its copy. | Yes |
 | Done | The worker tells aivo it's done; the ticket stops working. RunPod's record of the job holds only file names. | Yes, while it waits for a next job |
@@ -44,8 +45,12 @@ waits between jobs, and the wait after the last one.
 
 ## Setup
 
-1. **Create an API key** in the RunPod console (Settings → API keys) with read/write access to
-   Serverless. It can manage everything in your RunPod account, so keep it as secret as any cloud token.
+1. **Create an API key** in the RunPod console (Credentials → API Keys). It can manage everything in
+   your RunPod account, so keep it as secret as any cloud token.
+   - **All** works.
+   - A **Restricted** key must be allowed to create, change and delete Serverless endpoints *and
+     their templates*, and to run jobs on endpoints it creates. A key that can create endpoints but not
+     run jobs gets "403: you do not have permission to perform this action" from `api.runpod.ai`.
 2. **Add credit.** RunPod is prepaid; with $0 balance, workers stop.
 3. **Make aivo reachable for the workers.** They call `https://<your aivo>/api/v1/worker/...`.
    - Set `AIVO_PUBLIC_URL`, or `AIVO_WORKER_API_URL` if workers should use another address. It must be
@@ -80,7 +85,7 @@ In **Settings → GPUs**:
 | Keep a GPU waiting for a next creation | 60 s | The endpoint's idle timeout: billed, but the next creation starts without a cold start |
 | Try another GPU type if none is free after | 5 min | Moves a waiting job to the next GPU type |
 | Give up waiting for a free GPU after | 30 min | Then the creation fails with "No GPU became available" |
-| Longest a single creation may take | 60 min | RunPod's execution timeout gets an extra 20 min for model downloads |
+| Longest a single creation may take | 60 min | Per picture batch or video: a creation of 4 videos may take 4× as long. RunPod's execution timeout gets an extra 20 min for model downloads |
 | Never use these GPU types | – | RunPod GPU type names |
 
 **GPUs → Keep one ready 30 min** sets that GPU type's minimum workers to 1 for half an hour. One
@@ -117,7 +122,7 @@ files are stored on the volume, never creations.
   trusts RunPod as much as any GPU provider.
 - **Tickets.**
   - One per job; aivo stores only its SHA-256.
-  - It opens only that job's `spec`, `inputs`, `progress`, `outputs`, `complete` and `fail`, and only
+  - It opens only that job's `spec`, `inputs`, `prompt`, `progress`, `outputs`, `complete` and `fail`, and only
     while the job waits for or is with a worker.
   - It stops working when the job ends, is cancelled or moves to another GPU type.
   - A wrong ticket and an unknown job look the same (401).
@@ -137,11 +142,18 @@ files are stored on the volume, never creations.
   - The worker can't reach `AIVO_PUBLIC_URL`. Check the endpoint's worker logs in the RunPod console
     (Serverless → `aivo-…` endpoint → Workers): look for "aivo unreachable" or "HTTP 401/413".
   - A 413 means the ingress refuses large uploads.
-- **401 errors in the backend log about RunPod.** The API key is wrong or lacks Serverless access.
+- **401 errors in the backend log about RunPod.** The API key is wrong.
+- **403 "you do not have permission" when submitting a creation**, although endpoints get created: the key
+  may not run jobs on the endpoints it creates. Use a key with *All* permissions, or widen it (see Setup).
+- **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
+  types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.
 
 ## Limits
 
 - Only NVIDIA GPUs: the worker image is built for CUDA.
-- RunPod's API was implemented from its documentation (API v2, November 2026). It's tested against
-  a simulated RunPod, not yet against RunPod itself. Please report anything that behaves differently.
+- RunPod's API was implemented from its documentation (API v2, November 2026) and is tested against a
+  simulated RunPod. Against RunPod itself (November 2026), these were tried: the GPU catalog, creating
+  and deleting endpoints, submitting jobs and reading their status, and the worker image running
+  every engine. The whole loop, with workers calling a deployed aivo back, hasn't been tried yet.
+  Please report anything that behaves differently.

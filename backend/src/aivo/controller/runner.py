@@ -104,9 +104,11 @@ class JobRunner:
             )
         if not ok:
             return
+        # the job's own limit (several runs for a creation with many videos), plus time to download models
+        limit_s = int((job.resolved or {}).get("timeout_s") or rs.job_timeout_s)
         policy = {
-            "executionTimeout": (rs.job_timeout_s + 1200) * 1000,
-            "ttl": (rs.capacity_wait_max_s + rs.job_timeout_s + 1800) * 1000,
+            "executionTimeout": (limit_s + 1200) * 1000,
+            "ttl": (rs.capacity_wait_max_s + limit_s + 1800) * 1000,
         }
         rp_id = await app.runpod.run(str(ep.runpod_id), ticket.model_dump(), policy)
         async with app.sessionmaker() as s, s.begin():
@@ -233,10 +235,14 @@ class JobRunner:
         await self._finish(job.id, "cancelled", "cancelled", None)
 
     async def _finish(self, job_id: uuid.UUID, state: str, code: str, message: str | None) -> None:
+        from aivo.api.routes.worker import discard_outputs, finish_partly
+
         async with self.app.sessionmaker() as s, s.begin():
             row = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
             if row is None or row.state in TERMINAL_JOB_STATES:
                 return
+            if await finish_partly(s, row, "cancelled" if state == "cancelled" else code):
+                return  # some results had arrived: they're kept
             await transition_job(
                 s,
                 job_id,
@@ -248,6 +254,4 @@ class JobRunner:
                 ticket_hash=None,
                 reserved_usd=0,
             )
-        from aivo.api.routes.worker import discard_outputs
-
         await discard_outputs(self.app, job_id)

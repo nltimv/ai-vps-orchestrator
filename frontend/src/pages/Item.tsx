@@ -32,9 +32,12 @@ export function ItemPage() {
       </Link>
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div>
-          {isActive(j.state) || !out ? <JobCard job={j} /> : <MediaView asset={out} />}
+          {/* while it's being made, what's ready already shows; the progress card says how far the rest is */}
+          {isActive(j.state) && <div className="mb-3"><JobCard job={j} /></div>}
+          {out ? <MediaView asset={out} /> : !isActive(j.state) && <JobCard job={j} />}
+          {j.state === "succeeded" && j.error && <p className="mt-2 text-sm text-muted">{j.error}</p>}
           {j.outputs.length > 1 && (
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               {j.outputs.map((o, i) => (
                 <button key={o.id} onClick={() => setIdx(i)} className={`overflow-hidden rounded-lg border-2 ${i === idx ? "border-brand-500" : "border-transparent"}`}>
                   <img src={o.thumb_url ?? o.url} alt={`Version ${i + 1}`} className="size-16 object-cover" />
@@ -48,6 +51,18 @@ export function ItemPage() {
             <div className="text-xs uppercase tracking-wide text-muted">Description</div>
             <p className="mt-1 whitespace-pre-wrap text-sm">{j.prompt}</p>
           </div>
+          {j.prompt_used && (
+            <details className="group" data-testid="improved">
+              <summary className="cursor-pointer text-xs uppercase tracking-wide text-muted hover:text-[var(--text)]">
+                Improved description
+              </summary>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{j.prompt_used}</p>
+              <button type="button" className="mt-1 text-xs text-brand-500 hover:underline cursor-pointer"
+                onClick={() => remix({ seed: null, prompt: j.prompt_used ?? j.prompt, params: { ...j.params, enhance: false } })}>
+                Start from this text
+              </button>
+            </details>
+          )}
           {j.lyrics && (
             <div>
               <div className="text-xs uppercase tracking-wide text-muted">Lyrics</div>

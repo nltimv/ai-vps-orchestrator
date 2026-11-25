@@ -14,6 +14,8 @@ supports: {avoid: false, seed: true}
 modes:
   - {mode: t2i, workflow: workflows/t2i.json}
   - {mode: edit, workflow: workflows/edit.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2i: image}
 variants:
   - id: bf16
     precision: bf16

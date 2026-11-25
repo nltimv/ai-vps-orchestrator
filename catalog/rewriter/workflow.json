@@ -1,0 +1,19 @@
+{
+  "_comment": "Improves the description before creating: Qwen3-4B (the same file Z-Image and FLUX.2 Klein use as text encoder) writes a detailed prompt with ComfyUI's built-in text generation. The worker reads node 3's text.",
+  "1": {"class_type": "CLIPLoader", "inputs": {"clip_name": "qwen_3_4b.safetensors", "type": "lumina2", "device": "default"}},
+  "2": {"class_type": "TextGenerate", "inputs": {
+    "clip": ["1", 0],
+    "prompt": "$text",
+    "max_length": "$max_tokens",
+    "sampling_mode": "on",
+    "sampling_mode.temperature": "$temperature",
+    "sampling_mode.top_k": "$top_k",
+    "sampling_mode.top_p": "$top_p",
+    "sampling_mode.min_p": "$min_p",
+    "sampling_mode.repetition_penalty": "$repetition_penalty",
+    "sampling_mode.seed": "$seed",
+    "thinking": false,
+    "use_default_template": true
+  }},
+  "3": {"class_type": "PreviewAny", "inputs": {"source": ["2", 0]}}
+}

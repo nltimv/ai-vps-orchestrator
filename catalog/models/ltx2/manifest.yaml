@@ -4,7 +4,7 @@ display_name: "Video · Quick with sound"
 tagline: "Fast clips with matching sound effects and ambience"
 description: >
   LTX-2 19B (Lightricks): audio+video generated together, distilled for very
-  fast 8-step generation.
+  fast generation: 8 steps at half size, a 2x latent upscaler, then 3 refining steps.
 family: cinematic
 license:
   name: LTX-2 Community License
@@ -15,6 +15,8 @@ supports: {avoid: true, seed: true, sound: true}
 modes:
   - {mode: t2v, workflow: workflows/t2v.json}
   - {mode: i2v, workflow: workflows/i2v.json}
+# improve the description on the GPU first (catalog/rewriting.yaml)
+rewrite: {t2v: video_audio, i2v: animate_audio}
 variants:
   - id: fp8
     precision: fp8
@@ -22,7 +24,7 @@ variants:
     recommended_vram_gb: 48
     min_ram_gb: 64
     quality_rank: 2
-    files: [ckpt_fp8, te]
+    files: [ckpt_fp8, te, upscaler]
     params: {ckpt: ltx-2-19b-distilled-fp8.safetensors}
   - id: bf16
     precision: bf16
@@ -30,7 +32,7 @@ variants:
     recommended_vram_gb: 80
     min_ram_gb: 96
     quality_rank: 3
-    files: [ckpt_bf16, te]
+    files: [ckpt_bf16, te, upscaler]
     params: {ckpt: ltx-2-19b-distilled.safetensors}
 files:
   # Lightricks/LTX-2 is public (no token needed); checked against the Hugging Face API, Nov 2026
@@ -40,19 +42,20 @@ files:
      dest: checkpoints/ltx-2-19b-distilled.safetensors, bytes: 43285058186}
   - {id: te, repo: Comfy-Org/ltx-2, path: split_files/text_encoders/gemma_3_12B_it_fp8_scaled.safetensors,
      dest: text_encoders/gemma_3_12B_it_fp8_scaled.safetensors, bytes: 13200000000}
+  - {id: upscaler, repo: Lightricks/LTX-2, path: ltx-2-spatial-upscaler-x2-1.0.safetensors,
+     dest: latent_upscale_models/ltx-2-spatial-upscaler-x2-1.0.safetensors, bytes: 995765578}
+# The distilled two-stage pipeline has fixed steps (ManualSigmas in the workflows); quality is the size.
+# Sizes are multiples of 64: the first stage runs at half of them, in multiples of 32.
 quality:
   draft:
     label: Draft
-    params: {steps: 6}
-    sizes: {square: [640, 640], portrait: [512, 768], landscape: [768, 512], wide: [960, 544]}
+    sizes: {portrait: [512, 768], square: [640, 640], landscape: [768, 512], wide: [1024, 576]}
   standard:
     label: Standard
-    params: {steps: 8}
-    sizes: {square: [960, 960], portrait: [704, 1280], landscape: [1280, 704], wide: [1280, 704]}
+    sizes: {"9x16": [704, 1280], square: [960, 960], wide: [1280, 704]}
   best:
     label: Best
-    params: {steps: 12}
-    sizes: {square: [1088, 1088], portrait: [832, 1472], landscape: [1472, 832], wide: [1920, 1088]}
+    sizes: {"9x16": [832, 1472], square: [1088, 1088], wide: [1472, 832]}
 video:
   fps: 24
   frame_multiple: 8
@@ -65,11 +68,13 @@ bench:
   model_init_s: 45
 defaults:
   negative: "blurry, low quality, distorted, watermark, static"
-max_count: 1
+max_batch: 1  # per run; a creation may have more (made one batch after another)
+size_multiple: 64  # the first stage runs at half size, in multiples of 32
 output_mb: 8
 tags: [video, sound, fast]
 notes: >
-  Workflow follows the LTX-2 native ComfyUI node graph (audio+video latents, distilled:
-  8 steps, CFG 1). LTX-2.5 (Lightricks/LTX-2.5) is a gated repo with a different file
+  Workflows follow ComfyUI's official distilled templates (video_ltx2_t2v_distilled,
+  video_ltx2_i2v_distilled): audio+video latents, CFG 1, stage 1 at half size with 8 manual
+  sigmas, spatial upscaler x2, stage 2 with 3. LTX-2.5 (Lightricks/LTX-2.5) is a gated repo with a different file
   layout (22B transformer, Gemma 4 text encoder, separate video/audio VAEs); it needs a
   Hugging Face token and its own workflow before it can be offered.

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import json
 import os
+import signal
 import sys
 import uuid
 from pathlib import Path
@@ -87,6 +88,8 @@ async def run(pid, wf, ws):
             json.dumps({"type": "progress_state", "data": {"prompt_id": pid, "nodes": {node: {"state": "running"}}}})
         )
         if wf[node]["class_type"] == "KSampler":
+            if wf[node]["inputs"].get("steps") == 777:  # killed for using too much memory
+                os.kill(os.getpid(), signal.SIGKILL)
             if wf[node]["inputs"].get("steps") == 999:
                 await ws.send_text(
                     json.dumps(
@@ -113,6 +116,12 @@ async def run(pid, wf, ws):
             print("Prompt executed in 0.10 seconds", flush=True)
         await ws.send_text(json.dumps({"type": "executed", "data": {"node": node, "prompt_id": pid, "output": None}}))
     outputs = {}
+    texts = {}
+    for node, spec in wf.items():
+        if spec["class_type"] == "TextGenerate":  # like Qwen3 with /no_think: an empty reasoning block first
+            texts[node] = "<think>\n\n</think>\n\nA detailed version of: " + spec["inputs"]["prompt"][-40:]
+        if spec["class_type"] == "PreviewAny":
+            outputs[node] = {"text": [texts.get(str(spec["inputs"]["source"][0]), "")]}
     for node, spec in wf.items():
         if spec["class_type"] == "SaveImage":
             prefix = spec["inputs"]["filename_prefix"]

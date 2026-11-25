@@ -11,7 +11,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field
 
-from aivo_protocol.catalog_types import MODE_NEEDS_REFERENCE, ModelManifest
+from aivo_protocol.catalog_types import MODE_NEEDS_REFERENCE, QUALITIES, ModelManifest, Rewriter
 
 
 class CatalogError(Exception):
@@ -54,6 +54,8 @@ class Catalog:
     styles: dict[str, Style]
     gpu_classes: dict[str, GpuClass]
     hash: str
+    rewriter: Rewriter | None = None
+    rewriter_workflow: dict[str, Any] = field(default_factory=dict)
     _alias_index: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -100,7 +102,27 @@ class Catalog:
         routing = _yaml("routing.yaml") or {}
         styles = {s["id"]: Style.model_validate(s) for s in (_yaml("styles.yaml") or [])}
         gpu_classes = {g["id"]: GpuClass.model_validate(g) for g in (_yaml("gpu_classes.yaml") or [])}
-        cat = cls(models=models, routing=routing, styles=styles, gpu_classes=gpu_classes, hash=h.hexdigest())
+        rewriter, rewriter_workflow = None, {}
+        if (raw_rw := _yaml("rewriting.yaml")) is not None:
+            try:
+                rewriter = Rewriter.model_validate(raw_rw)
+            except Exception as e:
+                raise CatalogError(f"rewriting.yaml: {e}") from e
+            wf_path = (root / rewriter.workflow).resolve()
+            if root.resolve() not in wf_path.parents or not wf_path.exists():
+                raise CatalogError(f"rewriting.yaml: missing workflow {rewriter.workflow}")
+            wraw = wf_path.read_bytes()
+            h.update(wraw)
+            rewriter_workflow = json.loads(wraw)
+        cat = cls(
+            models=models,
+            routing=routing,
+            styles=styles,
+            gpu_classes=gpu_classes,
+            hash=h.hexdigest(),
+            rewriter=rewriter,
+            rewriter_workflow=rewriter_workflow,
+        )
         cat.validate()
         return cat
 
@@ -108,6 +130,8 @@ class Catalog:
         for kind, modes in self.routing.items():
             for mode, qualities in modes.items():
                 for q, ids in qualities.items():
+                    if q not in QUALITIES:
+                        raise CatalogError(f"routing {kind}/{mode}: unknown quality {q!r}")
                     for mid in ids:
                         m = self.models.get(mid)
                         if m is None:
@@ -118,6 +142,17 @@ class Catalog:
             for gc in m.manifest.bench.seconds:
                 if self.gpu_classes and gc not in self.gpu_classes:
                     raise CatalogError(f"{m.id}: bench references unknown gpu class {gc}")
+            for mode, rid in m.manifest.rewrite.items():
+                if self.rewriter is None or rid not in self.rewriter.instructions:
+                    raise CatalogError(f"{m.id}: rewrite {mode} -> {rid!r}: no such instructions in rewriting.yaml")
+        if self.rewriter is not None:
+            from aivo.catalog.presets import placeholders
+
+            if self.rewriter.output_node not in self.rewriter_workflow:
+                raise CatalogError(f"rewriting.yaml: output_node {self.rewriter.output_node} isn't in the workflow")
+            missing = placeholders(self.rewriter_workflow) - {*self.rewriter.params, "text", "seed"}
+            if missing:
+                raise CatalogError(f"rewriting.yaml: the workflow's {sorted(missing)} have no value in params")
 
     # -- lookups ------------------------------------------------------------------
 
@@ -135,7 +170,9 @@ class Catalog:
 
     def route(self, kind: str, mode: str, quality: str, enabled: set[str]) -> CatalogModel:
         """Pick the model for "Auto": first enabled model listed for kind/mode/quality."""
-        candidates = self.routing.get(kind, {}).get(mode, {}).get(quality, [])
+        by_quality = self.routing.get(kind, {}).get(mode, {})
+        # a level without its own routing (e.g. "high" for pictures) routes like standard
+        candidates = by_quality.get(quality) or by_quality.get("standard", [])
         for mid in candidates:
             if mid in enabled:
                 return self.models[mid]

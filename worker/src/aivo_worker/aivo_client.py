@@ -19,6 +19,8 @@ from aivo_protocol.worker_api import (
     FailIn,
     ProgressIn,
     ProgressOut,
+    PromptIn,
+    PromptOut,
     Ticket,
     UploadOut,
     WorkerInfo,
@@ -76,6 +78,10 @@ class AivoClient:
     async def spec(self, worker: WorkerInfo) -> WorkSpec:
         r = await self._call("POST", "/spec", json=worker.model_dump())
         return WorkSpec.model_validate(r.json())
+
+    async def prompt(self, body: PromptIn) -> PromptOut:
+        r = await self._call("POST", "/prompt", json=body.model_dump(), retries=2)
+        return PromptOut.model_validate(r.json())
 
     async def get_input(self, name: str, dest: Path) -> int:
         r = await self._call("GET", f"/inputs/{name}")

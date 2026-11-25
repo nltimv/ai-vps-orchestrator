@@ -50,5 +50,5 @@ bench:
   model_init_s: 40
 defaults: {shift: 3.1, negative: "blurry, low quality, distorted"}
 output_mb: 2.5
-max_count: 2
+max_batch: 2  # per run; a creation may have more (made one batch after another)
 tags: [edit]

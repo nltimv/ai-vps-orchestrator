@@ -60,7 +60,15 @@ def machine_choice(c: Candidate) -> MachineChoice:
 
 
 async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | None = None) -> JobOut:
-    assets = (await s.execute(select(Asset).where(Asset.job_id == job.id, Asset.deleted_at.is_(None)))).scalars().all()
+    assets = (
+        (
+            await s.execute(
+                select(Asset).where(Asset.job_id == job.id, Asset.deleted_at.is_(None)).order_by(Asset.output_name)
+            )
+        )
+        .scalars()
+        .all()
+    )
     thumbs = {a.parent_asset_id: a for a in assets if a.role == "thumb"}
     outputs = [asset_out(a, thumbs.get(a.id)) for a in assets if a.role == "output"]
     reference = None
@@ -84,6 +92,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         model_id=job.model_id,
         model_name=model.manifest.display_name if model else job.model_id,
         prompt=kr.open(job.prompt_enc, job.id.bytes) or "",
+        prompt_used=kr.open(job.prompt_used_enc, job.id.bytes),
         avoid=kr.open(job.avoid_enc, job.id.bytes),
         lyrics=kr.open(job.lyrics_enc, job.id.bytes),
         params=job.friendly_params,
@@ -102,6 +111,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         created_at=job.created_at,
         finished_at=job.finished_at,
         outputs=outputs,
+        expected=((job.resolved or {}).get("output") or {}).get("count"),
         reference=reference,
     )
 

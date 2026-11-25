@@ -5,6 +5,7 @@ address, the aivo job id and a one-time token. The worker then talks to aivo dir
 
     POST /api/v1/worker/jobs/{id}/spec        -> WorkSpec   (what to run; marks the job "preparing")
     GET  /api/v1/worker/jobs/{id}/inputs/{n}  -> bytes      (starting picture)
+    POST /api/v1/worker/jobs/{id}/prompt      -> PromptOut  (the rewritten description, checked; protocol 2.1)
     POST /api/v1/worker/jobs/{id}/progress    -> ProgressOut (progress + log lines; says when to cancel)
     PUT  /api/v1/worker/jobs/{id}/outputs/{n} -> UploadOut  (each finished file, streamed)
     POST /api/v1/worker/jobs/{id}/complete | /fail
@@ -84,6 +85,7 @@ class JobIn(BaseModel):
     workflow: dict = Field(default_factory=dict)
     inputs: list[str] = Field(default_factory=list)  # names of starting files in the inputs directory
     required_files: list[str] = Field(default_factory=list)  # dests that must be ready
+    more: list[dict] = Field(default_factory=list)  # further runs (next batches), one after another
     output: OutputSpec
     timeout_s: int = 3600
 
@@ -177,6 +179,23 @@ class WorkerInfo(BaseModel):
     protocol: str = PROTOCOL_VERSION
 
 
+class RewriteSpec(BaseModel):
+    """Improve the description on the GPU before creating (protocol 2.1).
+
+    The worker runs ``workflow`` (a small language model in ComfyUI), reads the text that ``output_node``
+    shows, and sends it to aivo (``/prompt``), which checks it and answers with the description to use.
+    That replaces ``marker`` inside the string values of ``WorkSpec.workflow``. If anything goes wrong
+    the worker uses ``fallback``: the description as the user wrote it.
+    """
+
+    workflow: dict = Field(default_factory=dict)
+    output_node: str
+    marker: str
+    fallback: str
+    files: list[str] = Field(default_factory=list)  # dests of WorkSpec.files the language model needs
+    timeout_s: int = 180
+
+
 class WorkSpec(BaseModel):
     job_id: str
     model_id: str
@@ -184,7 +203,22 @@ class WorkSpec(BaseModel):
     files: list[FileFetch] = Field(default_factory=list)  # model files, with where to get them
     inputs: list[str] = Field(default_factory=list)  # starting files to fetch from aivo
     output: OutputSpec
-    timeout_s: int = 3600
+    timeout_s: int = 3600  # for all runs together
+    rewrite: RewriteSpec | None = None
+    # protocol 2.2: further runs of the same workflow (the next batches of a creation with more pictures or
+    # videos than one run makes), each with its own seed; their outputs are numbered on after the first's
+    more: list[dict] = Field(default_factory=list)
+
+
+class PromptIn(BaseModel):
+    text: str | None = None  # what the language model wrote; None if it failed
+    error: str | None = None
+    seconds: float | None = None
+
+
+class PromptOut(BaseModel):
+    prompt: str  # the description to create with
+    rewritten: bool  # False: aivo kept the user's own description
 
 
 class ProgressIn(BaseModel):

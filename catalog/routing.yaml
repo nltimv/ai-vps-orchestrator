@@ -2,7 +2,9 @@
 image:
   t2i:
     draft: [z-image-turbo, flux2-klein-4b]
-    standard: [z-image-turbo, qwen-image-2512]
+    # FLUX.2 [dev] (32B) is the strongest open engine for detail and prompt following; Z-Image Turbo
+    # stays the quick pick for drafts and the fallback when FLUX.2 is off.
+    standard: [flux2-dev, qwen-image-2512, z-image-turbo]
     best: [flux2-dev, qwen-image-2512, z-image-turbo]
   edit:
     draft: [flux2-klein-4b, qwen-image-edit-2511]
@@ -12,10 +14,12 @@ video:
   t2v:
     draft: [wan22-ti2v-5b, ltx2]
     standard: [ltx2, wan22-a14b]
+    high: [wan22-a14b, ltx2]  # Wan 2.2's middle way (the full model guides the first steps)
     best: [wan22-a14b, ltx2]
   i2v:
     draft: [wan22-ti2v-5b, ltx2]
     standard: [ltx2, wan22-a14b]
+    high: [wan22-a14b, ltx2]  # Wan 2.2's middle way (the full model guides the first steps)
     best: [wan22-a14b, ltx2]
 music:
   t2m:

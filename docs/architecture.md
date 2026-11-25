@@ -37,9 +37,12 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
    - fetches the job from aivo with the ticket (`/spec`): workflow, model files with download links,
      output shape;
    - downloads model files from Hugging Face (kept on its disk or the network volume);
+   - improves the description with a small language model in ComfyUI, as soon as its file is there,
+     and sends the result to aivo (`/prompt`), which checks it and answers with the words to use;
    - fetches the starting picture, if any;
    - runs ComfyUI, reporting progress and log lines (`/progress`, relayed to browsers as SSE);
-   - uploads each result (`PUT /outputs/<name>`, checked against its SHA-256);
+   - uploads each batch's results as soon as they're done, while it makes the next batch
+     (`PUT /outputs/<name>`, checked against its SHA-256); the dashboard shows them right away;
    - says it's done (`/complete`).
 5. **Store.** Each upload is encrypted onto the media volume as it arrives, and thumbnails are made
    (also encrypted). On `/complete` the job succeeds, the ticket is cleared, and the worker deletes its
@@ -58,6 +61,8 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
   a bigger GPU type.
 - **The worker fails** (engine error, model files missing): the job fails with a plain message; the
   worker's log is kept with it for admins.
+- **Stopped or failed after some results arrived:** those are kept, and the creation is done with fewer
+  and a note saying why (e.g. "Stopped after 5 of 16, as you asked").
 - **RunPod reports the job failed or timed out** without the worker telling aivo: the runner fails the
   job.
 - **Cancel:** a job still waiting is cancelled at RunPod; a worker that has it learns at its next
@@ -84,7 +89,9 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
 
 ## Data residency
 Generated content (outputs, thumbnails, uploaded starting images, prompts and lyrics) is
-**persisted only on the backend's encrypted media volume**.
+**persisted only on the backend's encrypted media volume** and in sealed database fields. The
+improved description is sealed like the description itself; the job's resolved parameters keep no
+copy of either (the worker's workflow gets them filled in when it fetches the job).
 - **RunPod's job system** only sees the ticket and file names: the worker fetches the prompt and
   picture from aivo and uploads results to aivo.
 - **The endpoint settings** hold the worker image, aivo's deployment id and the GPU type. They hold no

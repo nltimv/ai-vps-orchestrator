@@ -9,6 +9,8 @@ Chaos (``AIVO_FAKE_CHAOS`` or ``FakeRunPod.chaos``), each entry used once:
 * ``no_gpu``        - the next endpoint gets no workers (its jobs wait in the queue)
 * ``worker_crash``  - the next job's worker dies mid-job (RunPod retries the job once on another worker)
 * ``oom`` / ``engine_fail`` - the next job fails in the AI engine
+* ``rewrite_fail`` / ``rewrite_refused`` / ``rewrite_minor`` - for the next job, the language model that
+  improves the description errors, declines, or writes about a teenager
 """
 
 from __future__ import annotations
@@ -91,6 +93,7 @@ class FakeRunPod:
         self.boot_seconds = boot_seconds
         self.job_seconds = job_seconds
         self.chaos = list(chaos or [])
+        self.workflows: dict[str, Any] = {}  # aivo job id -> the workflow its worker ran (for tests)
         self.max_workers_total = max_workers_total
         self.tick_s = tick_s
         self.progress_every_s = progress_every_s
@@ -180,7 +183,9 @@ class FakeRunPod:
     async def run(self, endpoint_id: str, job_input: dict[str, Any], policy: dict[str, Any]) -> str:
         ep = self.endpoints[endpoint_id]
         job = FakeJob(id=f"job-{secrets.token_hex(6)}", input=job_input, policy=policy)
-        job.chaos = self._take_chaos("worker_crash", "oom", "engine_fail")
+        job.chaos = self._take_chaos(
+            "worker_crash", "oom", "engine_fail", "rewrite_fail", "rewrite_refused", "rewrite_minor"
+        )
         ep.jobs.append(job)
         self._ensure_loop()
         return job.id
@@ -242,7 +247,7 @@ class FakeRunPod:
         wid = f"wrk-{secrets.token_hex(4)}"
         root = self._root / ep.id / wid
         runtime = WorkerRuntime(
-            MockEngine(self.job_seconds),
+            MockEngine(self.job_seconds, seen=self.workflows),
             models_dir=root / "models",
             job_dir=root / "jobs",
             simulate_files=True,
@@ -293,8 +298,14 @@ class FakeRunPod:
 
     async def _work(self, ep: FakeEndpoint, w: FakeWorker, job: FakeJob) -> None:
         chaos, job.chaos = job.chaos, None
+        engine = w.runtime.engine
         if chaos in ("oom", "engine_fail"):
-            w.runtime.engine.fail_next = "oom" if chaos == "oom" else "engine"
+            engine.fail_next = "oom" if chaos == "oom" else "engine"
+        engine.rewrite_fails = chaos == "rewrite_fail"
+        engine.rewrite_reply = {
+            "rewrite_refused": "I'm sorry, but I can't help with that request.",
+            "rewrite_minor": "A portrait of a teenager on a beach at golden hour, soft light, film grain.",
+        }.get(chaos or "")
         try:
             if chaos == "worker_crash":
                 handle = asyncio.create_task(w.runtime.handle({"id": job.id, "input": job.input}))

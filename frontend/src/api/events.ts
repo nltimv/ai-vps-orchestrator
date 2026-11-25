@@ -36,6 +36,13 @@ export function useServerEvents(enabled: boolean) {
       qc.invalidateQueries({ queryKey: ["offers"] });
     };
     for (const t of ["job.state", "job.progress", "job.created"]) es.addEventListener(t, onJob);
+    // a batch of results arrived while the rest is still being made: show it right away
+    es.addEventListener("job.output", (ev: MessageEvent) => {
+      const e: ServerEvent = JSON.parse(ev.data);
+      if (!e.ref_id) return;
+      qc.invalidateQueries({ queryKey: ["job", e.ref_id] });
+      qc.invalidateQueries({ queryKey: ["jobs", "active"] });
+    });
     for (const t of ["instance.state"])
       es.addEventListener(t, onInstance);
     es.addEventListener("budget.locked", () => qc.invalidateQueries({ queryKey: ["spending"] }));

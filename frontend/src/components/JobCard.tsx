@@ -19,9 +19,10 @@ export function JobCard({ job }: { job: Job }) {
   const active = isActive(job.state);
   const me = useMe();
   const [showLog, setShowLog] = useState(false);
-  const stepIdx = STEPS.indexOf(job.stage);
-  const overall =
-    job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + (job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5)) / STEPS.length;
+  // improving the description happens at the end of loading the model
+  const stepIdx = STEPS.indexOf(job.stage === "improving" ? "loading_model" : job.stage);
+  const within = job.stage === "improving" ? 0.95 : job.stage === "generating" || job.stage === "loading_model" ? job.progress : 0.5;
+  const overall = job.state === "succeeded" ? 1 : stepIdx < 0 ? 0.03 : (stepIdx + within) / STEPS.length;
   return (
     <Card className="p-4">
       <div className="flex items-start gap-3">
@@ -63,6 +64,18 @@ export function JobCard({ job }: { job: Job }) {
             ))}
           </ol>
           {job.error && job.state === "waiting_capacity" && <div className="mt-2 text-xs text-amber-500">{job.error}</div>}
+          {job.outputs.length > 0 && (
+            <Link to={`/item/${job.id}`} className="mt-3 block" data-testid="ready-so-far">
+              <div className="flex flex-wrap gap-1.5">
+                {job.outputs.map((o, i) => (
+                  <img key={o.id} src={o.thumb_url ?? o.url} alt={`Result ${i + 1}`} className="size-12 rounded-md object-cover" />
+                ))}
+              </div>
+              <div className="mt-1 text-xs text-brand-500 hover:underline">
+                {job.outputs.length}{job.expected ? ` of ${job.expected}` : ""} ready — view while the rest is made
+              </div>
+            </Link>
+          )}
         </div>
       )}
       {job.state === "succeeded" && (
@@ -70,6 +83,7 @@ export function JobCard({ job }: { job: Job }) {
           <CheckCircle2 className="size-4" /> Done{job.cost_usd ? ` · ${money(job.cost_usd)}` : ""} — view
         </Link>
       )}
+      {job.state === "succeeded" && job.error && <div className="mt-1 text-xs text-muted">{job.error}</div>}
       {job.state === "failed" && (
         <div className="mt-3 flex items-center justify-between gap-2 text-sm text-red-500">
           <span className="flex items-center gap-2"><AlertTriangle className="size-4" /> {job.error ?? "Didn't work"}</span>

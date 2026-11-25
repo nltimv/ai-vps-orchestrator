@@ -9,6 +9,14 @@ export function money(usd: number | null | undefined, digits?: number): string {
   return `$${usd.toFixed(d)}`;
 }
 
+/** A chosen length: "6 s", "45 s", "1 min 30 s". */
+export function lengthLabel(s: number): string {
+  if (s < 60) return `${Math.round(s)} s`;
+  const m = Math.floor(s / 60);
+  const rest = Math.round(s % 60);
+  return rest ? `${m} min ${rest} s` : `${m} min`;
+}
+
 export function duration(s: number | null | undefined): string {
   if (s === null || s === undefined) return "—";
   if (s < 60) return `${Math.max(1, Math.round(s))} s`;
@@ -39,6 +47,7 @@ const STAGES: Record<string, string> = {
   waiting_for_gpu: "Starting a GPU",
   starting_machine: "Starting a GPU",
   loading_model: "Loading the AI model",
+  improving: "Improving your description",
   generating: "Creating",
   saving: "Saving",
   done: "Done",

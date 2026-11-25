@@ -107,6 +107,7 @@ class JobOut(BaseModel):
     model_id: str
     model_name: str
     prompt: str
+    prompt_used: str | None = None  # the improved description it was made with, if it was improved
     avoid: str | None = None
     lyrics: str | None = None
     params: dict[str, Any]
@@ -124,7 +125,8 @@ class JobOut(BaseModel):
     seed: int | None = None
     created_at: datetime
     finished_at: datetime | None
-    outputs: list[AssetOut] = Field(default_factory=list)
+    outputs: list[AssetOut] = Field(default_factory=list)  # also while it runs: each batch as it's done
+    expected: int | None = None  # how many results it makes, once known
     reference: AssetOut | None = None
 
 

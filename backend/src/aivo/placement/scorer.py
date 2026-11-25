@@ -146,7 +146,7 @@ def fitting_variants(req: Request, offer: GpuOffer) -> list[VariantNeed]:
     ]
 
 
-QUALITY_WEIGHT = {"draft": 0.5, "standard": 1.0, "best": 5.0}
+QUALITY_WEIGHT = {"draft": 0.5, "standard": 1.0, "high": 2.5, "best": 5.0}
 
 
 def _load_seconds(

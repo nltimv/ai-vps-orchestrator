@@ -27,8 +27,11 @@ from aivo_protocol.worker_api import (
     JobIn,
     JobState,
     LogLine,
+    OutputMeta,
     ProgressIn,
     ProgressOut,
+    PromptIn,
+    RewriteSpec,
     Ticket,
     WorkerInfo,
     WorkSpec,
@@ -45,6 +48,17 @@ log = logging.getLogger(__name__)
 
 def _short(job_id: str) -> str:
     return job_id.split("-", 1)[0][:8]
+
+
+def _fill(value: Any, marker: str, text: str) -> Any:
+    """``value`` with ``marker`` replaced by ``text`` in every string inside it."""
+    if isinstance(value, str):
+        return value.replace(marker, text) if marker in value else value
+    if isinstance(value, dict):
+        return {k: _fill(v, marker, text) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_fill(v, marker, text) for v in value]
+    return value
 
 
 class WorkerRuntime:
@@ -95,9 +109,15 @@ class WorkerRuntime:
         )
 
     def _start_engine(self) -> None:
-        """The AI engine starts with the first job, while the model files download."""
+        """The AI engine starts with the first job, while the model files download.
+
+        If it has stopped since (ComfyUI crashed, e.g. killed for using too much memory), it starts again:
+        otherwise every later job on this worker would fail at once.
+        """
         if self._engine_task is not None:
-            return
+            if not self._engine_task.done() or self.engine.ready or self.engine_error:
+                return
+            self.logs.emit("agent", "the AI engine had stopped; starting it again", "warning")
 
         async def start() -> None:
             self.logs.emit("agent", f"worker {__version__} up; starting the AI engine ({self.engine.name})")
@@ -136,6 +156,45 @@ class WorkerRuntime:
             return {"cancelled": True}
         return {"error": f"{code}: {message[:500]}"}
 
+    def _can_rewrite(self, rw: RewriteSpec) -> bool:
+        engine_up = self._engine_task is not None and self._engine_task.done() and not self.engine_error
+        return engine_up and self.files.status(rw.files).all_ready
+
+    async def _rewrite(self, aivo: AivoClient, rw: RewriteSpec) -> str:
+        """The improved description (checked by aivo), or the user's own if anything goes wrong.
+
+        Never logs the text: the log goes to admins and isn't encrypted.
+        """
+        t0 = time.monotonic()
+        text: str | None = None
+        error: str | None = None
+        self.logs.emit("agent", "improving the description")
+        try:
+            text = await asyncio.wait_for(self.engine.generate_text(rw.workflow, rw.output_node), rw.timeout_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"[:300] if str(e) else type(e).__name__
+            self.logs.emit("agent", f"the language model failed: {error}", "warning")
+            if isinstance(e, TimeoutError):
+                with contextlib.suppress(Exception):
+                    await self.engine.cancel()
+        seconds = time.monotonic() - t0
+        try:
+            out = await aivo.prompt(PromptIn(text=text, error=error, seconds=seconds))
+        except TicketRejected:
+            raise
+        except Exception as e:
+            self.logs.emit(
+                "agent", f"aivo couldn't check the improved description ({e}); using it as written", "warning"
+            )
+            return rw.fallback
+        self.logs.emit(
+            "agent",
+            f"description improved in {seconds:.1f} s" if out.rewritten else "using the description as written",
+        )
+        return out.prompt
+
     # -- the RunPod handler -----------------------------------------------------------
 
     async def handle(self, job: dict[str, Any]) -> dict[str, Any]:
@@ -168,28 +227,51 @@ class WorkerRuntime:
         sid = _short(spec.job_id)
         self.logs.emit("agent", f"job {sid}: {spec.model_id}, {len(spec.files)} model file(s)")
 
-        # 1) model files (already here when this worker ran the same engine before)
+        # 1) model files (already here when this worker ran the same engine before). The description is
+        #    improved as soon as the language model's file and the AI engine are ready, while the rest
+        #    downloads.
         dests = [f.dest for f in spec.files]
         self.files.ensure(spec.files)
         total = sum(f.bytes or 0 for f in spec.files) or 1
-        while True:
-            st = self.files.status(dests)
-            if st.all_ready:
-                break
-            if st.failed:
-                return await self._fail(
-                    aivo, "missing_files", "; ".join(f"{f.dest}: {f.error}" for f in st.failed)[:1500], t0
-                )
-            done = sum(f.bytes_done for f in st.files)
-            if (await self._push(aivo, "loading_model", min(0.99, done / total))).cancel:
-                return await self._fail(aivo, "cancelled", "cancelled while loading the model", t0)
-            await asyncio.sleep(self.progress_every_s)
+        rewriting: asyncio.Task[str] | None = None
+        try:
+            while True:
+                st = self.files.status(dests)
+                if spec.rewrite and rewriting is None and self._can_rewrite(spec.rewrite):
+                    rewriting = asyncio.create_task(self._rewrite(aivo, spec.rewrite), name="rewrite")
+                if st.all_ready:
+                    break
+                if st.failed:
+                    return await self._fail(
+                        aivo, "missing_files", "; ".join(f"{f.dest}: {f.error}" for f in st.failed)[:1500], t0
+                    )
+                done = sum(f.bytes_done for f in st.files)
+                if (await self._push(aivo, "loading_model", min(0.99, done / total))).cancel:
+                    return await self._fail(aivo, "cancelled", "cancelled while loading the model", t0)
+                await asyncio.sleep(self.progress_every_s)
 
-        # 2) the AI engine
-        if self._engine_task is not None:
-            await self._engine_task
-        if self.engine_error:
-            return await self._fail(aivo, "engine", f"The AI engine could not start: {self.engine_error}", t0)
+            # 2) the AI engine
+            if self._engine_task is not None:
+                await self._engine_task
+            if self.engine_error:
+                return await self._fail(aivo, "engine", f"The AI engine could not start: {self.engine_error}", t0)
+
+            # 2b) the improved description
+            workflow, more = spec.workflow, spec.more
+            if spec.rewrite:
+                if rewriting is None:
+                    rewriting = asyncio.create_task(self._rewrite(aivo, spec.rewrite), name="rewrite")
+                while not rewriting.done():
+                    if (await self._push(aivo, "improving", 0.0)).cancel:
+                        await self.engine.cancel()
+                        return await self._fail(aivo, "cancelled", "cancelled while improving the description", t0)
+                    await asyncio.wait({rewriting}, timeout=self.progress_every_s)
+                text = rewriting.result()
+                workflow = _fill(workflow, spec.rewrite.marker, text)
+                more = [_fill(w, spec.rewrite.marker, text) for w in more]
+        finally:
+            if rewriting is not None and not rewriting.done():
+                rewriting.cancel()
 
         # 3) starting files, then the job itself
         for name in spec.inputs:
@@ -198,40 +280,55 @@ class WorkerRuntime:
             JobIn(
                 job_id=spec.job_id,
                 model_id=spec.model_id,
-                workflow=spec.workflow,
+                workflow=workflow,
+                more=more,
                 inputs=spec.inputs,
                 required_files=dests,
                 output=spec.output,
                 timeout_s=spec.timeout_s,
             )
         )
-        while True:
-            status = await self.executor.wait(spec.job_id, self.progress_every_s)
-            if status is None:
-                return await self._fail(aivo, "engine", "the job disappeared from the worker", t0)
-            if status.state.terminal:
-                break
-            stage = {"loading_model": "loading_model", "saving": "saving"}.get(status.stage, "generating")
-            if (await self._push(aivo, stage, status.progress, status.eta_s)).cancel:
-                await self.executor.cancel(spec.job_id)
-        if status.state != JobState.succeeded:
-            self.executor.delete(spec.job_id)
-            code = "cancelled" if status.state == JobState.cancelled else (status.error_code or "engine")
-            return await self._fail(aivo, code, status.error or "the AI engine failed", t0)
+        sent: set[str] = set()
+        t_up = 0.0
 
-        # 4) results go straight to aivo, then nothing of them stays here
-        await self._push(aivo, "saving", 1.0)
-        t_up = time.monotonic()
-        try:
-            for o in status.outputs:
+        async def deliver(outputs: list[OutputMeta]) -> None:
+            """Upload the results not yet with aivo: each batch as soon as it's done."""
+            nonlocal t_up
+            for o in outputs:
+                if o.name in sent:
+                    continue
                 path = self.executor.output_path(spec.job_id, o.name)
                 if path is None:
                     raise RuntimeError(f"output {o.name} is missing")
+                t = time.monotonic()
                 await aivo.upload(o.name, path, o.media_type)
+                t_up += time.monotonic() - t
+                sent.add(o.name)
+
+        try:
+            while True:
+                status = await self.executor.wait(spec.job_id, self.progress_every_s)
+                if status is None:
+                    return await self._fail(aivo, "engine", "the job disappeared from the worker", t0)
+                if status.state.terminal:
+                    break
+                if status.state == JobState.running and len(status.outputs) > len(sent):
+                    await deliver(list(status.outputs))
+                stage = {"loading_model": "loading_model", "saving": "saving"}.get(status.stage, "generating")
+                if (await self._push(aivo, stage, status.progress, status.eta_s)).cancel:
+                    await self.executor.cancel(spec.job_id)
+            if status.state != JobState.succeeded:
+                # what was delivered already stays with aivo (the creation keeps it)
+                code = "cancelled" if status.state == JobState.cancelled else (status.error_code or "engine")
+                return await self._fail(aivo, code, status.error or "the AI engine failed", t0)
+
+            # 4) the rest of the results go straight to aivo, then nothing of them stays here
+            await self._push(aivo, "saving", 1.0)
+            await deliver(status.outputs)
             phases = [*self.files.timings, *self.executor.timings]
             self.files.timings, self.executor.timings = [], []
             size = sum(o.bytes for o in status.outputs) / 1e6
-            self.logs.emit("agent", f"job {sid}: {size:.1f} MB delivered in {time.monotonic() - t_up:.1f} s")
+            self.logs.emit("agent", f"job {sid}: {size:.1f} MB delivered ({t_up:.1f} s uploading)")
             await aivo.complete(
                 CompleteIn(
                     outputs=status.outputs,

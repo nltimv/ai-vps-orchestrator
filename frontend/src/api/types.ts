@@ -1,8 +1,8 @@
 // Mirrors backend/src/aivo/api/schemas.py
 
 export type Kind = "image" | "video" | "music";
-export type Quality = "draft" | "standard" | "best";
-export type Aspect = "square" | "portrait" | "landscape" | "wide";
+export type Quality = "draft" | "standard" | "high" | "best";
+export type Aspect = "square" | "portrait" | "landscape" | "wide" | "9x16" | "3x4" | "4x5" | "4x3" | "21x9";
 export type Preference = "economy" | "balanced" | "fast";
 
 export interface AuthStatus {
@@ -37,7 +37,9 @@ export interface CatalogModel {
   enabled: boolean;
   license: License;
   supports: { avoid: boolean; seed: boolean; sound: boolean; lyrics: boolean; instrumental: boolean };
-  durations: { id: string; label: string; seconds: number }[];
+  improves: string[]; // modes in which "Improve my description" applies
+  qualities: Quality[]; // the quality levels this engine has (without "high", High uses Standard)
+  length: { min: number; max: number; step: number; default: number } | null; // seconds; null for pictures
   max_count: number;
   min_vram_gb: number;
   tags: string[];
@@ -49,7 +51,7 @@ export interface Catalog {
   models: CatalogModel[];
   styles: { id: string; label: string }[];
   aspects: { id: Aspect; label: string; ratio: string }[];
-  qualities: { id: Quality; label: string; hint: string }[];
+  qualities: { id: Quality; label: string; hint: string; kinds: Kind[] }[]; // kinds: where the level is offered
   preferences: { id: Preference; label: string; hint: string }[];
   default_preference: Preference;
 }
@@ -63,13 +65,14 @@ export interface CreateRequest {
   style?: string | null;
   aspect?: Aspect | null;
   quality: Quality;
-  duration?: string | null;
+  duration?: string | number | null; // seconds (or a preset key)
   count: number;
   sound?: boolean;
   lyrics?: string | null;
   instrumental?: boolean;
   seed?: number | null;
   reference_asset_id?: string | null;
+  enhance?: boolean;
   preference?: Preference | null;
   placement?: { mode: "auto" | "manual"; offer_key?: string | null; allow_fallback: boolean };
   confirm_over_soft_cap?: boolean;
@@ -129,6 +132,7 @@ export interface Job {
   model_id: string;
   model_name: string;
   prompt: string;
+  prompt_used: string | null; // the improved description it was made with
   avoid: string | null;
   lyrics: string | null;
   params: Record<string, unknown>;
@@ -147,6 +151,7 @@ export interface Job {
   created_at: string;
   finished_at: string | null;
   outputs: Asset[];
+  expected: number | null; // how many results it makes (they show as each batch is done)
   reference: Asset | null;
 }
 

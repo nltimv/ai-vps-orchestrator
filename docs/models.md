@@ -22,16 +22,70 @@ which is why the scheduler ranks GPU types and moves a job to the next one when 
 
 | Dashboard name | Model | Why this one | License |
 |---|---|---|---|
-| **Image · Fast** (Auto for Draft/Standard) | Tongyi **Z-Image-Turbo** 6B | Photo quality in ~8 steps; fits 20 GB; seconds per image | Apache-2.0 |
-| **Image · Best** (Auto for Best) | **FLUX.2 [dev]** 32B (fp8 on 48 GB, full on 80 GB) | Top open-weight quality and prompt adherence | **Non-commercial**: personal use |
+| **Image · Fast** (Auto for Draft) | Tongyi **Z-Image-Turbo** 6B | Photo quality in ~8 steps; fits 20 GB; seconds per image | Apache-2.0 |
+| **Image · Best** (Auto for Standard and Best) | **FLUX.2 [dev]** 32B (fp8 on 48 GB, full on 80 GB) | Top open-weight quality and prompt adherence | **Non-commercial**: personal use |
 | **Image · Text & posters** | **Qwen-Image-2512** 20B (+ Lightning speed-up for Draft) | Best text rendering and complex layouts | Apache-2.0 |
 | **Edit an image** | **Qwen-Image-Edit-2511**; quick: **FLUX.2 [klein] 4B** | Instruction-based edits that keep the rest intact | Apache-2.0 |
-| **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled) | Very fast, generates matching audio; 16–48 GB | LTX community license (free < $10M revenue) |
-| **Video · Cinematic** (Auto for Best) | **Wan 2.2 A14B** + Lightx2v 4-step | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
+| **Video · Quick with sound** (Auto for Standard) | **LTX-2** 19B (distilled, two stages with a 2× upscaler) | Very fast, generates matching audio; 32–48 GB | LTX community license (free < $10M revenue) |
+| **Video · Cinematic** (Auto for High and Best) | **Wan 2.2 A14B** (Lightx2v 4-step at Draft/Standard, a middle way at High, the full model at Best), smoothed to 32 fps | Best open motion quality, 720p; text-to-video and image-to-video | Apache-2.0 |
 | **Video · Budget** (Auto for Draft) | **Wan 2.2 TI2V-5B** | 720p on the cheapest GPU | Apache-2.0 |
 | **Music · Song** | **ACE-Step 1.5** (turbo) | Full songs with vocals/lyrics or instrumentals in seconds; tiny VRAM | MIT |
 | **Image · Unrestricted (18+)** | **Chroma1-HD** 8.9B (FLUX.1 [schnell] based) | Trained without content filtering; realistic and illustrated; fits 20 GB in fp8 | Apache-2.0 |
 | **Video · Animate (18+)** | **Wan 2.2 A14B** image-to-video + a community adult add-on | Animates a picture made here; the add-on is the most-used general one for Wan 2.2 | Wan: Apache-2.0; add-on: no license stated, personal use only |
+
+## Choices
+
+- **How many:** up to 16 pictures, 4 videos or 4 songs per creation. aivo makes them in batches the GPU
+  can hold (4 pictures, 1 video), one after another in the same job, each batch with its own look number.
+- **Results as they're done:** each batch shows on the progress card and the creation's page as soon as
+  it's made, while the rest is still being made. Stopping a creation keeps what's ready ("Stopped after
+  5 of 16"), and so does one that fails partway.
+- **Length:** any length in whole seconds, from 2 s up to what the engine can do (8–10 s for videos), and
+  10 s to 4 min for music.
+- **Shape:** 9:16, 2:3, 3:4, 4:5, 1:1, 4:3, 3:2, 16:9 and 21:9.
+- **Look number:** with *Keep this look* on, type a number to repeat or share a look.
+
+## How aivo gets better results
+
+Open models can come close to hosted ones like Gemini, but only with the right settings and a
+prompt in the form they were trained on. aivo does four things:
+
+1. **Improve my description** (on by default; per creation). Short descriptions make flat pictures:
+   the engines were trained on long, specific captions. Before creating, the worker runs a small
+   language model on the same GPU (Qwen3-4B, inside ComfyUI) that rewrites the description. It
+   adds light, setting, composition and camera, and for videos the motion in order and the sound.
+   - The instructions are in `catalog/rewriting.yaml`, one set per kind of creation. Manifests pick
+     one per mode (`rewrite: {t2v: video, i2v: animate}`).
+   - aivo checks the result: empty, cut-off or refusing text is dropped, and adult creations get
+     the minors check again. When the result can't be used, the creation is made from the
+     description as written; nothing fails because of it.
+   - The improved text is shown on the creation's page (*Improved description*). It is sealed in
+     the database like the description itself.
+   - Edits and music use the words as written: an edit instruction isn't a picture description.
+   - Qwen3-4B is the same file Z-Image and FLUX.2 [klein] use as their text encoder (8 GB). Other
+     engines download it once per worker, or once to the network volume.
+2. **Stronger engines and settings.**
+   - Pictures at Standard and Best go to FLUX.2 [dev].
+   - Wan 2.2 videos have four quality levels. A 4-step speed-up makes it quick, but its motion can be
+     timid; the full model moves better but takes about 9× as long. **High** is the middle way.
+
+     | Level | Wan 2.2 | Time for 5 s (RTX PRO 6000) |
+     |---|---|---|
+     | Draft | 4-step speed-up, 480p | < 1 min |
+     | Standard | 4-step speed-up, 720p | ~1.5 min |
+     | High | the full model guides the first 2 of 8 steps (motion, layout), the speed-up does the rest | ~3.5 min |
+     | Best | the full model, 20 steps (ComfyUI's template) | ~13 min |
+
+     In a test on RunPod (same prompt and seed), High gave clearly better light and composition than
+     Standard, and looked at least as good as Best in a quarter of its time.
+
+     High is only offered where an engine has a middle way (Wan 2.2 now). Elsewhere it isn't shown,
+     and an engine without it uses its Standard settings.
+   - LTX-2 uses its official two-stage pipeline: 8 steps at half size, Lightricks' 2× latent
+     upscaler, then 3 refining steps at full size.
+3. **Finishing.** Wan 2.2 makes 16 frames per second, which stutters. ComfyUI's built-in frame
+   interpolation (FILM) doubles that to 32 fps after creating.
+4. **Two pictures per creation** by default: one is usually clearly better.
 
 **Rule of thumb:**
 
@@ -67,7 +121,8 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
 - **Never minors.** Descriptions for adult creations are checked for words and ages that point at
   minors (English, Dutch and a few other languages) and refused. Every adult engine also adds
   "child, minor, teen, childlike, young-looking" to what it avoids. The check is deliberately broad:
-  rewording a refused description is easy, a wrong creation can't be undone.
+  rewording a refused description is easy, a wrong creation can't be undone. An improved
+  description is checked again; if it fails, the creation uses the words as written.
 - **Auto never picks** an 18+ engine; you choose it under *More options → Engine*. To animate a
   picture, open it in the gallery and use *Animate this*: the 18+ animation engine is preselected
   for 18+ pictures.
@@ -96,14 +151,23 @@ Off by default. Two switches are both needed, admins included: **Settings → Ad
 1. Create `catalog/models/<id>/manifest.yaml`. Copy an existing one and edit it.
    - **Files**: Hugging Face repo, path, destination folder and size.
    - **Variants**: memory needs, with optional per-variant workflow parameters.
-   - **Quality presets**: map Draft/Standard/Best to concrete parameters and sizes.
+   - **Quality presets**: map Draft/Standard/Best to concrete parameters and sizes. *High* is optional:
+     a middle way between Standard and Best, offered only where an engine has one.
    - **Benchmark seconds** per GPU class: priors that measured timings replace over time.
+   - **Sizes** for the shapes the engine was tuned for. Other shapes (there are nine, 9:16 to 21:9) are
+     worked out from the preset's pixel budget, in multiples of `size_multiple` (default 16).
+   - **How many at once:** `max_batch` is what one run makes (GPU memory). A creation may have more,
+     up to 16 pictures or 4 videos or songs (`max_count` can lower that), made one batch after another.
+   - **Length:** videos and music take any length from `min_seconds` to `max_seconds`.
    - **License** and a user-facing **tagline**.
 2. Export the ComfyUI workflow in **API format** to `workflows/<mode>.json`. Replace the
    values you want to control with placeholders such as `"$prompt"`, `"$seed"`, `"$width"`,
    `"$height"`, `"$steps"`, `"$frames"`, `"$fps"`, `"$batch"`, `"$prefix"` and
    `"$reference_image"`. Any key from the quality preset or variant `params` also works.
-3. Optionally add it to `catalog/routing.yaml` so *Auto* can pick it.
+   Video manifests can set `video.interpolate: 2` and use `"$out_fps"` and `"$interpolate"` for a
+   frame interpolation step.
+3. Optionally add it to `catalog/routing.yaml` so *Auto* can pick it, and pick rewriting
+   instructions per mode with `rewrite:` (see `catalog/rewriting.yaml`).
 4. Run `uv run aivo catalog-check` and `uv run pytest backend/tests/unit/test_catalog.py`.
    Every combination must render.
 5. Try it once on RunPod with a low spending limit (Settings → Spending limits).
