@@ -194,6 +194,9 @@ class RewriteSpec(BaseModel):
     fallback: str
     files: list[str] = Field(default_factory=list)  # dests of WorkSpec.files the language model needs
     timeout_s: int = 180
+    # protocol 2.3: a description per further run (WorkSpec.more), each steered differently, so the results
+    # of one creation differ; runs without one use the first
+    more: list[dict] = Field(default_factory=list)
 
 
 class WorkSpec(BaseModel):
@@ -211,6 +214,7 @@ class WorkSpec(BaseModel):
 
 
 class PromptIn(BaseModel):
+    index: int = 0  # which run it's for: 0 = WorkSpec.workflow, 1 = WorkSpec.more[0], ...
     text: str | None = None  # what the language model wrote; None if it failed
     error: str | None = None
     seconds: float | None = None

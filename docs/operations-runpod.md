@@ -166,6 +166,9 @@ Only model files are stored on a volume, never creations.
 - **401 errors in the backend log about RunPod.** The API key is wrong.
 - **403 "you do not have permission" when submitting a creation**, although endpoints get created: the key
   may not run jobs on the endpoints it creates. Use a key with *All* permissions, or widen it (see Setup).
+- **"This account's plan allows 3 endpoints with FlashBoot"**: aivo turns FlashBoot (quicker cold starts) on
+  for each GPU type's endpoint. When the plan's limit is reached, it makes the next endpoints without it and
+  remembers that; nothing to do.
 - **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
   types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.

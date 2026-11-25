@@ -108,6 +108,7 @@ class JobOut(BaseModel):
     model_name: str
     prompt: str
     prompt_used: str | None = None  # the improved description it was made with, if it was improved
+    prompts_used: list[str | None] = Field(default_factory=list)  # per result (run), when each got its own
     avoid: str | None = None
     lyrics: str | None = None
     params: dict[str, Any]

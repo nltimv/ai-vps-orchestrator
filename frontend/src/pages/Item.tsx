@@ -20,7 +20,10 @@ export function ItemPage() {
   if (job.isLoading) return <div className="h-96 rounded-xl skeleton" />;
   if (!job.data) return <ErrorNote error={job.error ?? "Not found"} />;
   const j = job.data;
-  const out = j.outputs[Math.min(idx, j.outputs.length - 1)];
+  const shown = Math.min(idx, j.outputs.length - 1);
+  const out = j.outputs[shown];
+  // each result may have its own improved description (several results are steered differently)
+  const improved = (j.prompts_used.length > 1 ? j.prompts_used[Math.max(0, shown)] : null) ?? j.prompt_used;
   const remix = (extra: CreatePrefill) =>
     nav("/", { state: { kind: j.kind, prompt: j.prompt, params: j.params, lyrics: j.lyrics, avoid: j.avoid,
       model_id: (j.params.model_id as string) ?? j.model_id, ...extra } satisfies CreatePrefill });
@@ -51,14 +54,14 @@ export function ItemPage() {
             <div className="text-xs uppercase tracking-wide text-muted">Description</div>
             <p className="mt-1 whitespace-pre-wrap text-sm">{j.prompt}</p>
           </div>
-          {j.prompt_used && (
+          {improved && (
             <details className="group" data-testid="improved">
               <summary className="cursor-pointer text-xs uppercase tracking-wide text-muted hover:text-[var(--text)]">
                 Improved description
               </summary>
-              <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{j.prompt_used}</p>
+              <p className="mt-1 whitespace-pre-wrap text-sm text-muted">{improved}</p>
               <button type="button" className="mt-1 text-xs text-brand-500 hover:underline cursor-pointer"
-                onClick={() => remix({ seed: null, prompt: j.prompt_used ?? j.prompt, params: { ...j.params, enhance: false } })}>
+                onClick={() => remix({ seed: null, prompt: improved, params: { ...j.params, enhance: false } })}>
                 Start from this text
               </button>
             </details>

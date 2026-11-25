@@ -170,7 +170,7 @@ def test_text_the_user_never_wrote_is_dropped(cat):
 
 
 def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat):
-    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6)
+    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=6, enhance=False)
     job = _job(cat, app.keyring, fp)
     spec = work_spec(app, job)
 
@@ -180,6 +180,34 @@ def test_more_than_one_batch_becomes_further_runs_with_their_own_seeds(app, cat)
         return latent["batch_size"], sampler["seed"]
 
     assert [batch_and_seed(w) for w in [spec.workflow, *spec.more]] == [(4, 42), (2, 43)]
-    assert PROMPT_MARKER in str(spec.more[0])  # the worker fills the improved description in every run
+    assert spec.rewrite is None
     old = work_spec(app, job, can_batch=False)  # a worker before protocol 2.2 makes the first batch
     assert old.more == [] and batch_and_seed(old.workflow) == (4, 42)
+
+
+def test_several_results_each_get_their_own_description_steered_differently(app, cat):
+    fp = FriendlyParams(kind="image", prompt="a fox", model_id="z-image-turbo", count=3)
+    job = _job(cat, app.keyring, fp)
+    spec = work_spec(app, job)
+    assert len(spec.more) == 2  # one result per run, so each can have its own description
+    for w in [spec.workflow, *spec.more]:
+        assert (
+            PROMPT_MARKER in str(w)
+            and next(n["inputs"]["batch_size"] for n in w.values() if n["class_type"] == "EmptySD3LatentImage") == 1
+        )
+    asks = [w["2"]["inputs"]["prompt"] for w in [spec.rewrite.workflow, *spec.rewrite.more]]
+    assert len(asks) == 3 and len(set(asks)) == 3
+    assert "several versions" not in asks[0] and "camera angle" in asks[1] and "light" in asks[2]
+    assert [w["2"]["inputs"]["sampling_mode.seed"] for w in [spec.rewrite.workflow, *spec.rewrite.more]] == [42, 43, 44]
+    # a worker before protocol 2.3 gets one description for the batch, as before
+    old = work_spec(app, job, can_vary=False)
+    assert old.rewrite.more == [] and old.more == []
+    # a retry creates with the same descriptions again
+    app.keyring
+    from aivo.controller.jobspec import keep_prompt_used, prompts_used
+
+    for i, t in enumerate(["A fox, version one.", "A fox, version two.", "A fox, version three."]):
+        keep_prompt_used(app, job, i, t)
+    assert prompts_used(app, job)[2] == "A fox, version three."
+    again = work_spec(app, job)
+    assert again.rewrite is None and "version two" in str(again.more[0])

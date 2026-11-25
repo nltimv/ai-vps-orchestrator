@@ -16,12 +16,21 @@ output_node: "3"
 params: {max_tokens: 400, temperature: 0.7, top_k: 20, top_p: 0.8, min_p: 0.0, repetition_penalty: 1.05}
 # "/no_think" switches Qwen3's reasoning off.
 template: |-
-  {instructions}
+  {instructions}{variation}
 
   {style}Description: {description}
   /no_think
 min_chars: 20
 max_chars: 2500
+# Several pictures or videos in one creation: each gets its own description, steered by the next of these
+# (cycling), so they differ in more than the noise. Fast engines such as Z-Image Turbo vary little with the
+# seed alone. Only what the description leaves open changes; what it asks for stays.
+variations:
+  - ""
+  - "This is one of several versions. Make this one clearly different from the obvious take: another camera angle, distance or framing."
+  - "This is one of several versions. Make this one clearly different from the obvious take: another light, time of day or color palette, where the description leaves that open."
+  - "This is one of several versions. Make this one clearly different from the obvious take: another composition and background, where the description leaves that open."
+  - "This is one of several versions. Make this one clearly different from the obvious take: another mood and other small details, where the description leaves that open."
 refusals: ["i'm sorry", "i am sorry", "sorry,", "i can't", "i cannot", "i can not", "i won't", "i will not",
            "i'm not able", "i am not able", "i'm unable", "i am unable", "as an ai"]
 

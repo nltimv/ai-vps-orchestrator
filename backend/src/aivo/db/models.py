@@ -23,6 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     false,
     func,
+    true,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -363,6 +364,8 @@ class GpuEndpoint(Base):
     status: Mapped[str] = mapped_column(String(16), default="creating")  # creating | ready | error
     error: Mapped[str | None] = mapped_column(Text)
     keep_warm_until: Mapped[datetime | None]
+    # RunPod plans allow FlashBoot on a few endpoints only: the ones made after that run without it
+    flashboot: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
     last_used_at: Mapped[datetime | None]

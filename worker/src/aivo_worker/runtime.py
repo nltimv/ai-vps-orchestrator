@@ -162,17 +162,25 @@ class WorkerRuntime:
         engine_up = self._engine_task is not None and self._engine_task.done() and not self.engine_error
         return engine_up and self.files.status(rw.files).all_ready
 
-    async def _rewrite(self, aivo: AivoClient, rw: RewriteSpec) -> str:
-        """The improved description (checked by aivo), or the user's own if anything goes wrong.
+    async def _rewrite(self, aivo: AivoClient, rw: RewriteSpec) -> list[str]:
+        """The improved descriptions (checked by aivo), one per run that has its own, else the user's own.
 
-        Never logs the text: the log goes to admins and isn't encrypted.
+        Several results each get a differently steered description (``rw.more``), so they differ in more than
+        the noise. Never logs the text: the log goes to admins and isn't encrypted.
         """
+        writers = [rw.workflow, *rw.more]
+        if len(writers) > 1:
+            self.logs.emit("agent", f"improving the description: {len(writers)} versions, one per result")
+        return [await self._rewrite_one(aivo, rw, wf, k) for k, wf in enumerate(writers)]
+
+    async def _rewrite_one(self, aivo: AivoClient, rw: RewriteSpec, workflow: dict[str, Any], index: int) -> str:
         t0 = time.monotonic()
         text: str | None = None
         error: str | None = None
-        self.logs.emit("agent", "improving the description")
+        if index == 0:
+            self.logs.emit("agent", "improving the description")
         try:
-            text = await asyncio.wait_for(self.engine.generate_text(rw.workflow, rw.output_node), rw.timeout_s)
+            text = await asyncio.wait_for(self.engine.generate_text(workflow, rw.output_node), rw.timeout_s)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -183,7 +191,7 @@ class WorkerRuntime:
                     await self.engine.cancel()
         seconds = time.monotonic() - t0
         try:
-            out = await aivo.prompt(PromptIn(text=text, error=error, seconds=seconds))
+            out = await aivo.prompt(PromptIn(index=index, text=text, error=error, seconds=seconds))
         except TicketRejected:
             raise
         except Exception as e:
@@ -191,9 +199,10 @@ class WorkerRuntime:
                 "agent", f"aivo couldn't check the improved description ({e}); using it as written", "warning"
             )
             return rw.fallback
+        which = f" {index + 1}" if index else ""
         self.logs.emit(
             "agent",
-            f"description improved in {seconds:.1f} s" if out.rewritten else "using the description as written",
+            f"description{which} improved in {seconds:.1f} s" if out.rewritten else "using the description as written",
         )
         return out.prompt
 
@@ -237,7 +246,7 @@ class WorkerRuntime:
         dests = [f.dest for f in spec.files]
         self.files.ensure(spec.files)
         total = sum(f.bytes or 0 for f in spec.files) or 1
-        rewriting: asyncio.Task[str] | None = None
+        rewriting: asyncio.Task[list[str]] | None = None
         try:
             while True:
                 st = self.files.status(dests)
@@ -270,9 +279,12 @@ class WorkerRuntime:
                         await self.engine.cancel()
                         return await self._fail(aivo, "cancelled", "cancelled while improving the description", t0)
                     await asyncio.wait({rewriting}, timeout=self.progress_every_s)
-                text = rewriting.result()
-                workflow = _fill(workflow, spec.rewrite.marker, text)
-                more = [_fill(w, spec.rewrite.marker, text) for w in more]
+                texts = rewriting.result()  # one per run that has its own; the others use the first
+                workflow = _fill(workflow, spec.rewrite.marker, texts[0])
+                more = [
+                    _fill(w, spec.rewrite.marker, texts[i + 1] if i + 1 < len(texts) else texts[0])
+                    for i, w in enumerate(more)
+                ]
         finally:
             if rewriting is not None and not rewriting.done():
                 rewriting.cancel()

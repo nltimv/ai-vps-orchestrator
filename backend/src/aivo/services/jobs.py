@@ -18,6 +18,7 @@ from aivo.config import RuntimeSettings
 from aivo.context import AppContext
 from aivo.controller.budget import ensure_period, month_compute_spend, open_reservations
 from aivo.controller.common import build_context, get_offers
+from aivo.controller.jobspec import prompts_used
 from aivo.db.models import Asset, Instance, Job, User
 from aivo.events.bus import emit
 from aivo.placement.request import build_request
@@ -83,6 +84,7 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         if inst:
             machine = f"{inst.gpu_model} in {region_meta(inst.region).name}"
     kr = app.keyring
+    used = prompts_used(app, job)
     return JobOut(
         id=job.id,
         user_id=job.user_id,
@@ -92,7 +94,8 @@ async def job_out(app: AppContext, s: AsyncSession, job: Job, user_name: str | N
         model_id=job.model_id,
         model_name=model.manifest.display_name if model else job.model_id,
         prompt=kr.open(job.prompt_enc, job.id.bytes) or "",
-        prompt_used=kr.open(job.prompt_used_enc, job.id.bytes),
+        prompt_used=next((t for t in used if t), None),
+        prompts_used=used,
         avoid=kr.open(job.avoid_enc, job.id.bytes),
         lyrics=kr.open(job.lyrics_enc, job.id.bytes),
         params=job.friendly_params,
