@@ -116,7 +116,7 @@ async def list_gpus(
             "ended_at": i.destroy_confirmed_at,
             "cost_usd": round(float(usd), 4),
             "hours": round(float(secs) / 3600, 3),
-            "current_job_id": current.get(i.id),
+            "current_job_id": current.get(i.id) if user.role == "admin" else None,  # creations are private
         }
         for i, usd, secs in rows
         if i.provider == "runpod"

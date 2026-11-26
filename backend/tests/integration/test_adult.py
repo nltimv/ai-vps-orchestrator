@@ -69,8 +69,8 @@ async def test_adult_creations_are_hidden_from_everyone_else(env):
         assert (await h.client.get(asset_url)).status_code == 200
 
         async with member_client(h) as member:
-            gallery = (await member.get("/api/v1/gallery")).json()["items"]
-            assert j["id"] not in {i["id"] for i in gallery}
+            gallery = (await member.get("/api/v1/items")).json()["items"]
+            assert j["id"] not in {i["job_id"] for i in gallery}
             assert (await member.get(f"/api/v1/jobs/{j['id']}")).status_code == 404
             assert (await member.get(asset_url)).status_code == 404
             assert (await member.get(done["outputs"][0]["thumb_url"] or asset_url)).status_code == 404
@@ -79,7 +79,7 @@ async def test_adult_creations_are_hidden_from_everyone_else(env):
         # switching adult content off hides it from the allowed account too
         await h.client.put("/api/v1/settings", json={"adult_content_enabled": False})
         assert (await h.client.get(f"/api/v1/jobs/{j['id']}")).status_code == 404
-        assert j["id"] not in {i["id"] for i in (await h.client.get("/api/v1/gallery")).json()["items"]}
+        assert j["id"] not in {i["job_id"] for i in (await h.client.get("/api/v1/items")).json()["items"]}
         assert j["id"] not in {i["id"] for i in (await h.client.get("/api/v1/jobs")).json()}
 
 
@@ -152,6 +152,7 @@ async def test_normal_engines_keep_the_adult_mark(env):
         assert r.status_code == 422  # the minors check applies to every adult creation
 
         async with member_client(h) as member:
-            # can't even reference it: as far as the member knows, it doesn't exist
+            # can't even reference it: as far as the member knows, it doesn't exist (the same answer as a
+            # missing picture, adult or not)
             r = await member.post("/api/v1/jobs", json=normal)
-            assert r.status_code == 404
+            assert r.status_code == 422 and "could not be found" in r.text

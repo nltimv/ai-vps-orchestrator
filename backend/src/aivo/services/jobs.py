@@ -215,7 +215,8 @@ async def create_job(
         ref = (
             await s.execute(select(Asset).where(Asset.id == body.reference_asset_id, Asset.deleted_at.is_(None)))
         ).scalar_one_or_none()
-        if ref is None or not ref.media_type.startswith("image/"):
+        # only your own pictures: galleries are private
+        if ref is None or ref.owner_user_id != user.id or not ref.media_type.startswith("image/"):
             raise HTTPException(422, "The starting image could not be found")
     now = datetime.now(UTC)
     period = await ensure_period(s, rs, now, lock=False)

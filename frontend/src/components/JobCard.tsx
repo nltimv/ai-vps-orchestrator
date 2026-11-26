@@ -65,21 +65,23 @@ export function JobCard({ job }: { job: Job }) {
           </ol>
           {job.error && job.state === "waiting_capacity" && <div className="mt-2 text-xs text-amber-500">{job.error}</div>}
           {job.outputs.length > 0 && (
-            <Link to={`/item/${job.id}`} className="mt-3 block" data-testid="ready-so-far">
+            <div className="mt-3" data-testid="ready-so-far">
               <div className="flex flex-wrap gap-1.5">
                 {job.outputs.map((o, i) => (
-                  <img key={o.id} src={o.thumb_url ?? o.url} alt={`Result ${i + 1}`} className="size-12 rounded-md object-cover" />
+                  <Link key={o.id} to={`/item/${o.id}`}>
+                    <img src={o.thumb_url ?? o.url} alt={`Result ${i + 1}`} className="size-12 rounded-md object-cover hover:opacity-90" />
+                  </Link>
                 ))}
               </div>
-              <div className="mt-1 text-xs text-brand-500 hover:underline">
+              <Link to={`/item/${job.outputs[0].id}`} className="mt-1 block text-xs text-brand-500 hover:underline">
                 {job.outputs.length}{job.expected ? ` of ${job.expected}` : ""} ready — view while the rest is made
-              </div>
-            </Link>
+              </Link>
+            </div>
           )}
         </div>
       )}
       {job.state === "succeeded" && (
-        <Link to={`/item/${job.id}`} className="mt-3 flex items-center gap-2 text-sm text-emerald-500 hover:underline">
+        <Link to={job.outputs[0] ? `/item/${job.outputs[0].id}` : "/gallery"} className="mt-3 flex items-center gap-2 text-sm text-emerald-500 hover:underline">
           <CheckCircle2 className="size-4" /> Done{job.cost_usd ? ` · ${money(job.cost_usd)}` : ""} — view
         </Link>
       )}

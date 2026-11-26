@@ -17,13 +17,14 @@ from aivo.controller.budget import (
 )
 from aivo.db.models import CostAccrual, Instance, Job, User
 from aivo.providers.regions import region_meta
+from aivo.safety import visible
 
 router = APIRouter(tags=["spending"])
 
 
 @router.get("/spending")
 async def spending(
-    _: User = Depends(current_user), app: AppContext = Depends(get_app), s: AsyncSession = Depends(get_session)
+    user: User = Depends(current_user), app: AppContext = Depends(get_app), s: AsyncSession = Depends(get_session)
 ) -> SpendingOut:
     rs = await app.runtime(s)
     now = datetime.now(UTC)
@@ -48,15 +49,16 @@ async def spending(
     for inst, usd, _secs in by_machine_rows:
         d = (inst.create_accepted_at or inst.created_at).date().isoformat()
         by_day[d] = by_day.get(d, 0.0) + float(usd)
-    jobs = (
-        await s.execute(
-            select(Job, User.display_name)
-            .join(User, User.id == Job.user_id)
-            .where(Job.created_at >= datetime(now.year, now.month, 1, tzinfo=UTC))
-            .order_by(Job.created_at.desc())
-            .limit(50)
-        )
-    ).all()
+    # the month's totals are everyone's (one budget); the list of creations is your own, or everyone's for
+    # admins (who, which engine, what it cost: never what it shows)
+    q = (
+        select(Job, User.display_name)
+        .join(User, User.id == Job.user_id)
+        .where(Job.created_at >= datetime(now.year, now.month, 1, tzinfo=UTC))
+    )
+    if user.role != "admin":
+        q = q.where(Job.user_id == user.id)
+    jobs = (await s.execute(visible(q, user, rs).order_by(Job.created_at.desc()).limit(50))).all()
     recent = [
         {
             "id": str(j.id),

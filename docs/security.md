@@ -66,9 +66,15 @@ its own token; workers never hold it.
   `Referrer-Policy`.
 - **Uploads.** They are re-encoded to PNG, which drops EXIF/GPS metadata, and capped at 25 MB
   and 2048 px.
+- **Galleries are private.** Each person sees only their own creations: the gallery, a creation's
+  page, its files, its live updates. This includes admins. A creation can only start from your own
+  picture.
 - **Roles.**
-  - Admins can change settings, GPUs and users, and see the worker logs of creations.
-  - Members can create, and can see the shared gallery and their own jobs' details.
+  - Admins can change settings, GPUs and users.
+  - For troubleshooting, admins can see everyone's recent creations as they ran: who, which engine and
+    GPU, state, error, cost. They can open a creation's worker log and stop a creation. They never see its
+    description or results. Worker logs hold downloads, progress and errors, not descriptions.
+  - Members can create and see their own creations.
 
 ## RunPod blast radius
 - Every endpoint aivo makes carries the deployment id. Cleanup never touches other endpoints.

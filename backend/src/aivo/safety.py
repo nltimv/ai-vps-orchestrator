@@ -99,7 +99,10 @@ async def adult_rules(
     ref_job: Job | None = None
     if reference_asset_id:
         ref = (await s.execute(select(Asset).where(Asset.id == reference_asset_id))).scalar_one_or_none()
-        if ref is not None and ref.job_id is not None:
+        if ref is None or ref.owner_user_id != user.id or ref.deleted_at is not None:
+            # someone else's picture answers like a missing one: galleries are private
+            raise HTTPException(422, "The starting image could not be found")
+        if ref.job_id is not None:
             ref_job = (await s.execute(select(Job).where(Job.id == ref.job_id))).scalar_one_or_none()
     adult = adult_engine or bool(ref_job and ref_job.adult)
     if not adult:

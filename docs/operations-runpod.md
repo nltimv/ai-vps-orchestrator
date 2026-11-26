@@ -170,8 +170,10 @@ Only model files are stored on a volume, never creations.
 
 ## Troubleshooting
 
-- **Show log.** On a creation, admins see a log button. It shows the worker's lines: model downloads,
-  the job, the AI engine's output. The last 300 lines are kept with the creation.
+- **Show log.** Admins see a log button on their own creations, and on everyone's under GPUs →
+  *Everyone's creations*. Galleries are private, so that list shows how creations ran, not what they show.
+  The log has the worker's lines: model downloads, the job, the AI engine's output. The last 300 lines
+  are kept with the creation.
 - **A creation waits at "Starting a GPU".**
   - No GPU of that type is free in the allowed data centers. After 5 minutes aivo tries the next type.
   - Allow more countries or data centers, or more GPU types.

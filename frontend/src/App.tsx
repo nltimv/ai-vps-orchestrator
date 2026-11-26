@@ -50,6 +50,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<CreatePage />} />
             <Route path="/gallery" element={<GalleryPage />} />
+            <Route path="/gallery/c/:collectionId" element={<GalleryPage />} />
             <Route path="/item/:id" element={<ItemPage />} />
             <Route path="/machines" element={<MachinesPage isAdmin={isAdmin} />} />
             <Route path="/spending" element={<SpendingPage />} />

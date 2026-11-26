@@ -105,7 +105,7 @@ async def get_asset(
     s: AsyncSession = Depends(get_session),
 ) -> Response:
     a = (await s.execute(select(Asset).where(Asset.id == asset_id, Asset.deleted_at.is_(None)))).scalar_one_or_none()
-    if a is None:
+    if a is None or a.owner_user_id != user.id:  # galleries are private: only the owner, admins too
         raise HTTPException(404, "Not found")
     if a.job_id is not None:
         job = (await s.execute(select(Job).where(Job.id == a.job_id))).scalar_one_or_none()

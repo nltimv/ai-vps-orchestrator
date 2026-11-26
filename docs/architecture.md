@@ -16,7 +16,7 @@ Browser ──HTTPS──► frontend (React SPA via nginx) ──/api──► 
 ## Components
 | Component | Where | Responsibility |
 |---|---|---|
-| **API** | `backend/src/aivo/api` | Auth, catalog, estimates, jobs, gallery and media (HTTP Range over encrypted files), GPUs, spending, settings, live events (SSE) |
+| **API** | `backend/src/aivo/api` | Auth, catalog, estimates, jobs, each user's gallery (items, favorites, collections) and media (HTTP Range over encrypted files), GPUs, spending, settings, live events (SSE) |
 | **Worker API** | `backend/src/aivo/api/routes/worker.py` | What RunPod workers call with a job's ticket: the job, its starting picture, progress and log lines, results, done/failed |
 | **Controller** | `backend/src/aivo/controller` | Holds the lease; scheduler, job runner, endpoints per GPU type, worker billing records, housekeeping, budget |
 | **Placement** | `backend/src/aivo/placement` | Pure suitability scorer, estimates (priors → measured EWMAs) |
