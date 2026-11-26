@@ -147,8 +147,10 @@ async def test_orphan_endpoints_deleted_only_for_this_deployment(env):
             "workers": {"min": 0, "max": 1},
             "scaling": {"type": "QUEUE_DELAY", "queueDelay": 1},
         }
-        mine = (await h.runpod.create_endpoint({**body, "env": {"AIVO_DEPLOYMENT_ID": str(h.ctx.deployment_id)}}))["id"]
-        other = (await h.runpod.create_endpoint({**body, "env": {"AIVO_DEPLOYMENT_ID": str(uuid.uuid4())}}))["id"]
+        mine_env = {"AIVO_DEPLOYMENT_ID": str(h.ctx.deployment_id)}
+        mine = (await h.runpod.create_endpoint({**body, "env": mine_env}))["id"]
+        theirs = {"name": "left-over-2", "env": {"AIVO_DEPLOYMENT_ID": str(uuid.uuid4())}}
+        other = (await h.runpod.create_endpoint({**body, **theirs}))["id"]  # RunPod names are unique
 
         async def deleted():
             return mine in h.runpod.deleted

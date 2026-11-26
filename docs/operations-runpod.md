@@ -10,6 +10,16 @@ creates a *queue-based* RunPod endpoint for it, named `aivo-<deployment>-l40s`. 
 endpoint afterwards: an endpoint without running workers costs nothing, and RunPod keeps a worker
 prepared on a host for it, so later starts are quicker.
 
+**Endpoints change only when their settings do.** Changing an endpoint's GPU, data centers, image or
+environment makes a new RunPod release, and its workers start over without the prepared host. So:
+- an endpoint may use every data center in the allowed countries, whether it has stock right now or
+  not. RunPod starts workers only where there's stock.
+- it excludes the other GPU types of its pool from RunPod's full list, not just those in stock.
+- aivo sends only the settings that differ from the live endpoint. *Keep one ready* and the worker
+  settings change no release.
+
+A new aivo version changes the image, so each endpoint gets one new release after an upgrade.
+
 **RunPod manages the workers.**
 - A creation goes into its GPU type's queue as a RunPod job.
 - RunPod starts a worker when a job waits, up to *GPUs of one type at the same time* (Settings → GPUs).
@@ -176,6 +186,10 @@ Only model files are stored on a volume, never creations.
 - **"This account's plan allows 3 endpoints with FlashBoot"**: aivo turns FlashBoot (quicker cold starts) on
   for each GPU type's endpoint. When the plan's limit is reached, it makes the next endpoints without it and
   remembers that; nothing to do.
+- **"endpoint template names must be unique"**: RunPod never frees an endpoint's name, not even after the
+  endpoint is deleted. aivo then gives the new endpoint a numbered name (`…-2`) and keeps it; nothing to do.
+  Older aivo versions could also cut two long GPU type names to the same endpoint name, so the second one
+  failed with this error (e.g. music on an RTX PRO 6000 MIG slice).
 - **A creation fails with "most likely for running out of memory"** on a 48 GB GPU type: RunPod gives some
   types little RAM (an A40 worker gets 50 GB). aivo then tries a bigger GPU type.
 - **`aivo inventory`** lists this deployment's endpoints with their queue and workers.

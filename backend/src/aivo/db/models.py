@@ -366,6 +366,9 @@ class GpuEndpoint(Base):
     keep_warm_until: Mapped[datetime | None]
     # RunPod plans allow FlashBoot on a few endpoints only: the ones made after that run without it
     flashboot: Mapped[bool] = mapped_column(Boolean, default=True, server_default=true())
+    # the endpoint's name at RunPod. Kept: RunPod never frees a name (renamed or deleted endpoints keep their
+    # template's), so an endpoint made again for this GPU type may have needed another one
+    name: Mapped[str | None] = mapped_column(String(80))
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
     last_used_at: Mapped[datetime | None]
