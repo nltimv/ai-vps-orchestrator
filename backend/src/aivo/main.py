@@ -14,7 +14,20 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import func, select
 
 from aivo import __version__
-from aivo.api.routes import assets, auth, catalog, events, health, jobs, machines, oidc, settings, spending, worker
+from aivo.api.routes import (
+    assets,
+    auth,
+    catalog,
+    events,
+    health,
+    items,
+    jobs,
+    machines,
+    oidc,
+    settings,
+    spending,
+    worker,
+)
 from aivo.auth.passwords import hash_password
 from aivo.catalog.loader import Catalog
 from aivo.config import EnvSettings, get_env
@@ -167,6 +180,7 @@ def create_app(
         oidc.router,
         catalog.router,
         jobs.router,
+        items.router,
         assets.router,
         machines.router,
         spending.router,

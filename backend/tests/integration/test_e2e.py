@@ -64,8 +64,8 @@ async def test_image_job_end_to_end(env):
         rows = await h.sql("SELECT prompt_enc FROM jobs")
         assert all(b"fox" not in bytes(r[0]) for r in rows)
 
-        gallery = (await h.client.get("/api/v1/gallery")).json()
-        assert gallery["items"][0]["id"] == job["id"]
+        gallery = (await h.client.get("/api/v1/items")).json()
+        assert gallery["items"][0]["job_id"] == job["id"] and gallery["items"][0]["id"] == out["id"]
         assert gallery["items"][0]["prompt"] == "a red fox in snow"
 
         gpus = (await h.client.get("/api/v1/machines")).json()

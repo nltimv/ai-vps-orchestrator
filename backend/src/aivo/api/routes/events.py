@@ -28,16 +28,11 @@ async def events(
         last_id = int(hdr)
 
     def visible(q):  # type: ignore[no-untyped-def]
+        # creations are private: their events go to their owner only, admins included
         if user.role == "admin":
-            return q
-        # members: their own jobs, machine status (no secrets in payloads), gallery-wide successes
-        return q.where(
-            or_(
-                Event.user_id == user.id,
-                Event.scope == "instance",
-                (Event.scope == "job") & (Event.type == "job.state"),
-            )
-        )
+            return q.where(or_(Event.scope != "job", Event.user_id == user.id))
+        # members: their own events and machine status (no secrets in payloads)
+        return q.where(or_(Event.user_id == user.id, Event.scope == "instance"))
 
     async def gen() -> AsyncIterator[dict[str, str]]:
         nonlocal last_id

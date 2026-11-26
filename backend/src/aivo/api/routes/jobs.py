@@ -4,18 +4,20 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from aivo.api.deps import current_user, get_app, get_session, require_admin
-from aivo.api.schemas import EstimateOut, JobCreateIn, JobOut, Page
+from aivo.api.schemas import AdminJobOut, EstimateOut, JobCreateIn, JobOut
 from aivo.context import AppContext
 from aivo.controller.lifecycle import transition_job
-from aivo.db.models import Asset, Job, User
+from aivo.db.models import Asset, CollectionItem, Job, User
 from aivo.safety import can_see, visible
 from aivo.services.jobs import create_job, estimate, job_out
 
 router = APIRouter(tags=["jobs"])
+
+DONE = ("succeeded", "failed", "cancelled")
 
 
 @router.post("/estimate")
@@ -53,14 +55,84 @@ async def list_jobs(
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> list[JobOut]:
-    q = select(Job, User.display_name).join(User, User.id == Job.user_id).where(Job.deleted_at.is_(None))
+    """The user's own creations (admins too: see /admin/jobs for troubleshooting others')."""
+    q = (
+        select(Job, User.display_name)
+        .join(User, User.id == Job.user_id)
+        .where(Job.deleted_at.is_(None), Job.user_id == user.id)
+    )
     q = visible(q, user, await app.runtime(s))
     if active:
-        q = q.where(Job.state.notin_(("succeeded", "failed", "cancelled")))
-    if user.role != "admin":
-        q = q.where(Job.user_id == user.id)
+        q = q.where(Job.state.notin_(DONE))
     rows = (await s.execute(q.order_by(Job.created_at.desc()).limit(limit))).all()
     return [await job_out(app, s, j, name) for j, name in rows]
+
+
+@router.get("/admin/jobs")
+async def admin_jobs(
+    limit: int = Query(50, ge=1, le=200),
+    user: User = Depends(require_admin),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> list[AdminJobOut]:
+    """Everyone's recent creations for troubleshooting: how they ran, never their words or results."""
+    q = select(Job, User.display_name).join(User, User.id == Job.user_id).where(Job.deleted_at.is_(None))
+    rows = (await s.execute(visible(q, user, await app.runtime(s)).order_by(Job.created_at.desc()).limit(limit))).all()
+    counts = dict(
+        (
+            await s.execute(
+                select(Asset.job_id, func.count())
+                .where(Asset.job_id.in_([j.id for j, _ in rows]), Asset.role == "output", Asset.deleted_at.is_(None))
+                .group_by(Asset.job_id)
+            )
+        ).all()
+    )
+    out = []
+    for j, name in rows:
+        model = app.catalog.models.get(j.model_id)
+        out.append(
+            AdminJobOut(
+                id=j.id,
+                user_name=name,
+                kind=j.kind,
+                model_name=model.manifest.display_name if model else j.model_id,
+                state=j.state,
+                stage=j.stage,
+                gpu_type=j.gpu_type,
+                error=j.error_message,
+                results=counts.get(j.id, 0),
+                cost_usd=j.attributed_cost_usd,
+                created_at=j.created_at,
+                finished_at=j.finished_at,
+            )
+        )
+    return out
+
+
+@router.post("/admin/jobs/{job_id}/cancel")
+async def admin_cancel(
+    job_id: uuid.UUID,
+    _: User = Depends(require_admin),
+    app: AppContext = Depends(get_app),
+    s: AsyncSession = Depends(get_session),
+) -> dict[str, bool]:
+    """Stop anyone's creation (e.g. one stuck on a GPU), without seeing it."""
+    job = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(404, "Not found")
+    await _cancel(app, s, job)
+    return {"ok": True}
+
+
+async def _cancel(app: AppContext, s: AsyncSession, job: Job) -> None:
+    if job.state in ("queued", "waiting_capacity", "provisioning"):
+        await transition_job(s, job.id, job.state, "cancelled", stage="cancelled", instance_id=None, reserved_usd=0)
+    elif job.state in ("assigned", "preparing", "running", "fetching"):
+        # the job runner cancels it at RunPod; a worker that has it stops at its next progress report
+        await s.execute(update(Job).where(Job.id == job.id).values(cancel_requested=True))
+    await s.commit()
+    if app.controller:
+        app.controller.wake()
 
 
 @router.get("/jobs/{job_id}")
@@ -77,7 +149,7 @@ async def get_job(
             .where(Job.id == job_id, Job.deleted_at.is_(None))
         )
     ).first()
-    if row is None or not can_see(row[0], user, await app.runtime(s)):
+    if row is None or row[0].user_id != user.id or not can_see(row[0], user, await app.runtime(s)):
         raise HTTPException(404, "Not found")
     return await job_out(app, s, row[0], row[1])
 
@@ -90,16 +162,9 @@ async def cancel_job(
     s: AsyncSession = Depends(get_session),
 ) -> JobOut:
     job = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
-    if job is None or (job.user_id != user.id and user.role != "admin"):
+    if job is None or job.user_id != user.id:
         raise HTTPException(404, "Not found")
-    if job.state in ("queued", "waiting_capacity", "provisioning"):
-        await transition_job(s, job.id, job.state, "cancelled", stage="cancelled", instance_id=None, reserved_usd=0)
-    elif job.state in ("assigned", "preparing", "running", "fetching"):
-        # the job runner cancels it at RunPod; a worker that has it stops at its next progress report
-        await s.execute(update(Job).where(Job.id == job.id).values(cancel_requested=True))
-    await s.commit()
-    if app.controller:
-        app.controller.wake()
+    await _cancel(app, s, job)
     await s.refresh(job)
     return await job_out(app, s, job)
 
@@ -112,7 +177,7 @@ async def retry_job(
     s: AsyncSession = Depends(get_session),
 ) -> JobOut:
     job = (await s.execute(select(Job).where(Job.id == job_id).with_for_update())).scalar_one_or_none()
-    if job is None or (job.user_id != user.id and user.role != "admin") or not can_see(job, user, await app.runtime(s)):
+    if job is None or job.user_id != user.id or not can_see(job, user, await app.runtime(s)):
         raise HTTPException(404, "Not found")
     if job.state != "failed":
         raise HTTPException(409, "Only failed creations can be retried")
@@ -152,7 +217,8 @@ async def job_log(
     _: User = Depends(require_admin),
     s: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
-    """The worker's log lines for this creation (admins; for troubleshooting). Poll with ``since``."""
+    """The worker's log lines for this creation (admins, anyone's; for troubleshooting). Poll with ``since``.
+    The lines say how it ran (downloads, GPU, errors), not what it shows: workers never log descriptions."""
     job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
     if job is None:
         raise HTTPException(404, "Not found")
@@ -174,45 +240,19 @@ async def delete_job(
     app: AppContext = Depends(get_app),
     s: AsyncSession = Depends(get_session),
 ) -> dict[str, bool]:
+    """Delete a whole run: everything made together in it (one item at a time: DELETE /items/{id})."""
     job = (await s.execute(select(Job).where(Job.id == job_id))).scalar_one_or_none()
-    if job is None or (job.user_id != user.id and user.role != "admin"):
+    if job is None or job.user_id != user.id:
         raise HTTPException(404, "Not found")
-    if job.state not in ("succeeded", "failed", "cancelled"):
+    if job.state not in DONE:
         raise HTTPException(409, "Cancel it first")
     assets = (await s.execute(select(Asset).where(Asset.job_id == job.id))).scalars().all()
     for a in assets:
         app.store.delete(a.storage_path)
         a.deleted_at = datetime.now(UTC)
+    await s.execute(delete(CollectionItem).where(CollectionItem.asset_id.in_([a.id for a in assets])))
     job.deleted_at = datetime.now(UTC)
-    # erase the sealed prompt too
-    job.prompt_enc = job.avoid_enc = job.lyrics_enc = None
+    # erase the sealed words too
+    job.prompt_enc = job.avoid_enc = job.lyrics_enc = job.prompt_used_enc = None
     await s.commit()
     return {"ok": True}
-
-
-@router.get("/gallery")
-async def gallery(
-    kind: str | None = None,
-    cursor: str | None = None,
-    limit: int = Query(30, le=100),
-    mine: bool = False,
-    user: User = Depends(current_user),
-    app: AppContext = Depends(get_app),
-    s: AsyncSession = Depends(get_session),
-) -> Page:
-    q = (
-        select(Job, User.display_name)
-        .join(User, User.id == Job.user_id)
-        .where(Job.state == "succeeded", Job.deleted_at.is_(None))
-    )
-    q = visible(q, user, await app.runtime(s))
-    if kind in ("image", "video", "music"):
-        q = q.where(Job.kind == kind)
-    if mine:
-        q = q.where(Job.user_id == user.id)
-    if cursor:
-        q = q.where(Job.created_at < datetime.fromisoformat(cursor))
-    rows = (await s.execute(q.order_by(Job.created_at.desc()).limit(limit + 1))).all()
-    items = [await job_out(app, s, j, n) for j, n in rows[:limit]]
-    nxt = rows[limit - 1][0].created_at.isoformat() if len(rows) > limit else None
-    return Page(items=items, next_cursor=nxt)

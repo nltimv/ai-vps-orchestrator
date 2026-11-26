@@ -321,8 +321,32 @@ class Asset(Base):
     width: Mapped[int | None]
     height: Mapped[int | None]
     duration_s: Mapped[float | None] = mapped_column(Float)
+    # each output is a creation of its own in the gallery: its owner can mark it a favorite
+    favorite_at: Mapped[datetime | None]
     created_at: Mapped[datetime] = mapped_column(server_default=_now())
     deleted_at: Mapped[datetime | None]
+
+    __table_args__ = (Index("ix_assets_owner_role", "owner_user_id", "role"),)
+
+
+class Collection(Base):
+    """A user's own named set of creations (outputs) in their gallery."""
+
+    __tablename__ = "collections"
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    created_at: Mapped[datetime] = mapped_column(server_default=_now())
+    updated_at: Mapped[datetime] = mapped_column(server_default=_now(), onupdate=_now())
+
+
+class CollectionItem(Base):
+    __tablename__ = "collection_items"
+    collection_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"), primary_key=True)
+    asset_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    added_at: Mapped[datetime] = mapped_column(server_default=_now())
 
 
 # ------------------------------------------------------------------ budget

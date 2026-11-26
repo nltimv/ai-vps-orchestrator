@@ -131,9 +131,77 @@ class JobOut(BaseModel):
     reference: AssetOut | None = None
 
 
-class Page(BaseModel):
-    items: list[JobOut]
+class ItemOut(BaseModel):
+    """One picture, video or song: a creation of its own in its owner's gallery. Several may have been made
+    together in one run on the GPU (``job_id``)."""
+
+    id: uuid.UUID  # the output file
+    job_id: uuid.UUID
+    kind: str
+    index: int  # its place among those made together (0-based, counting deleted ones)
+    together: int  # how many made together are still there, this one included
+    media: AssetOut
+    prompt: str
+    favorite: bool = False
+    adult: bool = False
+    created_at: datetime
+
+
+class ItemsPage(BaseModel):
+    items: list[ItemOut]
     next_cursor: str | None = None
+
+
+class ItemDetailOut(BaseModel):
+    item: ItemOut
+    job: JobOut  # how it was made; ``job.outputs`` are the ones made together
+    improved: str | None = None  # this one's improved description
+    seed: int | None = None  # this one's look number
+    collection_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class FavoriteIn(BaseModel):
+    favorite: bool
+
+
+class ItemCollectionsIn(BaseModel):
+    collection_ids: list[uuid.UUID] = Field(max_length=500)
+
+
+class BulkIn(BaseModel):
+    ids: list[uuid.UUID] = Field(min_length=1, max_length=500)
+    action: Literal["favorite", "unfavorite", "delete", "add", "remove"]
+    collection_id: uuid.UUID | None = None  # for add / remove
+
+
+class CollectionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
+class CollectionOut(BaseModel):
+    id: uuid.UUID
+    name: str
+    count: int
+    cover_url: str | None = None  # the newest item's preview
+    created_at: datetime
+    updated_at: datetime
+
+
+class AdminJobOut(BaseModel):
+    """A creation as admins see it when troubleshooting: how it ran, never what it shows."""
+
+    id: uuid.UUID
+    user_name: str | None
+    kind: str
+    model_name: str
+    state: str
+    stage: str
+    gpu_type: str | None
+    error: str | None
+    results: int
+    cost_usd: float | None
+    created_at: datetime
+    finished_at: datetime | None
 
 
 class SpendingOut(BaseModel):
