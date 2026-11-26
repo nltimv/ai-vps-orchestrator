@@ -8,7 +8,7 @@ import json
 from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Request
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, func, or_, select
 from sse_starlette.sse import EventSourceResponse
 
 from aivo.api.deps import current_user, get_app
@@ -16,6 +16,14 @@ from aivo.context import AppContext
 from aivo.db.models import Event, User
 
 router = APIRouter(tags=["events"])
+
+
+def events_for(user: User) -> ColumnElement[bool]:
+    """The events a user may receive. Creations are private: their events go to their owner only, admins
+    included. Machine status goes to everyone (no secrets in its payloads); system events to admins."""
+    if user.role == "admin":
+        return or_(Event.scope != "job", Event.user_id == user.id)
+    return or_(Event.user_id == user.id, Event.scope == "instance")
 
 
 @router.get("/events")
@@ -28,11 +36,7 @@ async def events(
         last_id = int(hdr)
 
     def visible(q):  # type: ignore[no-untyped-def]
-        # creations are private: their events go to their owner only, admins included
-        if user.role == "admin":
-            return q.where(or_(Event.scope != "job", Event.user_id == user.id))
-        # members: their own events and machine status (no secrets in payloads)
-        return q.where(or_(Event.user_id == user.id, Event.scope == "instance"))
+        return q.where(events_for(user))
 
     async def gen() -> AsyncIterator[dict[str, str]]:
         nonlocal last_id

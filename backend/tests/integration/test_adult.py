@@ -152,6 +152,7 @@ async def test_normal_engines_keep_the_adult_mark(env):
         assert r.status_code == 422  # the minors check applies to every adult creation
 
         async with member_client(h) as member:
-            # can't even reference it: as far as the member knows, it doesn't exist
+            # can't even reference it: as far as the member knows, it doesn't exist (the same answer as a
+            # missing picture, adult or not)
             r = await member.post("/api/v1/jobs", json=normal)
-            assert r.status_code == 404
+            assert r.status_code == 422 and "could not be found" in r.text
