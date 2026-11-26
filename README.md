@@ -7,8 +7,10 @@ straight back to aivo, and stops shortly after. You pay per second of GPU work, 
 
 - **Friendly dashboard**: describe what you want, pick a style, shape, quality and length.
   No samplers, steps or other jargon. You see a cost and wait estimate before you start.
-- **Encrypted gallery** on your own volume. Creations never stay at RunPod: workers upload them to aivo,
-  which encrypts them right away. RunPod's job queue only ever sees a one-time ticket.
+- **A private, encrypted gallery per person** on your own volume. Each picture, video or song is a
+  creation of its own, with favorites, collections and endless scrolling. Nobody else sees it, admins
+  included. Creations never stay at RunPod: workers upload them to aivo, which encrypts them right away.
+  RunPod's job queue only ever sees a one-time ticket.
 - **Automatic GPU choice**: RunPod's GPU types are ranked by suitability (enough memory but not
   overkill, price, availability, a GPU of that type already on). When no GPU of a type becomes free in
   time, the job moves to the next type. You can also pick a GPU by hand.

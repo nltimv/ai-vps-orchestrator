@@ -27,7 +27,7 @@ export function useServerEvents(enabled: boolean) {
       );
       if (p.state && ["succeeded", "failed", "cancelled", "provisioning", "assigned", "queued"].includes(p.state)) {
         qc.invalidateQueries({ queryKey: ["job", e.ref_id] });
-        if (p.state === "succeeded") qc.invalidateQueries({ queryKey: ["gallery"] });
+        if (p.state === "succeeded") qc.invalidateQueries({ queryKey: ["items"] });
         refreshLists();
       }
     };
@@ -42,6 +42,7 @@ export function useServerEvents(enabled: boolean) {
       if (!e.ref_id) return;
       qc.invalidateQueries({ queryKey: ["job", e.ref_id] });
       qc.invalidateQueries({ queryKey: ["jobs", "active"] });
+      qc.invalidateQueries({ queryKey: ["items"] }); // each result is in the gallery as soon as it's there
     });
     for (const t of ["instance.state"])
       es.addEventListener(t, onInstance);

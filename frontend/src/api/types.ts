@@ -156,9 +156,59 @@ export interface Job {
   reference: Asset | null;
 }
 
-export interface GalleryPage {
-  items: Job[];
+/** One picture, video or song: a creation of its own in its owner's gallery. Several may have been made
+ *  together in one run (``job_id``). */
+export interface Item {
+  id: string; // the file
+  job_id: string;
+  kind: Kind;
+  index: number; // its place among those made together
+  together: number; // how many made together are still there
+  media: Asset;
+  prompt: string;
+  favorite: boolean;
+  adult: boolean;
+  created_at: string;
+}
+
+export interface ItemsPage {
+  items: Item[];
   next_cursor: string | null;
+}
+
+export interface ItemDetail {
+  item: Item;
+  job: Job; // how it was made; job.outputs are the ones made together
+  improved: string | null; // this one's improved description
+  seed: number | null; // this one's look number
+  collection_ids: string[];
+}
+
+export interface Collection {
+  id: string;
+  name: string;
+  count: number;
+  cover_url: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type BulkAction = "favorite" | "unfavorite" | "delete" | "add" | "remove";
+
+/** A creation as admins see it when troubleshooting: how it ran, never what it shows. */
+export interface AdminJob {
+  id: string;
+  user_name: string | null;
+  kind: Kind;
+  model_name: string;
+  state: JobState;
+  stage: string;
+  gpu_type: string | null;
+  error: string | null;
+  results: number;
+  cost_usd: number | null;
+  created_at: string;
+  finished_at: string | null;
 }
 
 /** One GPU type with its RunPod queue endpoint. */

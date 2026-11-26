@@ -1,12 +1,14 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { Cpu, Flame, Timer, Zap } from "lucide-react";
+import { Cpu, Flame, ScrollText, Timer, Zap } from "lucide-react";
 import { useState } from "react";
 
 import { post } from "@/api/client";
-import { useCatalog, useGpus, useOffers } from "@/api/queries";
-import type { GpuEndpoint, Kind, MachineChoice, Preference, Quality, Worker } from "@/api/types";
+import { useAdminJobs, useCatalog, useGpus, useOffers } from "@/api/queries";
+import type { AdminJob, GpuEndpoint, Kind, MachineChoice, Preference, Quality, Worker } from "@/api/types";
+import { KindIcon } from "@/components/JobCard";
+import { LogViewer } from "@/components/LogViewer";
 import { Badge, Button, Card, Chips, Empty, ErrorNote, Label, PageHeader } from "@/components/ui";
-import { ago, cn, duration, money, until, workerStateLabel } from "@/lib/format";
+import { ago, cn, duration, isActive, money, stageLabel, until, workerStateLabel } from "@/lib/format";
 
 export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
   const gpus = useGpus();
@@ -75,6 +77,8 @@ export function MachinesPage({ isAdmin }: { isAdmin: boolean }) {
           </div>
         </section>
       )}
+
+      {isAdmin && <EveryonesCreations />}
 
       <section>
         <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted">GPU options</h2>
@@ -153,6 +157,54 @@ function WorkerCard({ w, keepWarm }: { w: Worker; keepWarm: number }) {
         )}
       </dl>
     </Card>
+  );
+}
+
+/** Admins troubleshooting: everyone's recent creations as they ran (never their words or results). */
+function EveryonesCreations() {
+  const q = useAdminJobs(true);
+  const qc = useQueryClient();
+  const [log, setLog] = useState<AdminJob | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null);
+  const rows = q.data ?? [];
+  if (rows.length === 0) return null;
+  const stop = async (id: string) => {
+    setStopping(id);
+    try {
+      await post(`/admin/jobs/${id}/cancel`);
+      await qc.invalidateQueries({ queryKey: ["admin-jobs"] });
+    } finally {
+      setStopping(null);
+    }
+  };
+  return (
+    <section className="mb-10">
+      <h2 className="mb-1 text-sm font-semibold uppercase tracking-wide text-muted">Everyone's creations</h2>
+      <p className="mb-4 text-sm text-muted">
+        For troubleshooting: how each one ran. Galleries are private, so descriptions and results aren't shown here.
+      </p>
+      <Card className="divide-y divide-[var(--border)]" data-testid="everyones-creations">
+        {rows.map((j) => (
+          <div key={j.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 px-4 py-3 text-sm">
+            <KindIcon kind={j.kind} className="size-4 text-muted" />
+            <span className="min-w-40 flex-1">
+              {j.user_name} · {j.model_name}
+              <span className="text-muted"> · {ago(j.created_at)}{j.gpu_type ? ` · ${j.gpu_type.replace(/^NVIDIA (GeForce )?/, "")}` : ""}</span>
+              {j.error && <span className="block text-xs text-red-500">{j.error}</span>}
+            </span>
+            <Badge tone={j.state === "succeeded" ? "good" : j.state === "failed" ? "bad" : isActive(j.state) ? "brand" : "neutral"}>
+              {j.state === "succeeded" ? `Done · ${j.results}` : j.state === "failed" ? "Failed" : j.state === "cancelled" ? "Cancelled" : stageLabel(j.stage)}
+            </Badge>
+            <span className="w-16 text-right text-muted">{money(j.cost_usd)}</span>
+            <Button size="sm" variant="ghost" aria-label="Show log" title="The worker's log" onClick={() => setLog(j)}><ScrollText className="size-4" /></Button>
+            {isActive(j.state) && (
+              <Button size="sm" variant="ghost" loading={stopping === j.id} onClick={() => stop(j.id)}>Stop</Button>
+            )}
+          </div>
+        ))}
+      </Card>
+      {log && <LogViewer jobId={log.id} label={`${log.model_name} · ${log.user_name ?? ""}`} onClose={() => setLog(null)} />}
+    </section>
   );
 }
 
